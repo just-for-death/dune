@@ -1,6 +1,7 @@
 {
   "name": "dune",
   "version": "1.0.0",
+  "author": "Yashwin",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
