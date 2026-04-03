@@ -8,12 +8,12 @@ import { autoDetectGames } from './scanner'
 
 // Define default games if empty
 const defaultGames = [
-  { 
-    id: 1, 
-    name: 'Cyberpunk 2077', 
+  {
+    id: 1,
+    name: 'Cyberpunk 2077',
     winPath: '%USERPROFILE%\\Saved Games\\CD Projekt Red\\Cyberpunk 2077',
     linPath: '~/.steam/steam/steamapps/compatdata/1091500/pfx/drive_c/users/steamuser/Saved Games/CD Projekt Red/Cyberpunk 2077',
-    lastSync: 'Never', 
+    lastSync: 'Never',
     status: 'Pending Upload',
     thumbnail: ''
   }
@@ -22,7 +22,7 @@ const defaultGames = [
 const store = new Store({
   defaults: {
     games: defaultGames,
-    cloud: { url: '' }, // Simplified: only needs URL for Dune Server
+    cloud: { url: '' },
     settings: {
       runInBackground: false,
       autoSyncEnabled: false,
@@ -46,16 +46,15 @@ let autoSyncInterval: NodeJS.Timeout | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let mainWindow: BrowserWindow | null = null;
-
 let isAutoSyncing = false;
 
 function normalizeUrl(url: string) {
-    if (!url) return '';
-    let normalized = url.trim();
-    if (!/^https?:\/\//i.test(normalized)) {
-        normalized = 'http://' + normalized;
-    }
-    return normalized.replace(/\/+$/, '');
+  if (!url) return '';
+  let normalized = url.trim();
+  if (!/^https?:\/\//i.test(normalized)) {
+    normalized = 'http://' + normalized;
+  }
+  return normalized.replace(/\/+$/, '');
 }
 
 function setupAutoSync() {
@@ -63,10 +62,10 @@ function setupAutoSync() {
   const settings: any = store.get('settings');
   if (settings?.autoSyncEnabled && settings?.autoSyncFreq && settings.autoSyncFreq !== 'never') {
     let ms = 0;
-    if (settings.autoSyncFreq === '1h') ms = 60 * 60 * 1000;
-    if (settings.autoSyncFreq === '6h') ms = 6 * 60 * 60 * 1000;
+    if (settings.autoSyncFreq === '1h')  ms = 60 * 60 * 1000;
+    if (settings.autoSyncFreq === '6h')  ms = 6 * 60 * 60 * 1000;
     if (settings.autoSyncFreq === '24h') ms = 24 * 60 * 60 * 1000;
-    
+
     if (ms > 0) {
       autoSyncInterval = setInterval(async () => {
         if (isAutoSyncing) return;
@@ -85,16 +84,16 @@ function setupAutoSync() {
 }
 
 async function uploadFile(baseUrl: string, gameName: string, localPath: string, relativePath: string, syncId?: string) {
-    const cleanUrl = normalizeUrl(baseUrl);
-    const stream = fs.createReadStream(localPath);
-    await axios.post(`${cleanUrl}/api/upload-file`, stream, {
-        headers: {
-            'x-game': gameName,
-            'x-path': relativePath,
-            'x-sync-id': syncId || 'default',
-            'Content-Type': 'application/octet-stream'
-        }
-    });
+  const cleanUrl = normalizeUrl(baseUrl);
+  const stream = fs.createReadStream(localPath);
+  await axios.post(`${cleanUrl}/api/upload-file`, stream, {
+    headers: {
+      'x-game': gameName,
+      'x-path': relativePath,
+      'x-sync-id': syncId || 'default',
+      'Content-Type': 'application/octet-stream'
+    }
+  });
 }
 
 async function performCloudSync(credentials: any) {
@@ -106,40 +105,39 @@ async function performCloudSync(credentials: any) {
       const rawPath = process.platform === 'win32' ? game.winPath : game.linPath
       const expanded = expandPath(rawPath)
       if (expanded && fs.existsSync(expanded)) {
-        // Collect all file paths first
         const filePaths: { local: string, rel: string }[] = [];
         const stats = fs.statSync(expanded);
         if (stats.isDirectory()) {
-            const walk = (dir: string, base: string) => {
-                const items = fs.readdirSync(dir);
-                for (const item of items) {
-                    const fullPath = path.join(dir, item);
-                    if (fs.statSync(fullPath).isDirectory()) {
-                        walk(fullPath, base);
-                    } else {
-                        filePaths.push({ local: fullPath, rel: path.relative(base, fullPath) });
-                    }
-                }
-            };
-            walk(expanded, expanded);
+          const walk = (dir: string, base: string) => {
+            const items = fs.readdirSync(dir, { withFileTypes: true });
+            for (const item of items) {
+              if (item.isSymbolicLink()) continue; // skip symlinks
+              const fullPath = path.join(dir, item.name);
+              if (item.isDirectory()) {
+                walk(fullPath, base);
+              } else {
+                filePaths.push({ local: fullPath, rel: path.relative(base, fullPath) });
+              }
+            }
+          };
+          walk(expanded, expanded);
         } else {
-            filePaths.push({ local: expanded, rel: path.basename(expanded) });
+          filePaths.push({ local: expanded, rel: path.basename(expanded) });
         }
 
         const syncId = Date.now().toString();
-        // Process in controlled chunks of 5
         for (let i = 0; i < filePaths.length; i += 5) {
-            const chunk = filePaths.slice(i, i + 5);
-            await Promise.all(chunk.map(async (f) => {
-                try {
-                    await uploadFile(cleanUrl, game.name, f.local, f.rel, syncId);
-                } catch (e) {
-                    console.error(`Failed to sync ${f.rel}:`, e);
-                }
-            }));
+          const chunk = filePaths.slice(i, i + 5);
+          await Promise.all(chunk.map(async (f) => {
+            try {
+              await uploadFile(cleanUrl, game.name, f.local, f.rel, syncId);
+            } catch (e) {
+              console.error(`Failed to sync ${f.rel}:`, e);
+            }
+          }));
         }
         game.status = 'In Sync'
-        game.lastSync = new Date().toLocaleString()
+        game.lastSync = new Date().toISOString()
       }
     }
 
@@ -157,7 +155,7 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
     progress(5, 'Connecting to Dune Server...')
     const cleanUrl = normalizeUrl(credentials.url)
     const games: any = store.get('games') || []
-    
+
     let filesToUpload: { game: string, local: string, rel: string }[] = [];
 
     progress(15, 'Scanning local files...')
@@ -167,52 +165,54 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
       if (expanded && fs.existsSync(expanded)) {
         const stats = fs.statSync(expanded);
         if (stats.isDirectory()) {
-            const findFiles = (dir: string, base: string) => {
-                const items = fs.readdirSync(dir);
-                for (const item of items) {
-                    const fullPath = path.join(dir, item);
-                    if (fs.statSync(fullPath).isDirectory()) {
-                        findFiles(fullPath, base);
-                    } else {
-                        filesToUpload.push({ game: game.name, local: fullPath, rel: path.relative(base, fullPath) });
-                    }
-                }
-            };
-            findFiles(expanded, expanded);
+          const findFiles = (dir: string, base: string) => {
+            const items = fs.readdirSync(dir, { withFileTypes: true });
+            for (const item of items) {
+              if (item.isSymbolicLink()) continue;
+              const fullPath = path.join(dir, item.name);
+              if (item.isDirectory()) {
+                findFiles(fullPath, base);
+              } else {
+                filesToUpload.push({ game: game.name, local: fullPath, rel: path.relative(base, fullPath) });
+              }
+            }
+          };
+          findFiles(expanded, expanded);
         } else {
-            filesToUpload.push({ game: game.name, local: expanded, rel: path.basename(expanded) });
+          filesToUpload.push({ game: game.name, local: expanded, rel: path.basename(expanded) });
         }
       }
     }
 
     if (filesToUpload.length === 0) {
       progress(0, '')
-      return { success: false, message: 'No valid saves to sync.' }
+      return { success: false, message: 'No valid saves to sync. Check your game path mappings.' }
     }
 
     const syncId = Date.now().toString();
     const CHUNK_SIZE = 5;
     for (let i = 0; i < filesToUpload.length; i += CHUNK_SIZE) {
-        const chunk = filesToUpload.slice(i, i + CHUNK_SIZE);
-        const percent = 20 + Math.round((i / filesToUpload.length) * 75);
-        progress(percent, `Uploading: Batch ${Math.floor(i/CHUNK_SIZE) + 1} / ${Math.ceil(filesToUpload.length/CHUNK_SIZE)}`);
-        
-        await Promise.all(chunk.map(async (file) => {
-            try {
-                await uploadFile(cleanUrl, file.game, file.local, file.rel, syncId);
-            } catch (e) {
-                console.error(`Sync error on ${file.rel}:`, e);
-            }
-        }));
+      const chunk = filesToUpload.slice(i, i + CHUNK_SIZE);
+      const percent = 20 + Math.round((i / filesToUpload.length) * 75);
+      progress(percent, `Uploading: Batch ${Math.floor(i / CHUNK_SIZE) + 1} / ${Math.ceil(filesToUpload.length / CHUNK_SIZE)}`);
+
+      await Promise.all(chunk.map(async (file) => {
+        try {
+          await uploadFile(cleanUrl, file.game, file.local, file.rel, syncId);
+        } catch (e) {
+          console.error(`Sync error on ${file.rel}:`, e);
+        }
+      }));
     }
 
     // Update status
     games.forEach((g: any) => {
-        const rawPath = process.platform === 'win32' ? g.winPath : g.linPath
-        if (expandPath(rawPath) && fs.existsSync(expandPath(rawPath))) {
-            g.status = 'In Sync';
-            g.lastSync = new Date().toLocaleString();
-        }
+      const rawPath = process.platform === 'win32' ? g.winPath : g.linPath
+      const expandedPath = expandPath(rawPath);
+      if (expandedPath && fs.existsSync(expandedPath)) {
+        g.status = 'In Sync';
+        g.lastSync = new Date().toISOString();
+      }
     });
 
     store.set('games', games)
@@ -234,41 +234,47 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
     const CHUNK_SIZE = 5;
 
     for (let i = 0; i < games.length; i++) {
-        const game = games[i];
-        const overallPercent = 10 + Math.round((i / games.length) * 85);
-        progress(overallPercent, `Checking server for: ${game.name}`);
+      const game = games[i];
+      const overallPercent = 10 + Math.round((i / games.length) * 85);
+      progress(overallPercent, `Checking server for: ${game.name}`);
 
-        const listRes = await axios.get(`${cleanUrl}/api/list-files?game=${encodeURIComponent(game.name)}`);
-        const files = listRes.data.files || [];
+      const listRes = await axios.get(`${cleanUrl}/api/list-files?game=${encodeURIComponent(game.name)}`);
+      // Server returns an array of file metadata objects: { path, name, size, modified, category }
+      const files: { path: string; name: string; size: number }[] = listRes.data.files || [];
 
-        if (files.length > 0) {
-            const rawPath = process.platform === 'win32' ? game.winPath : game.linPath;
-            const expanded = expandPath(rawPath);
-            if (!expanded) continue;
+      if (files.length > 0) {
+        const rawPath = process.platform === 'win32' ? game.winPath : game.linPath;
+        const expanded = expandPath(rawPath);
+        if (!expanded) continue;
 
-            const restoreBase = (fs.existsSync(expanded) && !fs.statSync(expanded).isDirectory()) 
-                ? path.dirname(expanded) 
-                : expanded;
+        const restoreBase = (fs.existsSync(expanded) && !fs.statSync(expanded).isDirectory())
+          ? path.dirname(expanded)
+          : expanded;
 
-            for (let j = 0; j < files.length; j += CHUNK_SIZE) {
-                const chunk = files.slice(j, j + CHUNK_SIZE);
-                await Promise.all(chunk.map(async (relPath: string) => {
-                    const target = path.join(restoreBase, relPath);
-                    fs.mkdirSync(path.dirname(target), { recursive: true });
-                    
-                    const response = await axios.get(`${cleanUrl}/api/download-file?game=${encodeURIComponent(game.name)}&path=${encodeURIComponent(relPath)}`, { responseType: 'arraybuffer' });
-                    fs.writeFileSync(target, Buffer.from(response.data));
-                }));
-            }
-            game.status = 'In Sync';
-            game.lastSync = new Date().toLocaleString();
-            restoredCount++;
+        for (let j = 0; j < files.length; j += CHUNK_SIZE) {
+          const chunk = files.slice(j, j + CHUNK_SIZE);
+          await Promise.all(chunk.map(async (file) => {
+            // Bug fix: file is a metadata object — use file.path, not the object directly
+            const relPath = file.path;
+            const target = path.join(restoreBase, relPath);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+
+            const response = await axios.get(
+              `${cleanUrl}/api/download-file?game=${encodeURIComponent(game.name)}&path=${encodeURIComponent(relPath)}`,
+              { responseType: 'arraybuffer' }
+            );
+            fs.writeFileSync(target, Buffer.from(response.data));
+          }));
         }
+        game.status = 'In Sync';
+        game.lastSync = new Date().toISOString();
+        restoredCount++;
+      }
     }
 
     store.set('games', games)
     progress(100, 'Restore complete! 🎉')
-    return { success: true, message: `Successfully restored ${restoredCount} games!` }
+    return { success: true, message: `Successfully restored ${restoredCount} game(s)!` }
   } catch (err: any) {
     progress(0, '')
     return { success: false, message: 'Restore failed: ' + (err.message || String(err)) }
@@ -286,8 +292,8 @@ ipcMain.handle('config:load', () => {
 })
 
 ipcMain.handle('config:save', (_event, config) => {
-  if (config.games) store.set('games', config.games)
-  if (config.cloud) store.set('cloud', config.cloud)
+  if (config.games)    store.set('games', config.games)
+  if (config.cloud)    store.set('cloud', config.cloud)
   if (config.settings) {
     store.set('settings', config.settings)
     setupAutoSync()
@@ -397,7 +403,7 @@ ipcMain.handle('sync:test', async (_event, credentials) => {
   } catch (err: any) {
     let msg = err.message || String(err);
     if (err.code === 'ECONNREFUSED') msg = 'Connection refused. Is the server running?';
-    if (err.code === 'ENOTFOUND') msg = 'Server address not found. Check your URL.';
+    if (err.code === 'ENOTFOUND')    msg = 'Server address not found. Check your URL.';
     return { success: false, message: '❌ ' + msg }
   }
 })
@@ -432,16 +438,20 @@ ipcMain.handle('game:fetchArt', async (_event, id, name) => {
   if (!apiKey) return { success: false, message: 'No SteamGridDB API Key found in settings.' }
 
   try {
-    const searchRes = await axios.get(`https://www.steamgriddb.com/api/v2/search/autocomplete/${encodeURIComponent(name)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` }
-    })
-    if (searchRes.data.data.length === 0) return { success: false, message: 'Game not found on SteamGridDB.' }
-    const gameId = searchRes.data.data[0].id
+    const searchRes = await axios.get(
+      `https://www.steamgriddb.com/api/v2/search/autocomplete/${encodeURIComponent(name)}`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    )
+    if (!searchRes.data.data || searchRes.data.data.length === 0)
+      return { success: false, message: 'Game not found on SteamGridDB.' }
 
-    const gridRes = await axios.get(`https://www.steamgriddb.com/api/v2/grids/game/${gameId}?dimensions=600x900,460x215,920x430`, {
-      headers: { Authorization: `Bearer ${apiKey}` }
-    })
-    if (gridRes.data.data.length === 0) return { success: false, message: 'No grid images found.' }
+    const gameId = searchRes.data.data[0].id
+    const gridRes = await axios.get(
+      `https://www.steamgriddb.com/api/v2/grids/game/${gameId}?dimensions=600x900,460x215,920x430`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    )
+    if (!gridRes.data.data || gridRes.data.data.length === 0)
+      return { success: false, message: 'No grid images found.' }
 
     const imgUrl = gridRes.data.data[0].url
     const response = await axios.get(imgUrl, { responseType: 'arraybuffer' })
@@ -463,8 +473,10 @@ ipcMain.handle('game:fetchArt', async (_event, id, name) => {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 700,
+    width: 960,
+    height: 720,
+    minWidth: 760,
+    minHeight: 520,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -485,20 +497,41 @@ function createWindow() {
     if (fs.existsSync(c)) { iconPath = c; break }
   }
   const icon = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
-  tray = new Tray(icon)
-  tray.setToolTip('Dune')
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Show App', click: () => win.show() },
-    { label: 'Quit', click: () => { isQuitting = true; app.quit() } }
-  ]))
-  tray.on('click', () => { win.show() })
+
+  // Only create tray once (guard against re-entrancy on macOS activate)
+  if (!tray) {
+    tray = new Tray(icon)
+    tray.setToolTip('Dune')
+    tray.setContextMenu(Menu.buildFromTemplate([
+      {
+        label: 'Show App', click: () => {
+          // If the window was closed (destroyed), recreate it
+          if (!mainWindow || mainWindow.isDestroyed()) {
+            createWindow()
+          } else {
+            mainWindow.show()
+          }
+        }
+      },
+      { label: 'Quit', click: () => { isQuitting = true; app.quit() } }
+    ]))
+    tray.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow()
+      } else {
+        mainWindow.show()
+      }
+    })
+  }
 
   win.on('close', (event) => {
     const settings: any = store.get('settings')
     if (!isQuitting && settings?.runInBackground) {
+      // Hide instead of closing when "run in background" is enabled
       event.preventDefault()
       win.hide()
     } else {
+      // Let the window close normally. mainWindow will be nulled after destroy.
       mainWindow = null
     }
   })
@@ -512,6 +545,26 @@ function createWindow() {
 
 app.on('before-quit', () => {
   isQuitting = true
+})
+
+// Standard cross-platform quit-on-last-window-close
+app.on('window-all-closed', () => {
+  const settings: any = store.get('settings')
+  // On macOS, keep the process alive in tray (always). On others, quit unless background mode.
+  if (process.platform !== 'darwin' && !settings?.runInBackground) {
+    // Give the tray a moment to register, then quit cleanly
+    isQuitting = true
+    app.quit()
+  }
+})
+
+// macOS: re-open window when dock icon is clicked and no windows are open
+app.on('activate', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+  } else {
+    mainWindow.show()
+  }
 })
 
 app.whenReady().then(() => {

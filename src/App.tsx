@@ -1,9 +1,49 @@
 import '@fontsource/inter';
 import { useState, useEffect } from 'react';
 
+// ── Typed IPC bridge ─────────────────────────────────────────────────────────
+// Must mirror every key exposed in electron/preload.ts contextBridge call.
+interface ElectronAPI {
+  exportSaves:      () => Promise<{ success: boolean; path?: string; message?: string }>;
+  syncCloud:        (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
+  restoreCloud:     (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
+  loadConfig:       () => Promise<{ games: Game[]; cloud: Cloud; settings: Settings }>;
+  saveConfig:       (config: Partial<{ games: Game[]; cloud: Cloud; settings: Settings }>) => Promise<boolean>;
+  addGame:          (game: Omit<Game, 'id'>) => Promise<Game[]>;
+  removeGame:       (id: number) => Promise<Game[]>;
+  autoDetectGames:  (roots: string[]) => Promise<{ count: number; currentGames: Game[] }>;
+  selectDirectory:  () => Promise<{ success: boolean; path?: string }>;
+  testCloud:        (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
+  fetchArt:         (id: number, name: string) => Promise<{ success: boolean; thumbnail?: string; message?: string }>;
+  setCustomArt:     (id: number) => Promise<string | false>;
+  onSyncProgress:   (cb: (data: { percent: number; message: string }) => void) => () => void;
+}
+
+interface Game {
+  id: number;
+  name: string;
+  winPath: string;
+  linPath: string;
+  lastSync: string;
+  status: string;
+  thumbnail: string;
+}
+
+interface Cloud {
+  url: string;
+}
+
+interface Settings {
+  runInBackground: boolean;
+  autoSyncEnabled: boolean;
+  autoSyncFreq: string;
+  steamGridDbKey: string;
+  scanRoots: string[];
+}
+
 declare global {
   interface Window {
-    electronAPI: any;
+    electronAPI: ElectronAPI;
   }
 }
 
@@ -11,14 +51,14 @@ type Tab = 'dashboard' | 'mapping' | 'sync' | 'settings';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [games, setGames] = useState<any[]>([]);
-  const [cloud, setCloud] = useState({ url: '' });
-  const [settings, setSettings] = useState({
+  const [games, setGames] = useState<Game[]>([]);
+  const [cloud, setCloud] = useState<Cloud>({ url: '' });
+  const [settings, setSettings] = useState<Settings>({
     runInBackground: false,
     autoSyncEnabled: false,
     autoSyncFreq: 'never',
     steamGridDbKey: '',
-    scanRoots: [] as string[]
+    scanRoots: []
   });
   
   const [newGameName, setNewGameName] = useState('');
