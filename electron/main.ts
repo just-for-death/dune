@@ -46,7 +46,7 @@ let autoSyncInterval: NodeJS.Timeout | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let mainWindow: BrowserWindow | null = null;
-let isAutoSyncing = false;
+let isCloudSyncing = false;
 
 function normalizeUrl(url: string) {
   if (!url) return '';
@@ -68,14 +68,14 @@ function setupAutoSync() {
 
     if (ms > 0) {
       autoSyncInterval = setInterval(async () => {
-        if (isAutoSyncing) return;
+        if (isCloudSyncing) return;
         const creds: any = store.get('cloud');
         if (creds?.url) {
-          isAutoSyncing = true;
+          isCloudSyncing = true;
           try {
             await performCloudSync(creds);
           } finally {
-            isAutoSyncing = false;
+            isCloudSyncing = false;
           }
         }
       }, ms);
@@ -151,6 +151,11 @@ async function performCloudSync(credentials: any) {
 type ProgressFn = (percent: number, message: string) => void
 
 async function performCloudSyncWithProgress(credentials: any, progress: ProgressFn) {
+  if (isCloudSyncing) {
+    return { success: false, message: 'Sync already in progress.' };
+  }
+  isCloudSyncing = true;
+
   try {
     progress(5, 'Connecting to Dune Server...')
     const cleanUrl = normalizeUrl(credentials.url)
@@ -199,8 +204,8 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
       await Promise.all(chunk.map(async (file) => {
         try {
           await uploadFile(cleanUrl, file.game, file.local, file.rel, syncId);
-        } catch (e) {
-          console.error(`Sync error on ${file.rel}:`, e);
+        } catch (e: any) {
+          console.error(`Sync error on ${file.rel}:`, e.message);
         }
       }));
     }
@@ -221,10 +226,17 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
   } catch (err: any) {
     progress(0, '')
     return { success: false, message: 'Sync failed: ' + (err.message || String(err)) }
+  } finally {
+    isCloudSyncing = false;
   }
 }
 
 async function performCloudRestoreWithProgress(credentials: any, progress: ProgressFn) {
+  if (isCloudSyncing) {
+    return { success: false, message: 'Sync already in progress.' };
+  }
+  isCloudSyncing = true;
+
   try {
     progress(5, 'Connecting to Dune Server...')
     const cleanUrl = normalizeUrl(credentials.url)
@@ -239,7 +251,6 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
       progress(overallPercent, `Checking server for: ${game.name}`);
 
       const listRes = await axios.get(`${cleanUrl}/api/list-files?game=${encodeURIComponent(game.name)}`);
-      // Server returns an array of file metadata objects: { path, name, size, modified, category }
       const files: { path: string; name: string; size: number }[] = listRes.data.files || [];
 
       if (files.length > 0) {
@@ -247,17 +258,23 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
         const expanded = expandPath(rawPath);
         if (!expanded) continue;
 
-        const restoreBase = (fs.existsSync(expanded) && !fs.statSync(expanded).isDirectory())
+        // CRITICAL BUG FIX: If 'expanded' is a direct file path, 'restoreBase' must be the parent directory.
+        // If 'expanded' is a directory, 'restoreBase' is the directory itself.
+        // If 'expanded' doesn't exist yet, we guess from the extension.
+        const exists = fs.existsSync(expanded);
+        const restoreBase = (exists && !fs.statSync(expanded).isDirectory()) || (!exists && path.extname(expanded))
           ? path.dirname(expanded)
           : expanded;
 
         for (let j = 0; j < files.length; j += CHUNK_SIZE) {
           const chunk = files.slice(j, j + CHUNK_SIZE);
           await Promise.all(chunk.map(async (file) => {
-            // Bug fix: file is a metadata object — use file.path, not the object directly
             const relPath = file.path;
             const target = path.join(restoreBase, relPath);
-            fs.mkdirSync(path.dirname(target), { recursive: true });
+            const targetDir = path.dirname(target);
+            if (!fs.existsSync(targetDir)) {
+              fs.mkdirSync(targetDir, { recursive: true });
+            }
 
             const response = await axios.get(
               `${cleanUrl}/api/download-file?game=${encodeURIComponent(game.name)}&path=${encodeURIComponent(relPath)}`,
@@ -278,6 +295,8 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
   } catch (err: any) {
     progress(0, '')
     return { success: false, message: 'Restore failed: ' + (err.message || String(err)) }
+  } finally {
+    isCloudSyncing = false;
   }
 }
 
