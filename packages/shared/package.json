@@ -1,0 +1,51 @@
+{
+  "name": "@dune/shared",
+  "version": "1.0.0",
+  "description": "Shared TypeScript types for Dune ecosystem — client (Electron) and server (Express) type contracts, IPC API definitions, and domain models",
+  "keywords": [
+    "dune",
+    "game-saves",
+    "electron",
+    "express",
+    "typescript",
+    "shared-types",
+    "ipc",
+    "playtime-tracking",
+    "achievements",
+    "howlongtobeat"
+  ],
+  "author": "Yashwin",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/just-for-death/dune.git",
+    "directory": "packages/shared"
+  },
+  "bugs": {
+    "url": "https://github.com/just-for-death/dune/issues"
+  },
+  "homepage": "https://github.com/just-for-death/dune#readme",
+  "files": [
+    "dist"
+  ],
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
