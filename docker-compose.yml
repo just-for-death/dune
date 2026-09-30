@@ -1,0 +1,44 @@
+services:
+  dune-server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    container_name: dune-server
+    restart: unless-stopped
+    ports:
+      - "3023:3030"
+    environment:
+      - NODE_ENV=production
+      - PORT=3030
+    volumes:
+      - ./data:/app/backend/data
+    depends_on:
+      ollama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3030/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - dune-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: dune-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - dune-net
+
+volumes:
+  ollama-data:
+    driver: local
+
+networks:
+  dune-net:
+    driver: bridge

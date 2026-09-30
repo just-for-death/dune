@@ -3,14 +3,15 @@ logs
 *.log
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
 node_modules
 dist
+!packages/server/frontend/dist/
 dist-ssr
+dist-electron
 *.local
+*.tsbuildinfo
 
 # Editor directories and files
 .vscode/*
@@ -22,4 +23,32 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-dist-electron
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Data (runtime, never commit)
+data/
+*.sqlite
+*.sqlite3
+playtime.json
+achievements.json
+dune.json
+
+# Test artifacts
+coverage/
+.nyc_output/
+test-data/
+test-saves/
+test-scanner/
+test-server-data/
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Cache
+.cache/
