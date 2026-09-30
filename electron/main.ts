@@ -490,6 +490,326 @@ ipcMain.handle('game:fetchArt', async (_event, id, name) => {
   }
 })
 
+// ── NEW IPC Handlers for Server Integration ─────────────────────────────────────
+
+// Playtime
+ipcMain.handle('playtime:record', async (_event, session) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/playtime`, session, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('playtime:summary', async (_event, game) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, summary: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const url = game ? `${cleanUrl}/api/playtime?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/playtime`
+    const res = await axios.get(url)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, summary: [] }
+  }
+})
+
+ipcMain.handle('playtime:recent', async (_event, limit) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, sessions: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const url = `${cleanUrl}/api/playtime/recent${limit ? `?limit=${limit}` : ''}`
+    const res = await axios.get(url)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, sessions: [] }
+  }
+})
+
+ipcMain.handle('playtime:total', async () => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, totalMinutes: 0 }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/playtime/total`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, totalMinutes: 0 }
+  }
+})
+
+// Achievements
+ipcMain.handle('achievements:get', async (_event, game) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, achievements: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/achievements/${encodeURIComponent(game)}`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, achievements: [] }
+  }
+})
+
+ipcMain.handle('achievements:summary', async (_event, game) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, summary: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const url = game ? `${cleanUrl}/api/achievements?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/achievements`
+    const res = await axios.get(url)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, summary: [] }
+  }
+})
+
+ipcMain.handle('achievements:recent', async (_event, limit) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, unlocks: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const url = `${cleanUrl}/api/achievements/recent${limit ? `?limit=${limit}` : ''}`
+    const res = await axios.get(url)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, unlocks: [] }
+  }
+})
+
+// HLTB
+ipcMain.handle('hltb:get', async (_event, gameName) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/hltb/${encodeURIComponent(gameName)}`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// AI Analysis
+ipcMain.handle('ai:analyze', async (_event, { gameName, files }) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/analyze-files-ai`, { gameName, files }, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// SteamGridDB Art
+ipcMain.handle('art:search', async (_event, query) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/search-art?query=${encodeURIComponent(query)}`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('art:auto-match', async () => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/auto-match-all`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// Local Sync
+ipcMain.handle('local-sync:trigger', async () => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/local-sync`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('local-sources:get', async () => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, sources: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/local-sources`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, sources: [] }
+  }
+})
+
+ipcMain.handle('local-sources:add', async (_event, sourcePath) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/local-sources`, { path: sourcePath }, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('local-sources:remove', async (_event, id) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.delete(`${cleanUrl}/api/local-sources/${id}`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// Remote Servers
+ipcMain.handle('remote-servers:get', async () => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, servers: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/remote-servers`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, servers: [] }
+  }
+})
+
+ipcMain.handle('remote-servers:add', async (_event, url) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/remote-servers`, { url }, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('remote-servers:remove', async (_event, id) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.delete(`${cleanUrl}/api/remote-servers/${id}`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// API Keys
+ipcMain.handle('api-keys:get', async () => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, keys: [] }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/api-keys`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, keys: [] }
+  }
+})
+
+ipcMain.handle('api-keys:add', async (_event, { key, description }) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/api-keys`, { key, description }, {
+      headers: { 'Content-Type': 'application/json' }
+    })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('api-keys:remove', async (_event, key) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.delete(`${cleanUrl}/api/api-keys/${encodeURIComponent(key)}`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// Ollama
+ipcMain.handle('ollama:models', async (_event, endpoint) => {
+  try {
+    const res = await axios.get(`${endpoint}/api/ollama-models?endpoint=${encodeURIComponent(endpoint)}`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, models: [] }
+  }
+})
+
+ipcMain.handle('ollama:health', async () => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/ollama-health`)
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 960,
