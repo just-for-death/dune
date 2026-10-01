@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import type { Game, Settings, LocalSource, RemoteServer } from '../types/index.js';
+import { hashApiKey, looksHashed, isValidApiKey as checkKey } from '../utils/crypto.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'dune.json');
@@ -146,11 +147,13 @@ function getApiKeys(): string[] {
   return readDB().settings.apiKeys || [];
 }
 
+/** Store only hashes — never plaintext. */
 function addApiKey(key: string, description = ''): void {
   const db = readDB();
   if (!db.settings.apiKeys) db.settings.apiKeys = [];
-  if (!db.settings.apiKeys.includes(key)) {
-    db.settings.apiKeys.push(key);
+  const hashed = hashApiKey(key);
+  if (!db.settings.apiKeys.includes(hashed)) {
+    db.settings.apiKeys.push(hashed);
     writeDB(db);
   }
 }
@@ -158,12 +161,45 @@ function addApiKey(key: string, description = ''): void {
 function removeApiKey(key: string): boolean {
   const db = readDB();
   const initialLength = db.settings.apiKeys?.length || 0;
-  db.settings.apiKeys = (db.settings.apiKeys || []).filter(k => k !== key);
+  const hashed = hashApiKey(key);
+  db.settings.apiKeys = (db.settings.apiKeys || []).filter(k => k !== hashed);
   if (db.settings.apiKeys.length !== initialLength) {
     writeDB(db);
     return true;
   }
   return false;
+}
+
+/** Constant-time check of a raw candidate against stored hashes. */
+function isValidApiKey(candidate: string | undefined | null): boolean {
+  return checkKey(candidate, getApiKeys());
+}
+
+/**
+ * One-way migration: hash any plaintext keys left from pre-hardening installs.
+ * Idempotent — already-hashed entries are untouched.
+ */
+function migrateApiKeys(): boolean {
+  const db = readDB();
+  const keys = db.settings.apiKeys || [];
+  let changed = false;
+  const migrated = keys.map(k => {
+    if (looksHashed(k)) return k;
+    changed = true;
+    return hashApiKey(k);
+  });
+  // Deduplicate in case two plaintext keys hashed identically
+  const deduped = [...new Set(migrated)];
+  if (changed || deduped.length !== keys.length) {
+    db.settings.apiKeys = deduped;
+    writeDB(db);
+    return true;
+  }
+  return false;
+}
+
+if (migrateApiKeys()) {
+  console.log('[DB] Migrated plaintext API keys to hashes.');
 }
 
 if (getApiKeys().length === 0) {
@@ -186,5 +222,6 @@ export const database = {
   removeRemoteServer,
   getApiKeys,
   addApiKey,
-  removeApiKey
+  removeApiKey,
+  isValidApiKey
 } as const;

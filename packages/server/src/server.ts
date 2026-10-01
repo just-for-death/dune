@@ -44,10 +44,22 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
       return res.status(400).json({ success: false, message: 'Game and path headers required' });
     }
 
+    // Upfront content-length guard (streaming guard in sync.ts is authoritative)
+    const contentLength = parseInt(req.headers['content-length'] || '0', 10);
+    const maxUploadBytes =
+      Math.max(1, parseInt(process.env.MAX_UPLOAD_MB || '500', 10)) * 1024 * 1024;
+    if (contentLength > maxUploadBytes) {
+      return res.status(413).json({ success: false, message: 'File exceeds upload size limit' });
+    }
+
     const result = await handleUploadFile(game, filePath, req, syncId);
+    if (!result.success && result.status) {
+      return res.status(result.status).json(result);
+    }
     res.json(result);
   } catch (e) {
-    res.status(500).json({ success: false, message: String(e) });
+    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
 
@@ -56,7 +68,8 @@ app.post('/api/local-sync', authMiddleware, async (_req, res) => {
     const result = await handleLocalSync();
     res.json(result);
   } catch (e) {
-    res.status(500).json({ success: false, message: String(e) });
+    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
 
@@ -72,7 +85,8 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
 
     res.download(fullPath);
   } catch (e) {
-    res.status(500).json({ success: false, message: String(e) });
+    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
 
@@ -88,7 +102,8 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
 
     res.download(fullPath);
   } catch (e) {
-    res.status(500).json({ success: false, message: String(e) });
+    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
 

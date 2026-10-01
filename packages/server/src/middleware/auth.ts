@@ -21,8 +21,7 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
     return;
   }
 
-  const validKeys = database.getApiKeys();
-  if (!validKeys.includes(apiKey)) {
+  if (!database.isValidApiKey(apiKey)) {
     res.status(403).json({ success: false, message: 'Invalid API key' });
     return;
   }
@@ -33,10 +32,9 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
 
 export function optionalAuthMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   const apiKey = req.headers['x-api-key'] as string || req.query.api_key as string;
-  
+
   if (apiKey) {
-    const validKeys = database.getApiKeys();
-    if (validKeys.includes(apiKey)) {
+    if (database.isValidApiKey(apiKey)) {
       req.apiKey = apiKey;
     }
   }

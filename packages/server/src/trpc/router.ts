@@ -1,6 +1,6 @@
-import { initTRPC, TRPCError } from '@trpc/server';
+import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import type { TRPCContext } from './context.js';
+import { router, publicProcedure, authedProcedure } from './trpc.js';
 import { database } from '../db/index.js';
 import { handleUploadFile, handleLocalSync } from '../services/sync.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from '../services/ollama.js';
@@ -14,11 +14,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
 
-const t = initTRPC.context<TRPCContext>().create();
-
-export const router = t.router;
-export const publicProcedure = t.procedure;
-
 const gameInput = z.object({
   name: z.string().min(1),
   winPath: z.string().optional(),
@@ -28,14 +23,15 @@ const gameInput = z.object({
   thumbnail: z.string().optional(),
 });
 
-export const appRouter = t.router({
+
+export const appRouter = router({
   games: {
-    list: publicProcedure.query(async () => {
+    list: authedProcedure.query(async () => {
       const games = database.getGames();
       return { success: true, games };
     }),
 
-    get: publicProcedure
+    get: authedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => {
         const games = database.getGames();
@@ -44,7 +40,7 @@ export const appRouter = t.router({
         return { success: true, game };
       }),
 
-    add: publicProcedure
+    add: authedProcedure
       .input(gameInput)
       .mutation(async ({ input }) => {
         const games = await database.upsertGame({
@@ -59,7 +55,7 @@ export const appRouter = t.router({
         return { success: true, games };
       }),
 
-    remove: publicProcedure
+    remove: authedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         const deleted = database.deleteGame(input.id);
@@ -69,23 +65,23 @@ export const appRouter = t.router({
   },
 
   sync: {
-    export: publicProcedure.mutation(async () => {
+    export: authedProcedure.mutation(async () => {
       return { success: true, message: 'Use REST endpoint for file download' };
     }),
 
-    push: publicProcedure
+    push: authedProcedure
       .input(z.object({ url: z.string().url() }))
       .mutation(async () => {
         return { success: true, message: 'Use REST endpoint for file upload with streaming' };
       }),
 
-    restore: publicProcedure
+    restore: authedProcedure
       .input(z.object({ url: z.string().url() }))
       .mutation(async ({ input }) => {
         return { success: true, message: 'Use REST endpoint for restore' };
       }),
 
-    test: publicProcedure
+    test: authedProcedure
       .input(z.object({ url: z.string().url() }))
       .mutation(async ({ input }) => {
         try {
@@ -98,14 +94,14 @@ export const appRouter = t.router({
         }
       }),
 
-    local: publicProcedure.mutation(async () => {
+    local: authedProcedure.mutation(async () => {
       const result = await handleLocalSync();
       return result;
     }),
   },
 
   files: {
-    list: publicProcedure
+    list: authedProcedure
       .input(z.object({ game: z.string() }))
       .query(async ({ input }) => {
         const gameName = path.basename(input.game);
@@ -115,14 +111,14 @@ export const appRouter = t.router({
         return { success: true, files };
       }),
 
-    download: publicProcedure
+    download: authedProcedure
       .input(z.object({ game: z.string(), path: z.string() }))
       .query(async ({ input }) => {
         return { success: true, message: 'Use REST endpoint for file download' };
       }),
 
     versions: {
-      list: publicProcedure
+      list: authedProcedure
         .input(z.object({ game: z.string() }))
         .query(async ({ input }) => {
           const gameName = path.basename(input.game);
@@ -136,7 +132,7 @@ export const appRouter = t.router({
           return { success: true, versions };
         }),
 
-      files: publicProcedure
+      files: authedProcedure
         .input(z.object({ game: z.string(), versionId: z.string() }))
         .query(async ({ input }) => {
           const gameName = path.basename(input.game);
@@ -146,7 +142,7 @@ export const appRouter = t.router({
           return { success: true, files };
         }),
 
-      download: publicProcedure
+      download: authedProcedure
         .input(z.object({ game: z.string(), versionId: z.string(), path: z.string() }))
         .query(async ({ input }) => {
           return { success: true, message: 'Use REST endpoint for version file download' };
@@ -155,7 +151,7 @@ export const appRouter = t.router({
   },
 
   art: {
-    search: publicProcedure
+    search: authedProcedure
       .input(z.object({ query: z.string().min(1) }))
       .query(async ({ input }) => {
         const settings = database.getSettings();
@@ -165,7 +161,7 @@ export const appRouter = t.router({
         return result;
       }),
 
-    autoMatch: publicProcedure.mutation(async () => {
+    autoMatch: authedProcedure.mutation(async () => {
       const settings = database.getSettings();
       const apiKey = settings.steamGridApiKey;
       if (!apiKey) throw new TRPCError({ code: 'UNAUTHORIZED', message: 'SteamGridDB API key not configured' });
@@ -174,7 +170,7 @@ export const appRouter = t.router({
       return { success: true, count };
     }),
 
-    set: publicProcedure
+    set: authedProcedure
       .input(z.object({ gameName: z.string(), url: z.string().url() }))
       .mutation(async ({ input }) => {
         const games = database.getGames();
@@ -185,7 +181,7 @@ export const appRouter = t.router({
         return { success: true };
       }),
 
-    upload: publicProcedure
+    upload: authedProcedure
       .input(z.object({ gameName: z.string(), file: z.string() }))
       .mutation(async ({ input }) => {
         return { success: true, message: 'Use REST endpoint for file upload' };
@@ -193,7 +189,7 @@ export const appRouter = t.router({
   },
 
   ai: {
-    analyze: publicProcedure
+    analyze: authedProcedure
       .input(z.object({
         gameName: z.string(),
         files: z.array(z.object({ path: z.string(), size: z.number(), category: z.string() }))
@@ -214,14 +210,14 @@ export const appRouter = t.router({
         return result;
       }),
 
-    health: publicProcedure.query(async () => {
+    health: authedProcedure.query(async () => {
       const settings = database.getSettings();
       const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
       const model = settings.ollamaModel || 'phi4-mini:latest';
       return await checkModelStatus(endpoint, model);
     }),
 
-    models: publicProcedure
+    models: authedProcedure
       .input(z.object({ endpoint: z.string().url() }))
       .query(async ({ input }) => {
         return await fetchModels(input.endpoint);
@@ -229,13 +225,13 @@ export const appRouter = t.router({
   },
 
   hltb: {
-    get: publicProcedure
+    get: authedProcedure
       .input(z.object({ gameName: z.string() }))
       .query(async ({ input }) => {
         return await getHLTBTimes(input.gameName);
       }),
 
-    bulk: publicProcedure
+    bulk: authedProcedure
       .input(z.object({ gameNames: z.array(z.string()) }))
       .query(async ({ input }) => {
         const results = await bulkFetchHLTB(input.gameNames);
@@ -244,7 +240,7 @@ export const appRouter = t.router({
   },
 
   playtime: {
-    record: publicProcedure
+    record: authedProcedure
       .input(z.object({
         game: z.string(),
         platform: z.string(),
@@ -255,49 +251,49 @@ export const appRouter = t.router({
         return recordPlaytimeSession(input.game, input.platform, input.sessionStart, input.sessionEnd);
       }),
 
-    summary: publicProcedure
+    summary: authedProcedure
       .input(z.object({ game: z.string().optional() }))
       .query(async ({ input }) => {
         const summary = getPlaytimeSummary(input.game);
         return { success: true, summary };
       }),
 
-    recent: publicProcedure
+    recent: authedProcedure
       .input(z.object({ limit: z.number().int().positive().max(100).default(50) }))
       .query(async ({ input }) => {
         const sessions = getRecentSessions(input.limit);
         return { success: true, sessions };
       }),
 
-    total: publicProcedure.query(async () => {
+    total: authedProcedure.query(async () => {
       const total = getTotalPlaytime();
       return { success: true, totalMinutes: total };
     }),
   },
 
   achievements: {
-    get: publicProcedure
+    get: authedProcedure
       .input(z.object({ game: z.string() }))
       .query(async ({ input }) => {
         const achievements = getGameAchievements(input.game);
         return { success: true, achievements };
       }),
 
-    summary: publicProcedure
+    summary: authedProcedure
       .input(z.object({ game: z.string().optional() }))
       .query(async ({ input }) => {
         const summary = getAchievementSummary(input.game);
         return { success: true, summary };
       }),
 
-    recent: publicProcedure
+    recent: authedProcedure
       .input(z.object({ limit: z.number().int().positive().max(100).default(20) }))
       .query(async ({ input }) => {
         const unlocks = getRecentUnlocks(input.limit);
         return { success: true, unlocks };
       }),
 
-    sentinelWebhook: publicProcedure
+    sentinelWebhook: authedProcedure
       .input(z.object({
         game: z.string(),
         achievements: z.array(z.object({
@@ -316,11 +312,11 @@ export const appRouter = t.router({
   },
 
   localSources: {
-    list: publicProcedure.query(async () => {
+    list: authedProcedure.query(async () => {
       return { success: true, sources: database.getLocalSources() };
     }),
 
-    add: publicProcedure
+    add: authedProcedure
       .input(z.object({ path: z.string() }))
       .mutation(async ({ input }) => {
         if (!fs.existsSync(input.path)) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Path does not exist' });
@@ -328,7 +324,7 @@ export const appRouter = t.router({
         return { success: true, source };
       }),
 
-    remove: publicProcedure
+    remove: authedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         const deleted = database.removeLocalSource(input.id);
@@ -338,18 +334,18 @@ export const appRouter = t.router({
   },
 
   remoteServers: {
-    list: publicProcedure.query(async () => {
+    list: authedProcedure.query(async () => {
       return { success: true, servers: database.getRemoteServers() };
     }),
 
-    add: publicProcedure
+    add: authedProcedure
       .input(z.object({ url: z.string().url() }))
       .mutation(async ({ input }) => {
         const server = database.addRemoteServer(input.url);
         return { success: true, server };
       }),
 
-    remove: publicProcedure
+    remove: authedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         const deleted = database.removeRemoteServer(input.id);
@@ -359,18 +355,18 @@ export const appRouter = t.router({
   },
 
   apiKeys: {
-    list: publicProcedure.query(async () => {
+    list: authedProcedure.query(async () => {
       return { success: true, keys: database.getApiKeys().map(k => k.replace(/./g, '*')) };
     }),
 
-    add: publicProcedure
+    add: authedProcedure
       .input(z.object({ key: z.string().min(1), description: z.string().optional() }))
       .mutation(async ({ input }) => {
         database.addApiKey(input.key, input.description);
         return { success: true };
       }),
 
-    remove: publicProcedure
+    remove: authedProcedure
       .input(z.object({ key: z.string() }))
       .mutation(async ({ input }) => {
         const deleted = database.removeApiKey(input.key);
@@ -380,12 +376,12 @@ export const appRouter = t.router({
   },
 
   settings: {
-    get: publicProcedure.query(async () => {
+    get: authedProcedure.query(async () => {
       const settings = database.getSettings();
       return { success: true, settings: { ...settings, apiKeys: settings.apiKeys.map(() => '****') } };
     }),
 
-    update: publicProcedure
+    update: authedProcedure
       .input(z.object({
         maxVersions: z.number().int().positive().max(100).optional(),
         steamGridApiKey: z.string().optional(),
