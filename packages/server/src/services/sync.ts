@@ -38,11 +38,38 @@ export async function handleUploadFile(
   filePath: string,
   fileStream: NodeJS.ReadableStream,
   syncId: string
-): Promise<{ success: boolean; message: string }> {
+): Promise<{ success: boolean; message: string; status?: number }> {
   try {
     const finalPath = validateGamePath(gameName, filePath);
     const finalDir = path.dirname(finalPath);
-    
+
+    const maxUploadBytes =
+      Math.max(1, parseInt(process.env.MAX_UPLOAD_MB || '500', 10)) * 1024 * 1024;
+    const maxFilesPerGame =
+      Math.max(1, parseInt(process.env.MAX_FILES_PER_GAME || '5000', 10));
+
+    // Per-game file-count cap (cheap guard against zip-bombs / runaway syncs)
+    try {
+      const gameRoot = getGameRoot(gameName);
+      if (fs.existsSync(gameRoot) && !fs.existsSync(finalPath)) {
+        let count = 0;
+        const stack: string[] = [gameRoot];
+        while (stack.length > 0) {
+          const dir = stack.pop() as string;
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (entry.name === '.versions') continue;
+            if (entry.isSymbolicLink()) continue;
+            if (entry.isDirectory()) stack.push(path.join(dir, entry.name));
+            else if (++count >= maxFilesPerGame) {
+              return { success: false, message: `Game already has ${maxFilesPerGame} files`, status: 413 };
+            }
+          }
+        }
+      }
+    } catch {
+      // Best-effort guard only; never block uploads on counting errors
+    }
+
     if (!fs.existsSync(finalDir)) {
       fs.mkdirSync(finalDir, { recursive: true });
     }
@@ -75,6 +102,20 @@ export async function handleUploadFile(
 
     await new Promise<void>((resolve, reject) => {
       const writer = fs.createWriteStream(finalPath);
+      let bytes = 0;
+      const destroyStream = (s: unknown) => {
+        const d = (s as { destroy?: () => void }).destroy;
+        if (typeof d === 'function') d.call(s);
+      };
+      fileStream.on('data', (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > maxUploadBytes) {
+          writer.destroy();
+          destroyStream(fileStream);
+          try { fs.unlinkSync(finalPath); } catch { /* partial file cleanup */ }
+          reject(new Error(`File exceeds ${Math.round(maxUploadBytes / 1024 / 1024)} MB limit`));
+        }
+      });
       fileStream.pipe(writer);
       fileStream.on('error', reject);
       writer.on('finish', resolve);
@@ -127,7 +168,8 @@ export async function handleUploadFile(
     return { success: true, message: `Uploaded ${gameName} saves` };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return { success: false, message };
+    const status = message.includes('exceeds') || message.includes('already has') ? 413 : undefined;
+    return status ? { success: false, message, status } : { success: false, message };
   }
 }
 
