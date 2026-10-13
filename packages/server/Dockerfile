@@ -1,33 +1,33 @@
-# ── Stage 1: Build shared + backend TypeScript ──────────────────────────
+# Dune server image — npm-workspaces aware.
+# NOTE: `npm ci` only works from the repo root (single root lockfile);
+# per-directory installs fail, so all install steps run at /build root.
+# Build context is the repo root (see docker-compose.yml).
+
+# ── Stage 1: Install + build TypeScript ─────────────────────────────────
 FROM node:20-alpine AS backend-builder
 
 WORKDIR /build
 
-# Shared package first (server depends on its types)
-COPY packages/shared/package*.json ./packages/shared/
-RUN cd packages/shared && npm ci --ignore-scripts
+# .npmrc carries legacy-peer-deps (required for a clean install)
+COPY package.json package-lock.json .npmrc ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/server/package.json ./packages/server/
+COPY packages/client/package.json ./packages/client/
+RUN npm ci --ignore-scripts
 
+# Shared first: server resolves its types through the file: symlink
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/shared/src ./packages/shared/src
-RUN cd packages/shared && npx tsc
-
-# Server (uses workspace shared via file: link — install with shared built)
-COPY packages/server/package*.json ./packages/server/
-RUN cd packages/server && npm ci --ignore-scripts
+RUN npm run build --workspace=@dune/shared
 
 COPY packages/server/tsconfig.json ./packages/server/
 COPY packages/server/src ./packages/server/src
-RUN cd packages/server && npx tsc
+RUN npm run build --workspace=@dune/server
 
-# ── Stage 2: Production dependencies ────────────────────────────────────
-FROM node:20-alpine AS deps
+# Drop devDependencies for the runtime image
+RUN npm prune --omit=dev && npm cache clean --force
 
-WORKDIR /app/backend
-
-COPY packages/server/package*.json ./
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-
-# ── Stage 3: Runtime ────────────────────────────────────────────────────
+# ── Stage 2: Runtime ────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
 # Security: upgrade + minimal tools (unzip/zip for save extraction)
@@ -40,14 +40,21 @@ RUN addgroup -S dune && adduser -S dune -G dune
 
 WORKDIR /app/backend
 
-# Copy production node_modules
-COPY --from=deps /app/backend/node_modules ./node_modules
+# Hoisted prod node_modules (all workspaces' prod deps; client deps ride
+# along — harmless, single-user image; keeps COPY simple and robust)
+COPY --from=backend-builder /build/node_modules ./node_modules
 
-# Copy built backend
+# Materialize the file: dependency (a symlink in the build stage that
+# would otherwise dangle here)
+RUN rm -rf ./node_modules/@dune/shared && mkdir -p ./node_modules/@dune/shared
+COPY --from=backend-builder /build/packages/shared/dist ./node_modules/@dune/shared/dist
+COPY --from=backend-builder /build/packages/shared/package.json ./node_modules/@dune/shared/package.json
+
+# Built backend
 COPY --from=backend-builder /build/packages/server/dist ./dist
-COPY packages/server/package.json ./
+COPY --from=backend-builder /build/packages/server/package.json ./
 
-# Copy pre-built web dashboard (optional — API works without it)
+# Pre-built web dashboard (optional — API works without it)
 COPY packages/server/frontend/dist ./frontend/dist
 
 # Data directories (mounted as volumes in production)

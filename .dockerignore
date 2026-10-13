@@ -1,0 +1,28 @@
+# Keep the build context small — only what Docker stages COPY explicitly.
+node_modules
+dist
+dist-electron
+release
+data
+backups
+*.log
+.git
+.gitignore
+.vscode
+.idea
+coverage
+.nyc_output
+test-data
+test-saves
+test-scanner
+test-server-data
+*.tsbuildinfo
+# Per-package build outputs (rebuilt inside the image)
+packages/*/dist
+packages/*/dist-electron
+packages/*/release
+packages/*/coverage
+packages/*/data
+# Dev-only frontend sources are not needed; the prebuilt dashboard is
+# explicitly re-included below.
+!packages/server/frontend/dist
