@@ -4,6 +4,7 @@ import axios from 'axios';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { database } from '../db/index.js';
+import { logger } from '../middleware/logging.js';
 
 const execFileAsync = promisify(execFile);
 const SAVES_DIR = path.join(process.cwd(), 'data', 'saves');
@@ -36,13 +37,13 @@ export async function triggerRemoteSync(syncedGames: string[]): Promise<void> {
             maxContentLength: Infinity,
             timeout: 300000
           });
-          console.log(`[RemoteSync] Synced ${gameName} to ${server.url}`);
+          logger.info({ game: gameName, server: server.url }, 'Remote sync pushed game');
         } catch (err) {
-          console.error(`[RemoteSync] Failed to push ${gameName} to ${server.url}:`, err instanceof Error ? err.message : String(err));
+          logger.error({ err, game: gameName, server: server.url }, 'Remote sync push failed');
         }
       }
     } catch (err) {
-      console.error(`[RemoteSync] Failed to zip ${gameName}:`, err instanceof Error ? err.message : String(err));
+      logger.error({ err, game: gameName }, 'Remote sync zip failed');
     } finally {
       if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
     }

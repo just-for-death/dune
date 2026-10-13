@@ -6,6 +6,7 @@ import { database, writeDB } from '../db/index.js';
 import { getGameRoot, validateGamePath } from '../utils/path.js';
 import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
+import { logger } from '../middleware/logging.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -133,7 +134,7 @@ export async function handleUploadFile(
         fs.rmSync(tempExtractDir, { recursive: true });
         fs.unlinkSync(finalPath);
       } catch (err) {
-        console.error('Failed to extract saves.zip:', err);
+        logger.error({ err }, 'Failed to extract saves.zip');
       }
     }
 
@@ -161,7 +162,7 @@ export async function handleUploadFile(
     writeDB({ games, settings: database.getSettings() });
 
     setImmediate(() => {
-      triggerRemoteSync([gameName]).catch(err => console.error('Remote sync error:', err));
+      triggerRemoteSync([gameName]).catch(err => logger.error({ err }, 'Remote sync error'));
     });
 
     return { success: true, message: `Uploaded ${gameName} saves` };
@@ -208,7 +209,7 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
   if (syncedGames.length > 0) {
     const uniqueGames = [...new Set(syncedGames)];
     setImmediate(() => {
-      triggerRemoteSync(uniqueGames).catch(err => console.error('Remote sync error:', err));
+      triggerRemoteSync(uniqueGames).catch(err => logger.error({ err }, 'Remote sync error'));
     });
   }
 

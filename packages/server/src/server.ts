@@ -7,6 +7,7 @@ import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './m
 import { getGameRoot } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
 import { handler as trpcHandler } from './trpc/http.js';
+import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,7 @@ const app = express();
 app.use(helmetConfig);
 app.use(corsConfig);
 app.use(express.json({ limit: '10mb' }));
+app.use(requestLogger);
 app.use(apiRateLimiter);
 app.use(optionalAuthMiddleware);
 
@@ -51,7 +53,7 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
     }
     res.json(result);
   } catch (e) {
-    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
     res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
@@ -61,7 +63,7 @@ app.post('/api/local-sync', authMiddleware, async (_req, res) => {
     const result = await handleLocalSync();
     res.json(result);
   } catch (e) {
-    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    logger.error({ reqId: (_req as LoggedRequest).reqId, err: e }, 'API internal error');
     res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
@@ -78,7 +80,7 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
 
     res.download(fullPath);
   } catch (e) {
-    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
     res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
@@ -95,7 +97,7 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
 
     res.download(fullPath);
   } catch (e) {
-    console.error('[API] Internal error:', e instanceof Error ? e.message : String(e));
+    logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
     res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
@@ -108,8 +110,8 @@ if (fs.existsSync(FRONTEND_DIR)) {
 
 const PORT = parseInt(process.env.PORT || '3030', 10);
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Dune Server] Listening on port ${PORT}`);
-  console.log(`[Dune Server] Frontend: ${fs.existsSync(FRONTEND_DIR) ? 'served' : 'not built'}`);
-  console.log(`[Dune Server] Data dir: ${path.join(process.cwd(), 'data')}`);
-  console.log(`[Dune Server] tRPC endpoint: http://0.0.0.0:${PORT}/trpc`);
+  logger.info(
+    { port: PORT, frontend: fs.existsSync(FRONTEND_DIR), dataDir: path.join(process.cwd(), 'data') },
+    'Dune Server listening',
+  );
 });

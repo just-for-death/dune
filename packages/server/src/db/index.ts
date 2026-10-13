@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { Game, Settings, LocalSource, RemoteServer } from '../types/index.js';
 import { hashApiKey, looksHashed, isValidApiKey as checkKey } from '../utils/crypto.js';
+import { logger } from '../middleware/logging.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'dune.json');
@@ -199,13 +200,14 @@ function migrateApiKeys(): boolean {
 }
 
 if (migrateApiKeys()) {
-  console.log('[DB] Migrated plaintext API keys to hashes.');
+  logger.info('Migrated plaintext API keys to hashes');
 }
 
 if (getApiKeys().length === 0) {
   const defaultKey = 'dune-dev-key-' + Date.now();
   addApiKey(defaultKey, 'Default development key');
-  console.log(`[DB] Generated default API key: ${defaultKey}`);
+  logger.warn('Generated default API key — replace it via apiKeys.add and delete this one');
+  logger.info({ apiKey: defaultKey }, 'Default API key (shown once)');
 }
 
 export const database = {

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { logger } from '../middleware/logging.js';
 
 export interface SteamGridDBResponse {
   success: boolean;
@@ -20,7 +21,7 @@ export async function searchGame(apiKey: string, query: string): Promise<{ id: n
     return { id: response.data.data[0].id, name: response.data.data[0].name };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('SteamGridDB search failed:', message);
+    logger.warn({ err: message, query }, 'SteamGridDB search failed');
     return null;
   }
 }
@@ -39,7 +40,7 @@ export async function getGridImages(apiKey: string, gameId: number): Promise<str
     return response.data.data.map((g: { url: string }) => g.url);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('SteamGridDB grids failed:', message);
+    logger.warn({ err: message, gameId }, 'SteamGridDB grids failed');
     return [];
   }
 }
