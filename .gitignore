@@ -44,6 +44,7 @@ test-data/
 test-saves/
 test-scanner/
 test-server-data/
+backups/
 
 # OS
 Thumbs.db
