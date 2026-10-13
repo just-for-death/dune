@@ -103,17 +103,25 @@ export async function handleUploadFile(
     }
 
     await new Promise<void>((resolve, reject) => {
-      const writer = fs.createWriteStream(finalPath);
-      let bytes = 0;
       const destroyStream = (s: unknown) => {
         const d = (s as { destroy?: () => void }).destroy;
         if (typeof d === 'function') d.call(s);
       };
+      // Open synchronously: createWriteStream opens lazily/async, and an
+      // unlink issued before that open completes would be undone when the
+      // pending open recreates the file (flaky leftover partial uploads).
+      const fd = fs.openSync(finalPath, 'w');
+      const writer = fs.createWriteStream(finalPath, { fd, autoClose: true });
+      let bytes = 0;
+      let rejected = false;
       fileStream.on('data', (chunk: Buffer) => {
+        if (rejected) return;
         bytes += chunk.length;
         if (bytes > maxUploadBytes) {
-          writer.destroy();
+          rejected = true;
+          fileStream.unpipe(writer);
           destroyStream(fileStream);
+          writer.destroy();
           try { fs.unlinkSync(finalPath); } catch { /* partial file cleanup */ }
           reject(new Error(`File exceeds ${Math.round(maxUploadBytes / 1024 / 1024)} MB limit`));
         }
