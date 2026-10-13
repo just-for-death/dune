@@ -57,5 +57,6 @@
       "category": "Game"
     }
   },
-  "description": "Dune \u2014 game save sync desktop client (Electron)"
+  "description": "Dune \u2014 game save sync desktop client (Electron)",
+  "homepage": "https://github.com/just-for-death/dune#readme"
 }
