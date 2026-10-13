@@ -1,9 +1,18 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
 import { Readable } from 'node:stream';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
-import { handleUploadFile } from './sync.js';
-import { getGameRoot } from '../utils/path.js';
+
+// Isolate ALL side effects BEFORE importing app modules (static imports hoist).
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-sync-test-'));
+process.env.API_KEY_SECRET = 'sync-test-secret-0123456789abcdef';
+
+const { handleUploadFile, handleLocalSync } = await import('./sync.js');
+const { getGameRoot } = await import('../utils/path.js');
+const { database } = await import('../db/index.js');
+
+const TMP = process.env.DATA_DIR as string;
 
 const GAME_A = 'UploadLimitSizeGame';
 const GAME_B = 'UploadLimitCountGame';
@@ -20,6 +29,12 @@ afterEach(() => {
     const dir = getGameRoot(g);
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+afterAll(() => {
+  delete process.env.DATA_DIR;
+  delete process.env.API_KEY_SECRET;
+  fs.rmSync(TMP, { recursive: true, force: true });
 });
 
 function streamOf(bytes: number): Readable {
@@ -54,5 +69,37 @@ describe('handleUploadFile limits', () => {
     expect(res.success).toBe(false);
     expect(res.status).toBe(413);
     expect(fs.existsSync(path.join(root, 'c.sav'))).toBe(false);
+  });
+});
+
+describe('handleLocalSync', () => {
+  it('syncs save folders from local sources and is idempotent', async () => {
+    const src = path.join(TMP, 'win-mount', 'Hero Saves');
+    fs.mkdirSync(src, { recursive: true });
+    fs.writeFileSync(path.join(src, 'slot1.sav'), 'hero-data');
+    const added = database.addLocalSource(path.join(TMP, 'win-mount'));
+    try {
+      const first = await handleLocalSync();
+      expect(first.success).toBe(true);
+      expect(first.count).toBeGreaterThanOrEqual(1);
+      expect(first.games).toContain('Hero Saves');
+
+      const second = await handleLocalSync();
+      expect(second.count).toBe(0);
+    } finally {
+      database.removeLocalSource(added.id);
+      const dir = getGameRoot('Hero Saves');
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips missing sources without failing', async () => {
+    const added = database.addLocalSource(path.join(TMP, 'does-not-exist'));
+    try {
+      const res = await handleLocalSync();
+      expect(res.success).toBe(true);
+    } finally {
+      database.removeLocalSource(added.id);
+    }
   });
 });

@@ -44,7 +44,10 @@ test-data/
 test-saves/
 test-scanner/
 test-server-data/
+test-results/
+playwright-report/
 backups/
+release/
 
 # OS
 Thumbs.db
