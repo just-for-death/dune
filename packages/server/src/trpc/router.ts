@@ -2,14 +2,13 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, publicProcedure, authedProcedure } from './trpc.js';
 import { database } from '../db/index.js';
-import { handleUploadFile, handleLocalSync } from '../services/sync.js';
+import { handleLocalSync } from '../services/sync.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from '../services/ollama.js';
 import { getHLTBTimes, bulkFetchHLTB } from '../services/hltb.js';
 import { searchArt, autoMatchAll } from '../services/steamGridDB.js';
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from '../services/playtime.js';
-import { upsertAchievements, getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from '../services/achievements.js';
-import { triggerRemoteSync } from '../services/remoteSync.js';
-import { normalizeUrl, getGameRoot, validateGamePath, listFilesInDir } from '../utils/path.js';
+import { getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from '../services/achievements.js';
+import { normalizeUrl, getGameRoot, listFilesInDir } from '../utils/path.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
@@ -77,7 +76,7 @@ export const appRouter = router({
 
     restore: authedProcedure
       .input(z.object({ url: z.string().url() }))
-      .mutation(async ({ input }) => {
+      .mutation(async () => {
         return { success: true, message: 'Use REST endpoint for restore' };
       }),
 
@@ -89,8 +88,8 @@ export const appRouter = router({
           const res = await axios.get(`${cleanUrl}/api/saves`);
           if (res.data.success) return { success: true, message: 'Connection successful' };
           return { success: false, message: 'Server returned error' };
-        } catch (err: any) {
-          return { success: false, message: err.message };
+        } catch (err: unknown) {
+          return { success: false, message: err instanceof Error ? err.message : String(err) };
         }
       }),
 
@@ -113,7 +112,7 @@ export const appRouter = router({
 
     download: authedProcedure
       .input(z.object({ game: z.string(), path: z.string() }))
-      .query(async ({ input }) => {
+      .query(async () => {
         return { success: true, message: 'Use REST endpoint for file download' };
       }),
 
@@ -144,7 +143,7 @@ export const appRouter = router({
 
       download: authedProcedure
         .input(z.object({ game: z.string(), versionId: z.string(), path: z.string() }))
-        .query(async ({ input }) => {
+        .query(async () => {
           return { success: true, message: 'Use REST endpoint for version file download' };
         }),
     },
@@ -183,7 +182,7 @@ export const appRouter = router({
 
     upload: authedProcedure
       .input(z.object({ gameName: z.string(), file: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async () => {
         return { success: true, message: 'Use REST endpoint for file upload' };
       }),
   },

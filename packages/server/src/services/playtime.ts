@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { writeDB } from '../db/index.js';
 
 const PLAYTIME_DB = path.join(process.cwd(), 'data', 'playtime.json');
 

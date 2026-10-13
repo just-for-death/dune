@@ -1,19 +1,9 @@
 import axios from 'axios';
-import * as fs from 'fs';
-import * as path from 'path';
-
-const CACHE_DIR = path.join(process.cwd(), 'data', 'steamgriddb-cache');
 
 export interface SteamGridDBResponse {
   success: boolean;
   results?: string[];
   message?: string;
-}
-
-function ensureCacheDir(): void {
-  if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-  }
 }
 
 export async function searchGame(apiKey: string, query: string): Promise<{ id: number; name: string } | null> {

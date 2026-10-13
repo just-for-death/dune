@@ -1,10 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import axios from 'axios';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { database, writeDB } from '../db/index.js';
-import { normalizeUrl, getGameRoot, validateGamePath } from '../utils/path.js';
+import { getGameRoot, validateGamePath } from '../utils/path.js';
 import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
 

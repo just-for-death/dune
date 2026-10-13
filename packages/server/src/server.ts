@@ -2,17 +2,10 @@ import express from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
-import { database } from './db/index.js';
 import { authMiddleware, optionalAuthMiddleware, AuthenticatedRequest } from './middleware/auth.js';
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
-import { normalizeUrl, getGameRoot, validateGamePath, listFilesInDir } from './utils/path.js';
+import { getGameRoot } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
-import { analyzeFilesAI, checkModelStatus, fetchModels } from './services/ollama.js';
-import { getHLTBTimes, bulkFetchHLTB } from './services/hltb.js';
-import { searchArt, autoMatchAll } from './services/steamGridDB.js';
-import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from './services/playtime.js';
-import { upsertAchievements, getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from './services/achievements.js';
-import { triggerRemoteSync } from './services/remoteSync.js';
 import { handler as trpcHandler } from './trpc/http.js';
 
 const __filename = fileURLToPath(import.meta.url);

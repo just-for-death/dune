@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { getGameRoot, getFileCategory } from '../utils/path.js';
+import { getFileCategory } from '../utils/path.js';
 
 const SAVE_EXTS = ['.sav', '.bin', '.dat', '.json', '.xml', '.cfg', '.ini', '.txt', '.sl2', '.prof', '.sqlite', '.db', '.rpgsave'];
 

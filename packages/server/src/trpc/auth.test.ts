@@ -8,7 +8,7 @@ const baseCtx = {
   db: [],
   settings: database.getSettings(),
   userId: undefined,
-} as const;
+};
 
 const testRouter = router({
   pub: publicProcedure.query(() => 'public-ok'),

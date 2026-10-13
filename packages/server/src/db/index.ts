@@ -148,7 +148,7 @@ function getApiKeys(): string[] {
 }
 
 /** Store only hashes — never plaintext. */
-function addApiKey(key: string, description = ''): void {
+function addApiKey(key: string, _description = ''): void {
   const db = readDB();
   if (!db.settings.apiKeys) db.settings.apiKeys = [];
   const hashed = hashApiKey(key);
