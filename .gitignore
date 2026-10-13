@@ -52,3 +52,29 @@ Desktop.ini
 
 # Cache
 .cache/
+
+# AI assistant local workspace (never commit)
+.ai/
+.ai-cache/
+.cursor/
+.windsurf/
+.antigravity/
+.cline/
+.roo/
+opencode.json
+CLAUDE.local.md
+AGENTS.local.md
+
+# Local task / plan / audit working notes (never commit; kept on disk only)
+docs/AI_HANDOFF.md
+docs/PROD_BASELINE.md
+docs/API_SNAPSHOT.md
+docs/PRODUCTION_PLAN.md
+docs/*AUDIT*.md
+docs/*PLAN*.md
+docs/TASKS*.md
+docs/TODO*.md
+AUDIT*.md
+PLAN*.md
+TASKS*.md
+TODO*.md
