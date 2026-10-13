@@ -1,8 +1,8 @@
 {
   "name": "@dune/server",
-  "version": "1.0.0",
+  "version": "0.1.0-beta.1",
   "author": "Yashwin",
-  "description": "Dune Server — Express + tRPC backend for game save sync",
+  "description": "Dune Server \u2014 Express + tRPC backend for game save sync",
   "main": "dist/server.js",
   "type": "module",
   "scripts": {
