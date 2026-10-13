@@ -61,7 +61,7 @@ ENV PORT=3030
 EXPOSE 3030
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3030/health || exit 1
+  CMD wget -qO- http://127.0.0.1:3030/ready || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "dist/server.js"]

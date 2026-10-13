@@ -16,7 +16,7 @@ services:
       ollama:
         condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3030/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3030/ready"]
       interval: 30s
       timeout: 5s
       retries: 3

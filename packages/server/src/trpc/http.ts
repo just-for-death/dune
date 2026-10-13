@@ -10,10 +10,3 @@ export const handler = createHTTPHandler({
     logger.error({ err: error }, 'tRPC error');
   },
 });
-
-// Health check endpoint (non-tRPC)
-export async function healthCheck(): Promise<Response> {
-  return new Response(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }), {
-    headers: { 'Content-Type': 'application/json' },
-  });
-}

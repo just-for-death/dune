@@ -8,6 +8,7 @@ import { getGameRoot, dataDir } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
 import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
+import { checkReadiness } from './services/health.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +18,20 @@ app.use(helmetConfig);
 app.use(corsConfig);
 app.use(express.json({ limit: '10mb' }));
 app.use(requestLogger);
+
+// Liveness: always 200, no dependencies, no auth, no rate limit.
+// Readiness: verifies this instance can serve traffic (data dir + DB).
+// Both registered before the rate limiter so orchestration probes
+// can never be 429-rejected under load.
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/ready', (_req, res) => {
+  const result = checkReadiness();
+  res.status(result.ready ? 200 : 503).json(result);
+});
+
 app.use(apiRateLimiter);
 app.use(optionalAuthMiddleware);
 
@@ -25,8 +40,9 @@ if (fs.existsSync(FRONTEND_DIR)) {
   app.use(express.static(FRONTEND_DIR));
 }
 
-// tRPC endpoint
-app.all('/trpc/*', trpcHandler);
+// tRPC endpoint. Mounted with app.use so Express strips the /trpc prefix
+// before the standalone handler resolves the procedure path.
+app.use('/trpc', trpcHandler);
 
 // Legacy REST endpoints for file operations (streaming)
 app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: AuthenticatedRequest, res) => {
@@ -108,10 +124,15 @@ if (fs.existsSync(FRONTEND_DIR)) {
   });
 }
 
+export { app };
+
 const PORT = parseInt(process.env.PORT || '3030', 10);
+// Vitest imports this module for HTTP-level tests — never bind a port there.
+if (!process.env.VITEST) {
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(
     { port: PORT, frontend: fs.existsSync(FRONTEND_DIR), dataDir: dataDir() },
     'Dune Server listening',
   );
 });
+}
