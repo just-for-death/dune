@@ -1,5 +1,6 @@
 services:
   dune-server:
+    image: ghcr.io/just-for-death/dune-server:latest
     build:
       context: .
       dockerfile: packages/server/Dockerfile

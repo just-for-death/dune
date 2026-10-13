@@ -1,0 +1,67 @@
+name: release
+
+# Release flow: git tag v1.0.0 && git push origin v1.0.0
+# Produces: GHCR server image + Linux client artifacts on the GitHub Release.
+# Windows/mac installers are out of scope for v1 (see README).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  server-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/just-for-death/dune-server:${{ github.ref_name }}
+            ghcr.io/just-for-death/dune-server:latest
+
+  client-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/electron
+          key: electron-25-${{ runner.os }}
+
+      - name: System deps for deb packaging
+        run: sudo apt-get update && sudo apt-get install -y fakeroot
+
+      - run: npm run build:shared
+      - run: npm run build:client
+
+      - name: Package AppImage + deb
+        working-directory: packages/client
+        run: npx electron-builder --linux AppImage deb --publish never
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: packages/client/release/*
+          generate_release_notes: true

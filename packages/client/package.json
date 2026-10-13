@@ -37,5 +37,24 @@
   },
   "allowScripts": {
     "electron@25.9.8": true
+  },
+  "build": {
+    "appId": "io.github.just-for-death.dune",
+    "productName": "Dune",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Game"
+    }
   }
 }

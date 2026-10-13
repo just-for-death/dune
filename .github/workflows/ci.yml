@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build shared
+        run: npm run build:shared
+
+      - name: Build server
+        run: npm run build:server
+
+      - name: Lint server
+        run: npm run lint
+
+      - name: Test server
+        run: npm run test
+
+      - name: Build client (vite only, no packaging)
+        run: npm run build:client
+
+      - name: Build docker image
+        run: npm run docker:build
