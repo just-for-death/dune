@@ -11,7 +11,9 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'npx vite preview --port 4173 --strictPort',
+    // Bind IPv4 explicitly: 'localhost' may resolve to ::1 while the
+    // url below polls 127.0.0.1 (seen failing on CI runners).
+    command: 'npx vite preview --port 4173 --strictPort --host 127.0.0.1',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: false,
     timeout: 60_000,
