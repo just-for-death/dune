@@ -5,6 +5,7 @@ import Store from 'electron-store'
 import AdmZip from 'adm-zip'
 import axios from 'axios'
 import { autoDetectGames } from './scanner'
+import { autoUpdater } from 'electron-updater'
 
 // Define default games if empty
 const defaultGames = [
@@ -302,6 +303,47 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
 
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
 
+// Renderer runs with contextIsolation but must still be treated as
+// untrusted input at every IPC boundary: validate shapes, whitelist
+// fields, and normalize types before touching the store or fs.
+const GAME_STATUSES = ['Pending Upload', 'In Sync', 'Error'];
+const AUTO_SYNC_FREQS = ['never', '1h', '6h', '24h'];
+const ART_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'];
+
+function asString(v: unknown, max = 2000): string {
+  return typeof v === 'string' ? v.slice(0, max) : '';
+}
+
+function sanitizeGame(input: unknown): { name: string; winPath: string; linPath: string; lastSync: string; status: string; thumbnail: string } {
+  const g = (input ?? {}) as Record<string, unknown>;
+  const name = asString(g.name, 200).trim();
+  if (!name) throw new Error('Game title is required');
+  const status = asString(g.status, 32);
+  return {
+    name,
+    winPath: asString(g.winPath),
+    linPath: asString(g.linPath),
+    lastSync: asString(g.lastSync, 64) || 'Never',
+    status: GAME_STATUSES.includes(status) ? status : 'Pending Upload',
+    thumbnail: asString(g.thumbnail),
+  };
+}
+
+function sanitizeSettings(input: unknown, fallback: any): any {
+  const s = (input ?? {}) as Record<string, unknown>;
+  const scanRoots = Array.isArray(s.scanRoots)
+    ? s.scanRoots.filter((r): r is string => typeof r === 'string').slice(0, 50).map(r => r.slice(0, 2000))
+    : fallback?.scanRoots ?? [];
+  const freq = asString(s.autoSyncFreq, 8);
+  return {
+    runInBackground: s.runInBackground === true,
+    autoSyncEnabled: s.autoSyncEnabled === true,
+    autoSyncFreq: AUTO_SYNC_FREQS.includes(freq) ? freq : 'never',
+    steamGridDbKey: asString(s.steamGridDbKey, 500),
+    scanRoots,
+  };
+}
+
 ipcMain.handle('config:load', () => {
   return {
     games: store.get('games'),
@@ -311,29 +353,46 @@ ipcMain.handle('config:load', () => {
 })
 
 ipcMain.handle('config:save', (_event, config) => {
-  if (config.games)    store.set('games', config.games)
-  if (config.cloud)    store.set('cloud', config.cloud)
-  if (config.settings) {
-    store.set('settings', config.settings)
-    setupAutoSync()
+  const cfg = (config ?? {}) as Record<string, unknown>;
+  if (Array.isArray(cfg.games)) {
+    const clean: any[] = [];
+    for (const g of cfg.games) {
+      try {
+        const raw = (g ?? {}) as Record<string, unknown>;
+        const id = Number(raw.id);
+        clean.push({
+          ...sanitizeGame(g),
+          id: Number.isFinite(id) ? id : Date.now() + clean.length,
+        });
+      } catch { /* drop malformed entries rather than persisting them */ }
+    }
+    store.set('games', clean);
   }
-  return true
-})
+  if (cfg.cloud && typeof cfg.cloud === 'object') {
+    store.set('cloud', { url: asString((cfg.cloud as Record<string, unknown>).url) });
+  }
+  if (cfg.settings && typeof cfg.settings === 'object') {
+    store.set('settings', sanitizeSettings(cfg.settings, store.get('settings')));
+    setupAutoSync();
+  }
+  return true;
+});
 
 ipcMain.handle('game:add', (_event, game) => {
-  const games: any = store.get('games') || []
-  game.id = Date.now()
-  games.push(game)
-  store.set('games', games)
-  return games
-})
+  const games: any = store.get('games') || [];
+  games.push({ ...sanitizeGame(game), id: Date.now() });
+  store.set('games', games);
+  return games;
+});
 
 ipcMain.handle('game:remove', (_event, id) => {
-  let games: any = store.get('games') || []
-  games = games.filter((g: any) => g.id !== id)
-  store.set('games', games)
-  return games
-})
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) throw new Error('Invalid game id');
+  let games: any = store.get('games') || [];
+  games = games.filter((g: any) => g.id !== numericId);
+  store.set('games', games);
+  return games;
+});
 
 ipcMain.handle('dialog:selectDirectory', async () => {
   if (!mainWindow) return { success: false }
@@ -429,6 +488,78 @@ ipcMain.handle('sync:test', async (_event, credentials) => {
 
 const thumbDir = path.join(app.getPath('userData'), 'thumbnails');
 
+// ── Error log (crash reporting) ────────────────────────────────────────────
+// Renderer + main-process failures land here; inspected via "Open Error Log"
+// or by opening the file directly. Rotated at ~1 MB to bound disk use.
+function errorLogPath(): string {
+  return path.join(app.getPath('userData'), 'dune-errors.log');
+}
+
+function appendErrorLog(source: string, payload: Record<string, unknown>): void {
+  try {
+    const file = errorLogPath();
+    const line = JSON.stringify({ ts: new Date().toISOString(), source, ...payload }) + '\n';
+    try {
+      if (fs.existsSync(file) && fs.statSync(file).size > 1024 * 1024) {
+        fs.renameSync(file, file + '.old');
+      }
+    } catch { /* rotation is best-effort */ }
+    fs.appendFileSync(file, line);
+  } catch (e) {
+    console.error('Failed to write error log:', e);
+  }
+}
+
+process.on('uncaughtException', (err) => {
+  appendErrorLog('main-uncaught', { message: String(err?.message || err), stack: String(err?.stack || '') });
+  try {
+    if (app.isReady()) {
+      dialog.showErrorBox('Dune encountered an error', 'Details were written to dune-errors.log in the app data folder.');
+    }
+  } catch { /* dialog must never throw */ }
+});
+
+process.on('unhandledRejection', (reason) => {
+  appendErrorLog('main-unhandled-rejection', { message: String((reason as Error)?.message || reason) });
+});
+
+ipcMain.handle('reportRendererError', (_event, report) => {
+  const r = (report ?? {}) as Record<string, unknown>;
+  appendErrorLog('renderer', {
+    message: typeof r.message === 'string' ? r.message.slice(0, 2000) : 'unknown',
+    stack: typeof r.stack === 'string' ? r.stack.slice(0, 10000) : '',
+    url: typeof r.url === 'string' ? r.url.slice(0, 500) : '',
+  });
+  return true;
+});
+
+ipcMain.handle('openErrorLog', async () => {
+  const { shell } = await import('electron');
+  appendErrorLog('app', { message: 'error log opened by user' });
+  shell.openPath(errorLogPath());
+  return true;
+});
+
+// ── Auto-updates (packaged builds only) ────────────────────────────────────
+function setupAutoUpdates(): void {
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('error', (e) => {
+    appendErrorLog('updater', { message: String(e?.message || e) });
+  });
+  autoUpdater.on('update-downloaded', () => {
+    appendErrorLog('updater', { message: 'update downloaded, will install on quit' });
+  });
+  const check = () => {
+    autoUpdater.checkForUpdatesAndNotify().catch((e) => {
+      appendErrorLog('updater', { message: String(e?.message || e) });
+    });
+  };
+  check();
+  setInterval(check, 24 * 60 * 60 * 1000).unref();
+}
+
 ipcMain.handle('game:setCustomArt', async (_event, id) => {
   if (!mainWindow) return false
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
@@ -438,12 +569,17 @@ ipcMain.handle('game:setCustomArt', async (_event, id) => {
   })
   if (canceled || filePaths.length === 0) return false
 
-  const ext = path.extname(filePaths[0])
-  const targetPath = path.join(thumbDir, `${id}${ext}`)
-  fs.copyFileSync(filePaths[0], targetPath)
+  // Dialog filters are advisory only — enforce the allowlist so a crafted
+  // path (or case-variant extension) can't plant executables in thumbDir.
+  const rawExt = path.extname(filePaths[0]).toLowerCase();
+  const ext = ART_EXTS.includes(rawExt) ? rawExt : '.png';
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) throw new Error('Invalid game id');
+  const targetPath = path.join(thumbDir, `${numericId}${ext}`);
+  fs.copyFileSync(filePaths[0], targetPath);
 
-  const games: any = store.get('games') || []
-  const game = games.find((g: any) => g.id === id)
+  const games: any = store.get('games') || [];
+  const game = games.find((g: any) => g.id === numericId);
   if (game) {
     game.thumbnail = `local://${targetPath}`
     store.set('games', games)
@@ -910,15 +1046,22 @@ app.whenReady().then(() => {
   if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true })
 
   protocol.registerFileProtocol('local', (request, callback) => {
-    const url = request.url.replace('local://', '')
+    // Sandbox: only thumbnails written by this app are servable. Anything
+    // else (including traversal attempts) is rejected.
     try {
-      return callback({ path: decodeURIComponent(url) })
+      const resolved = path.resolve(decodeURIComponent(request.url.replace('local://', '')))
+      const root = path.resolve(thumbDir) + path.sep
+      if (!resolved.startsWith(root)) {
+        return callback({ error: -6 })
+      }
+      return callback({ path: resolved })
     } catch (e) {
       console.error(e)
-      return callback({ path: url })
+      return callback({ error: -6 })
     }
   })
 
   createWindow()
   setupAutoSync()
+  setupAutoUpdates()
 })

@@ -11,6 +11,11 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3030
+    # Optional local overrides (copy .env.example to .env first).
+    # Missing file is fine — built-in defaults apply.
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./data:/app/backend/data
     depends_on:

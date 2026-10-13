@@ -141,4 +141,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('ollama:models', endpoint),
   checkOllamaHealth: () => 
     ipcRenderer.invoke('ollama:health'),
+
+  // Diagnostics
+  reportRendererError: (report: { message: string; stack?: string; url?: string }) =>
+    ipcRenderer.invoke('reportRendererError', report),
+  openErrorLog: () =>
+    ipcRenderer.invoke('openErrorLog'),
 });

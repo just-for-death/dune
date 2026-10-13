@@ -22,6 +22,7 @@
     "adm-zip": "^0.5.10",
     "axios": "^1.14.0",
     "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "yaml": "^2.8.3",
@@ -62,8 +63,15 @@
       ],
       "category": "Game"
     },
-    "artifactName": "${productName}-${version}.${ext}"
+    "artifactName": "${productName}-${version}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "just-for-death",
+        "repo": "dune"
+      }
+    ]
   },
-  "description": "Dune — game save sync desktop client (Electron)",
+  "description": "Dune \u2014 game save sync desktop client (Electron)",
   "homepage": "https://github.com/just-for-death/dune#readme"
 }
