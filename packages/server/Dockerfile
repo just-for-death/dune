@@ -30,9 +30,9 @@ RUN npm prune --omit=dev && npm cache clean --force
 # ── Stage 2: Runtime ────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
-# Security: upgrade + minimal tools (unzip/zip for save extraction)
+# Security: upgrade + minimal tools (unzip/zip for save extraction, su-exec for user switching)
 RUN apk update && apk upgrade --no-cache \
-  && apk add --no-cache unzip zip tini \
+  && apk add --no-cache unzip zip tini su-exec \
   && rm -rf /var/cache/apk/*
 
 # Non-root user for security
@@ -61,7 +61,9 @@ COPY packages/server/frontend/dist ./frontend/dist
 RUN mkdir -p /app/backend/data/saves /app/backend/data/hltb-cache \
   && chown -R dune:dune /app/backend
 
-USER dune
+# Copy entrypoint script
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV PORT=3030
@@ -70,5 +72,4 @@ EXPOSE 3030
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://127.0.0.1:3030/ready || exit 1
 
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/server.js"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
