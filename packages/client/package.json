@@ -58,7 +58,8 @@
         "deb"
       ],
       "category": "Game"
-    }
+    },
+    "artifactName": "${productName}-${version}.${ext}"
   },
   "description": "Dune \u2014 game save sync desktop client (Electron)",
   "homepage": "https://github.com/just-for-death/dune#readme"
