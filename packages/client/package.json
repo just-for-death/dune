@@ -1,7 +1,10 @@
 {
   "name": "@dune/client",
   "version": "0.1.0-beta.1",
-  "author": "Yashwin",
+  "author": {
+    "name": "Yashwin",
+    "email": "github.iag54@slmail.me"
+  },
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
