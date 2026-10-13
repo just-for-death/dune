@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { authMiddleware, optionalAuthMiddleware, AuthenticatedRequest } from './middleware/auth.js';
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
-import { getGameRoot } from './utils/path.js';
+import { getGameRoot, dataDir } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
 import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
@@ -111,7 +111,7 @@ if (fs.existsSync(FRONTEND_DIR)) {
 const PORT = parseInt(process.env.PORT || '3030', 10);
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(
-    { port: PORT, frontend: fs.existsSync(FRONTEND_DIR), dataDir: path.join(process.cwd(), 'data') },
+    { port: PORT, frontend: fs.existsSync(FRONTEND_DIR), dataDir: dataDir() },
     'Dune Server listening',
   );
 });

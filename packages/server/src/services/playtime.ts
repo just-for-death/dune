@@ -1,7 +1,10 @@
-import * as fs from 'fs';
 import * as path from 'path';
+import { dataDir } from '../utils/path.js';
+import { readJsonFile, writeJsonFileAtomic } from '../db/jsonStore.js';
 
-const PLAYTIME_DB = path.join(process.cwd(), 'data', 'playtime.json');
+function playtimeDbPath(): string {
+  return path.join(dataDir(), 'playtime.json');
+}
 
 export interface PlaytimeSession {
   id: number;
@@ -22,18 +25,11 @@ export interface PlaytimeSummary {
 }
 
 function readPlaytimeDB(): PlaytimeSession[] {
-  if (!fs.existsSync(PLAYTIME_DB)) return [];
-  try {
-    return JSON.parse(fs.readFileSync(PLAYTIME_DB, 'utf-8'));
-  } catch {
-    return [];
-  }
+  return readJsonFile<PlaytimeSession[]>(playtimeDbPath(), [], 'playtime.json');
 }
 
 function writePlaytimeDB(sessions: PlaytimeSession[]): void {
-  const tmpPath = PLAYTIME_DB + '.tmp.' + Date.now();
-  fs.writeFileSync(tmpPath, JSON.stringify(sessions, null, 2));
-  fs.renameSync(tmpPath, PLAYTIME_DB);
+  writeJsonFileAtomic(playtimeDbPath(), sessions);
 }
 
 export function recordPlaytimeSession(

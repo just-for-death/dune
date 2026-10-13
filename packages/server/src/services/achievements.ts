@@ -1,7 +1,10 @@
-import * as fs from 'fs';
 import * as path from 'path';
+import { dataDir } from '../utils/path.js';
+import { readJsonFile, writeJsonFileAtomic } from '../db/jsonStore.js';
 
-const ACHIEVEMENTS_DB = path.join(process.cwd(), 'data', 'achievements.json');
+function achievementsDbPath(): string {
+  return path.join(dataDir(), 'achievements.json');
+}
 
 export interface Achievement {
   id: number;
@@ -18,18 +21,11 @@ export interface Achievement {
 }
 
 function readAchievementsDB(): Achievement[] {
-  if (!fs.existsSync(ACHIEVEMENTS_DB)) return [];
-  try {
-    return JSON.parse(fs.readFileSync(ACHIEVEMENTS_DB, 'utf-8'));
-  } catch {
-    return [];
-  }
+  return readJsonFile<Achievement[]>(achievementsDbPath(), [], 'achievements.json');
 }
 
 function writeAchievementsDB(achievements: Achievement[]): void {
-  const tmpPath = ACHIEVEMENTS_DB + '.tmp.' + Date.now();
-  fs.writeFileSync(tmpPath, JSON.stringify(achievements, null, 2));
-  fs.renameSync(tmpPath, ACHIEVEMENTS_DB);
+  writeJsonFileAtomic(achievementsDbPath(), achievements);
 }
 
 export function upsertAchievements(

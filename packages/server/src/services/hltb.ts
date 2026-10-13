@@ -1,9 +1,13 @@
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
+import { dataDir } from '../utils/path.js';
 
-const CACHE_DIR = path.join(process.cwd(), 'data', 'hltb-cache');
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function cacheDir(): string {
+  return path.join(dataDir(), 'hltb-cache');
+}
 
 export interface HLTBTimes {
   mainStory: number;
@@ -18,14 +22,15 @@ export interface HLTBResponse {
 }
 
 function ensureCacheDir(): void {
-  if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
+  const dir = cacheDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
 function getCachePath(gameName: string): string {
   const safeName = gameName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-  return path.join(CACHE_DIR, `${safeName}.json`);
+  return path.join(cacheDir(), `${safeName}.json`);
 }
 
 export function readCache(gameName: string): HLTBTimes | null {

@@ -2,15 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { database, writeDB } from '../db/index.js';
-import { getGameRoot, validateGamePath } from '../utils/path.js';
+import { database, writeDB, withDbLock } from '../db/index.js';
+import { getGameRoot, validateGamePath, savesDir } from '../utils/path.js';
 import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
 import { logger } from '../middleware/logging.js';
 
 const execFileAsync = promisify(execFile);
 
-const SAVES_DIR = path.join(process.cwd(), 'data', 'saves');
+function savesRoot(): string {
+  return savesDir();
+}
 
 export interface SyncProgress {
   percent: number;
@@ -138,28 +140,33 @@ export async function handleUploadFile(
       }
     }
 
-    const timestamp = new Date().toISOString();
-    const games = database.getGames();
-    const gameIdx = games.findIndex(g => g.name.toLowerCase() === gameName.toLowerCase());
-    
-    if (gameIdx !== -1) {
-      games[gameIdx].status = 'In Sync';
-      games[gameIdx].lastSync = timestamp;
-      games[gameIdx].updatedAt = timestamp;
-    } else {
-      games.push({
-        id: Date.now() + Math.random(),
-        name: gameName,
-        status: 'In Sync',
-        lastSync: timestamp,
-        thumbnail: '',
-        createdAt: timestamp,
-        updatedAt: timestamp
-      });
-    }
-    
-    // Atomic write - single DB update
-    writeDB({ games, settings: database.getSettings() });
+    // Status update re-reads inside the lock: awaits above (streaming
+    // upload, unzip) yield, so a snapshot taken earlier could clobber
+    // a concurrent upload's update.
+    await withDbLock(() => {
+      const timestamp = new Date().toISOString();
+      const games = database.getGames();
+      const gameIdx = games.findIndex(g => g.name.toLowerCase() === gameName.toLowerCase());
+
+      if (gameIdx !== -1) {
+        games[gameIdx].status = 'In Sync';
+        games[gameIdx].lastSync = timestamp;
+        games[gameIdx].updatedAt = timestamp;
+      } else {
+        games.push({
+          id: Date.now() + Math.random(),
+          name: gameName,
+          status: 'In Sync',
+          lastSync: timestamp,
+          thumbnail: '',
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
+      }
+
+      // Atomic write - single DB update
+      writeDB({ games, settings: database.getSettings() });
+    });
 
     setImmediate(() => {
       triggerRemoteSync([gameName]).catch(err => logger.error({ err }, 'Remote sync error'));
@@ -186,7 +193,7 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
     const gamesInSource = findSaveFolders(source.path, 3);
     for (const gamePath of gamesInSource) {
       const gameName = path.basename(gamePath);
-      const result = syncLocalFolder(gamePath, gameName, SAVES_DIR, maxVersions);
+      const result = syncLocalFolder(gamePath, gameName, savesRoot(), maxVersions);
 
       if (result.filesSynced > 0) {
         totalFilesSynced += result.filesSynced;

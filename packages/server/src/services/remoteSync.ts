@@ -5,9 +5,13 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { database } from '../db/index.js';
 import { logger } from '../middleware/logging.js';
+import { savesDir } from '../utils/path.js';
 
 const execFileAsync = promisify(execFile);
-const SAVES_DIR = path.join(process.cwd(), 'data', 'saves');
+
+function savesRoot(): string {
+  return savesDir();
+}
 
 export async function triggerRemoteSync(syncedGames: string[]): Promise<void> {
   const settings = database.getSettings();
@@ -16,10 +20,10 @@ export async function triggerRemoteSync(syncedGames: string[]): Promise<void> {
   if (remoteServers.length === 0) return;
 
   for (const gameName of syncedGames) {
-    const gameDir = path.join(SAVES_DIR, gameName);
+    const gameDir = path.join(savesRoot(), gameName);
     if (!fs.existsSync(gameDir)) continue;
 
-    const zipPath = path.join(SAVES_DIR, `${gameName}_sync.zip`);
+    const zipPath = path.join(savesRoot(), `${gameName}_sync.zip`);
     
     try {
       await execFileAsync('zip', ['-r', zipPath, '.', '-x', '.versions/*'], { cwd: gameDir });

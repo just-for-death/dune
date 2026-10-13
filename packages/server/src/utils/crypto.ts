@@ -1,8 +1,11 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { dataDir } from './path.js';
 
-const SECRET_PATH = path.join(process.cwd(), 'data', '.api-secret');
+function secretPath(): string {
+  return path.join(dataDir(), '.api-secret');
+}
 
 /**
  * Server secret used to HMAC API keys. Prefers explicit env config,
@@ -14,14 +17,15 @@ export function getServerSecret(): string {
   if (fromEnv && fromEnv.length >= 16) return fromEnv;
 
   try {
-    if (fs.existsSync(SECRET_PATH)) {
-      const saved = fs.readFileSync(SECRET_PATH, 'utf-8').trim();
+    const secretFile = secretPath();
+    if (fs.existsSync(secretFile)) {
+      const saved = fs.readFileSync(secretFile, 'utf-8').trim();
       if (saved.length >= 32) return saved;
     }
-    const dir = path.dirname(SECRET_PATH);
+    const dir = path.dirname(secretFile);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const generated = randomBytes(32).toString('hex');
-    fs.writeFileSync(SECRET_PATH, generated, { mode: 0o600 });
+    fs.writeFileSync(secretFile, generated, { mode: 0o600 });
     return generated;
   } catch {
     // Last resort (ephemeral): hashes won't survive restart, fail closed by re-login.

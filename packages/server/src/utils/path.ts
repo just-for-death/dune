@@ -1,7 +1,21 @@
 import * as path from 'path';
 import * as fs from 'fs';
 
-const SAVES_DIR = path.join(process.cwd(), 'data', 'saves');
+/**
+ * Base directory for all runtime data. Overridable via DATA_DIR env
+ * (tests point it at a temp dir; production uses ./data or the
+ * mounted volume). Always call lazily — never cache at module load —
+ * so env changes and test isolation work.
+ */
+export function dataDir(): string {
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function savesDir(): string {
+  return path.join(dataDir(), 'saves');
+}
 
 export function normalizeUrl(url: string): string {
   if (!url) return '';
@@ -14,7 +28,7 @@ export function normalizeUrl(url: string): string {
 
 export function getGameRoot(gameName: string): string {
   const safeName = path.basename(gameName).replace(/[<>:"|?*]/g, '_').replace(/\.\./g, '');
-  return path.join(SAVES_DIR, safeName);
+  return path.join(savesDir(), safeName);
 }
 
 export function validateGamePath(gameName: string, requestedPath: string): string {

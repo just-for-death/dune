@@ -1,14 +1,15 @@
 import * as path from 'path';
-import * as fs from 'fs';
 import type { Game, Settings, LocalSource, RemoteServer } from '../types/index.js';
 import { hashApiKey, looksHashed, isValidApiKey as checkKey } from '../utils/crypto.js';
 import { logger } from '../middleware/logging.js';
+import { dataDir } from '../utils/path.js';
+import { readJsonFile, writeJsonFileAtomic } from './jsonStore.js';
+import { withDbLock } from './mutex.js';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_PATH = path.join(DATA_DIR, 'dune.json');
+export { withDbLock };
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+function dbPath(): string {
+  return path.join(dataDir(), 'dune.json');
 }
 
 const defaultSettings: Settings = {
@@ -22,24 +23,15 @@ const defaultSettings: Settings = {
 };
 
 function readDB(): { games: Game[]; settings: Settings } {
-  if (!fs.existsSync(DB_PATH)) {
-    return { games: [], settings: defaultSettings };
-  }
-  try {
-    const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
-    return {
-      games: data.games || [],
-      settings: { ...defaultSettings, ...data.settings }
-    };
-  } catch {
-    return { games: [], settings: defaultSettings };
-  }
+  const raw = readJsonFile<{ games?: Game[]; settings?: Settings }>(dbPath(), { games: [], settings: defaultSettings }, 'dune.json');
+  return {
+    games: raw.games || [],
+    settings: { ...defaultSettings, ...raw.settings }
+  };
 }
 
 export function writeDB(data: { games: Game[]; settings: Settings }): void {
-  const tmpPath = DB_PATH + '.tmp.' + Date.now();
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-  fs.renameSync(tmpPath, DB_PATH);
+  writeJsonFileAtomic(dbPath(), data);
 }
 
 function getSettings(): Settings {
