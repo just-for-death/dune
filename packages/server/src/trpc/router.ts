@@ -85,7 +85,7 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         try {
           const cleanUrl = normalizeUrl(input.url);
-          const res = await axios.get(`${cleanUrl}/api/saves`);
+          const res = await axios.get(`${cleanUrl}/api/saves`, { timeout: 8000 });
           if (res.data.success) return { success: true, message: 'Connection successful' };
           return { success: false, message: 'Server returned error' };
         } catch (err: unknown) {
@@ -132,7 +132,7 @@ export const appRouter = router({
         }),
 
       files: authedProcedure
-        .input(z.object({ game: z.string(), versionId: z.string() }))
+        .input(z.object({ game: z.string(), versionId: z.string().regex(/^\d+$/) }))
         .query(async ({ input }) => {
           const gameName = path.basename(input.game);
           const versionDir = path.join(getGameRoot(gameName), '.versions', input.versionId);
@@ -142,7 +142,7 @@ export const appRouter = router({
         }),
 
       download: authedProcedure
-        .input(z.object({ game: z.string(), versionId: z.string(), path: z.string() }))
+        .input(z.object({ game: z.string(), versionId: z.string().regex(/^\d+$/), path: z.string() }))
         .query(async () => {
           return { success: true, message: 'Use REST endpoint for version file download' };
         }),

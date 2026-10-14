@@ -1,8 +1,20 @@
 import '@fontsource/inter';
 import { useState, useEffect, useCallback } from 'react';
+import type {
+  Cloud,
+  Toast,
+  HLTBTimes,
+  PlaytimeSummary,
+  AchievementSummary,
+} from '@dune/shared';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
-// Must mirror every key exposed in electron/preload.ts contextBridge call.
+// Must mirror every key exposed in electron/preload.ts contextBridge call
+// (preload.ts is the runtime truth). Domain shapes Cloud/Toast/HLTBTimes/
+// PlaytimeSummary/AchievementSummary are canonical in @dune/shared; Game,
+// Settings and Achievement stay local until shared matches the preload wire
+// format exactly (shared currently requires createdAt/updatedAt and uses
+// server-side Settings).
 interface ElectronAPI {
   exportSaves: () => Promise<{ success: boolean; path?: string; message?: string }>;
   syncCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
@@ -53,24 +65,12 @@ interface Game {
   thumbnail: string;
 }
 
-interface Cloud {
-  url: string;
-}
-
 interface Settings {
   runInBackground: boolean;
   autoSyncEnabled: boolean;
   autoSyncFreq: string;
   steamGridDbKey: string;
   scanRoots: string[];
-}
-
-interface PlaytimeSummary {
-  game: string;
-  platform: string;
-  totalMinutes: number;
-  totalSessions: number;
-  lastPlayed: string | null;
 }
 
 interface Achievement {
@@ -83,25 +83,6 @@ interface Achievement {
   unlockTime: string | null;
   rarity: number;
   hidden: boolean;
-}
-
-interface AchievementSummary {
-  game: string;
-  total: number;
-  unlocked: number;
-  percentage: number;
-}
-
-interface HLTBTimes {
-  mainStory: number;
-  mainExtra: number;
-  completionist: number;
-}
-
-interface Toast {
-  id: number;
-  message: string;
-  type: 'success' | 'error' | 'info';
 }
 
 declare global {

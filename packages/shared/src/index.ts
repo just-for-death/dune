@@ -222,9 +222,7 @@ export interface ElectronAPI {
   checkOllamaHealth: () => Promise<HealthStatus>;
 }
 
-// Extend Window
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
+// NOTE: no `declare global Window` here on purpose. This package is a pure
+// types module; stamping a global Window.electronAPI would silently override
+// the renderer's own bridge declaration (preload.ts is the runtime truth)
+// for every importer. Renderers declare their own Window binding instead.

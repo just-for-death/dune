@@ -83,6 +83,24 @@ describe('auth enforcement (regression guards)', () => {
   });
 });
 
+describe('path traversal guards (Task 1.1)', () => {
+  it('rejects download-file traversal with 400', async () => {
+    const res = await request(app)
+      .get('/api/download-file?game=x&path=' + encodeURIComponent('../../etc/passwd'))
+      .set('x-api-key', AUTH_KEY);
+    expect([400, 404]).toContain(res.status);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('rejects download-version-file with non-numeric versionId', async () => {
+    const res = await request(app)
+      .get('/api/download-version-file?game=x&versionId=' + encodeURIComponent('../..') + '&path=y')
+      .set('x-api-key', AUTH_KEY);
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+});
+
 describe('save round-trip (upload → download → version)', () => {
   const game = 'RoundTrip';
   const v1 = Buffer.from('save-slot-1-version-one');

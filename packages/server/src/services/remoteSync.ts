@@ -16,6 +16,10 @@ function savesRoot(): string {
 export async function triggerRemoteSync(syncedGames: string[]): Promise<void> {
   const settings = database.getSettings();
   const remoteServers = settings.remoteServers || [];
+  // Shared key for server-to-server push. Remote upload routes require
+  // x-api-key; without it every push 401s and only litters logs.
+  // Operators set the same value on all peers via REMOTE_SYNC_API_KEY.
+  const syncKey = process.env.REMOTE_SYNC_API_KEY || '';
   
   if (remoteServers.length === 0) return;
 
@@ -31,15 +35,22 @@ export async function triggerRemoteSync(syncedGames: string[]): Promise<void> {
       for (const server of remoteServers) {
         try {
           const stream = fs.createReadStream(zipPath);
+          // Destroy the stream on failure so a rejected post never leaves
+          // an open fd behind (vitest tmp cleanup noise + fd leak).
           await axios.post(`${server.url}/api/upload-file`, stream, {
             headers: {
               'Content-Type': 'application/octet-stream',
               'x-game': gameName,
-              'x-path': 'saves.zip'
+              'x-path': 'saves.zip',
+              'x-sync-id': Date.now().toString(),
+              ...(syncKey ? { 'x-api-key': syncKey } : {}),
             },
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
             timeout: 300000
+          }).catch((err) => {
+            stream.destroy();
+            throw err;
           });
           logger.info({ game: gameName, server: server.url }, 'Remote sync pushed game');
         } catch (err) {

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { authMiddleware, optionalAuthMiddleware, AuthenticatedRequest } from './middleware/auth.js';
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
-import { getGameRoot, dataDir } from './utils/path.js';
+import { dataDir, validateGamePath } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
 import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
@@ -89,9 +89,12 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
     const { game, path: filePath } = req.query;
     if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
 
-    const gameName = path.basename(game.toString());
-    const safePath = filePath.toString().replace(/\.\.[\\/]/g, '');
-    const fullPath = path.join(getGameRoot(gameName), safePath);
+    let fullPath: string;
+    try {
+      fullPath = validateGamePath(game.toString(), filePath.toString());
+    } catch {
+      return res.status(400).json({ success: false, message: 'Invalid path' });
+    }
     if (!fs.existsSync(fullPath)) return res.status(404).json({ success: false, message: 'File not found' });
 
     res.download(fullPath);
@@ -106,9 +109,15 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
     const { game, versionId, path: filePath } = req.query;
     if (!game || !versionId || !filePath) return res.status(400).json({ success: false, message: 'Missing params' });
 
-    const gameName = path.basename(game.toString());
-    const safePath = filePath.toString().replace(/\.\.[\\/]/g, '');
-    const fullPath = path.join(getGameRoot(gameName), '.versions', versionId.toString(), safePath);
+    if (!/^\d+$/.test(versionId.toString())) {
+      return res.status(400).json({ success: false, message: 'Invalid versionId' });
+    }
+    let fullPath: string;
+    try {
+      fullPath = validateGamePath(game.toString(), path.join('.versions', versionId.toString(), filePath.toString()));
+    } catch {
+      return res.status(400).json({ success: false, message: 'Invalid path' });
+    }
     if (!fs.existsSync(fullPath)) return res.status(404).json({ success: false, message: 'File not found' });
 
     res.download(fullPath);

@@ -75,4 +75,25 @@ describe('triggerRemoteSync', () => {
     await triggerRemoteSync(['Missing Game']);
     expect(postMock).not.toHaveBeenCalled();
   });
+
+  it('sends the shared sync key and sync id headers', async () => {
+    process.env.REMOTE_SYNC_API_KEY = 'peer-shared-key';
+    try {
+      const root = getGameRoot('Remote Game');
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(path.join(root, 'slot1.sav'), 'data');
+      database.addRemoteServer('http://backup-a:3030');
+
+      await triggerRemoteSync(['Remote Game']);
+
+      expect(postMock).toHaveBeenCalledTimes(1);
+      const headers = postMock.mock.calls[0][2]?.headers as Record<string, string>;
+      expect(headers['x-api-key']).toBe('peer-shared-key');
+      expect(headers['x-game']).toBe('Remote Game');
+      expect(headers['x-path']).toBe('saves.zip');
+      expect(headers['x-sync-id']).toMatch(/^\d+$/);
+    } finally {
+      delete process.env.REMOTE_SYNC_API_KEY;
+    }
+  });
 });

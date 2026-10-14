@@ -207,15 +207,20 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
         totalFilesSynced += result.filesSynced;
         syncedGames.push(gameName);
 
-        const ts = new Date().toISOString();
-        database.upsertGame({
-          id: Date.now() + Math.random(),
-          name: gameName,
-          status: 'In Sync',
-          lastSync: ts,
-          thumbnail: '',
-          createdAt: ts,
-          updatedAt: ts
+        // Serialize against concurrent uploads: upsertGame is
+        // read-modify-write, and the FS work above awaits, so an
+        // unlocked upsert here could clobber a parallel status update.
+        await withDbLock(() => {
+          const ts = new Date().toISOString();
+          database.upsertGame({
+            id: Date.now() + Math.random(),
+            name: gameName,
+            status: 'In Sync',
+            lastSync: ts,
+            thumbnail: '',
+            createdAt: ts,
+            updatedAt: ts,
+          });
         });
       }
     }

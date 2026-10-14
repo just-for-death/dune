@@ -82,3 +82,8 @@ AUDIT*.md
 PLAN*.md
 TASKS*.md
 TODO*.md
+tasks/
+.cursor/skills/
+.cursor/rules/
+.opencode/skills/
+skills/
