@@ -165,8 +165,15 @@ export const appRouter = router({
       const apiKey = settings.steamGridApiKey;
       if (!apiKey) throw new TRPCError({ code: 'UNAUTHORIZED', message: 'SteamGridDB API key not configured' });
       const games = database.getGames();
-      const count = await autoMatchAll(apiKey, games);
-      return { success: true, count };
+      const matched = await autoMatchAll(apiKey, games);
+      for (const m of matched) {
+        const game = database.getGames().find(g => g.name === m.name);
+        if (game && !game.thumbnail) {
+          game.thumbnail = m.thumbnail;
+          database.upsertGame(game);
+        }
+      }
+      return { success: true, count: matched.length };
     }),
 
     set: authedProcedure
@@ -231,7 +238,7 @@ export const appRouter = router({
       }),
 
     bulk: authedProcedure
-      .input(z.object({ gameNames: z.array(z.string()) }))
+      .input(z.object({ gameNames: z.array(z.string()).max(50) }))
       .query(async ({ input }) => {
         const results = await bulkFetchHLTB(input.gameNames);
         return { success: true, times: Object.fromEntries(results) };
@@ -355,7 +362,8 @@ export const appRouter = router({
 
   apiKeys: {
     list: authedProcedure.query(async () => {
-      return { success: true, keys: database.getApiKeys().map(k => k.replace(/./g, '*')) };
+      // Fixed-length mask: masked per-key length would leak key length.
+      return { success: true, keys: database.getApiKeys().map(() => '****') };
     }),
 
     add: authedProcedure

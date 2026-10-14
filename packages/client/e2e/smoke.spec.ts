@@ -62,6 +62,8 @@ test.beforeEach(async ({ page }) => {
       removeApiKey: async () => ({ success: true }),
       getOllamaModels: async () => ({ success: true, models: [] }),
       checkOllamaHealth: async () => ({ success: false, message: 'offline (e2e stub)' }),
+      getServerKey: async () => ({ success: true, key: '' }),
+      setServerKey: async () => ({ success: true }),
     };
   });
 });
@@ -104,4 +106,13 @@ test('playtime tab degrades gracefully without a server URL', async ({ page }) =
   await page.getByRole('button', { name: 'Playtime' }).click();
   await expect(page.getByRole('heading', { name: 'Playtime Tracking' })).toBeVisible();
   await expect(page.locator('.toast.toast-error')).toContainText('Configure Dune Server URL first');
+});
+
+test('settings exposes the server API key field', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const keyInput = page.locator('#server-api-key');
+  await expect(keyInput).toBeVisible();
+  await keyInput.fill('test-key-123');
+  await expect(keyInput).toHaveValue('test-key-123');
 });

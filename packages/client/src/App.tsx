@@ -53,6 +53,10 @@ interface ElectronAPI {
   removeApiKey: (key: string) => Promise<{ success: boolean; message?: string }>;
   getOllamaModels: (endpoint: string) => Promise<{ success: boolean; models?: string[]; message?: string }>;
   checkOllamaHealth: () => Promise<{ success: boolean; exists?: boolean; message?: string }>;
+  reportRendererError: (report: { message: string; stack?: string; url?: string }) => Promise<unknown>;
+  openErrorLog: () => Promise<unknown>;
+  getServerKey: () => Promise<{ success: boolean; key: string }>;
+  setServerKey: (key: string) => Promise<{ success: boolean }>;
 }
 
 interface Game {
@@ -140,6 +144,9 @@ export default function App() {
   const [syncProgress, setSyncProgress] = useState<{ percent: number; message: string; done: boolean; success: boolean } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [pendingRestore, setPendingRestore] = useState(false);
+  const [pendingRemoveId, setPendingRemoveId] = useState<number | null>(null);
+  const [serverApiKey, setServerApiKey] = useState('');
 
   // Playtime state
   const [playtimeSummary, setPlaytimeSummary] = useState<PlaytimeSummary[]>([]);
@@ -164,6 +171,9 @@ export default function App() {
 
   useEffect(() => {
     loadConfig();
+    window.electronAPI.getServerKey()
+      .then(res => { if (res?.success && res.key) setServerApiKey(res.key); })
+      .catch(() => { /* key stays empty — server calls will 401 with a clear error */ });
   }, []);
 
   useEffect(() => {
@@ -208,6 +218,15 @@ export default function App() {
     const s = { ...settings, ...newSettings };
     setSettings(s);
     await window.electronAPI.saveConfig({ settings: s });
+  };
+
+  const handleServerKeyChange = async (key: string) => {
+    setServerApiKey(key);
+    try {
+      await window.electronAPI.setServerKey(key);
+    } catch {
+      showToast('Failed to save server key', 'error');
+    }
   };
 
   const saveCloud = async (partialCloud?: Partial<Cloud>) => {
@@ -318,8 +337,11 @@ export default function App() {
       showToast('Configure a valid Dune Server URL first', 'error');
       return;
     }
-    const confirmRestore = confirm("This will OVERWRITE your local saves with the ones from your Dune Server. Are you sure?");
-    if (!confirmRestore) return;
+    if (!pendingRestore) {
+      setPendingRestore(true);
+      return;
+    }
+    setPendingRestore(false);
 
     setIsSyncing(true);
     setSyncProgress({ percent: 1, message: 'Preparing to restore...', done: false, success: false });
@@ -380,10 +402,9 @@ export default function App() {
   };
 
   const handleRemoveGame = async (game: Game) => {
-    const conf = confirm(`Remove ${game.name}?`);
-    if (!conf) return;
     try {
       setGames(await window.electronAPI.removeGame(game.id));
+      setPendingRemoveId(null);
       showToast(`Removed ${game.name}`, 'info');
     } catch {
       showToast('Failed to remove game', 'error');
@@ -535,8 +556,9 @@ export default function App() {
                   <div className="game-info">
                     <div className="game-title" title={game.name}>{game.name}</div>
                     <div className={`game-status ${game.status === 'In Sync' ? 'status-synced' : 'status-pending'}`}>
-                      Status: {game.status} <br />
-                      <span className="sync-time">Sync: {formatDate(game.lastSync)}</span>
+                      <span className={`status-dot ${game.status === 'In Sync' ? 'synced' : 'pending'}`} aria-hidden="true" />
+                      {game.status}
+                      <span className="sync-time">· {formatDate(game.lastSync)}</span>
                     </div>
                     {hltbCache[game.name] && (
                       <div className="hltb-info">
@@ -551,7 +573,12 @@ export default function App() {
                       <button className="btn btn-secondary" onClick={() => loadHLTB(game.name)} disabled={!!hltbCache[game.name] || !!hltbLoading[game.name]}>
                         {hltbLoading[game.name] ? '...' : hltbCache[game.name] ? 'HLTB ✓' : 'HLTB'}
                       </button>
-                      <button className="btn btn-secondary btn-danger-full" onClick={() => handleRemoveGame(game)}>Remove</button>
+                      <button className="btn btn-secondary btn-danger-full" onClick={() => pendingRemoveId === game.id ? handleRemoveGame(game) : setPendingRemoveId(game.id)}>
+                        {pendingRemoveId === game.id ? 'Click again to confirm removal' : 'Remove'}
+                      </button>
+                      {pendingRemoveId === game.id && (
+                        <button className="btn btn-secondary btn-danger-full" onClick={() => setPendingRemoveId(null)}>Cancel</button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -588,16 +615,16 @@ export default function App() {
             <div className="card">
               <h3 className="card-title">Add New Custom Mapping</h3>
               <div className="form-group">
-                <label>Game Title *</label>
-                <input type="text" value={newGameName} onChange={e => setNewGameName(e.target.value)} placeholder="e.g. Hades" />
+                <label htmlFor="new-game-title">Game title</label>
+                <input id="new-game-title" type="text" value={newGameName} onChange={e => setNewGameName(e.target.value)} placeholder="e.g. Hades" />
               </div>
               <div className="form-group">
-                <label>Windows Origin Path</label>
-                <input type="text" value={newGameWin} onChange={e => setNewGameWin(e.target.value)} placeholder="%USERPROFILE%\Documents\Saved Games\Hades" />
+                <label htmlFor="new-game-win">Windows origin path</label>
+                <input id="new-game-win" type="text" value={newGameWin} onChange={e => setNewGameWin(e.target.value)} placeholder="%USERPROFILE%\Documents\Saved Games\Hades" />
               </div>
               <div className="form-group">
-                <label>Linux Origin Path</label>
-                <input type="text" value={newGameLin} onChange={e => setNewGameLin(e.target.value)} placeholder="~/.local/share/Hades/Saves" />
+                <label htmlFor="new-game-lin">Linux origin path</label>
+                <input id="new-game-lin" type="text" value={newGameLin} onChange={e => setNewGameLin(e.target.value)} placeholder="~/.local/share/Hades/Saves" />
               </div>
               <button className="btn btn-primary" onClick={handleAddGame}>Save Mapping</button>
             </div>
@@ -614,7 +641,12 @@ export default function App() {
                         <strong>{g.name}</strong>
                         <div className="path-sub">{g.linPath || g.winPath || 'No path set'}</div>
                       </div>
-                      <button className="btn btn-secondary btn-sm" onClick={() => handleRemoveGame(g)}>Remove</button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => pendingRemoveId === g.id ? handleRemoveGame(g) : setPendingRemoveId(g.id)}>
+                        {pendingRemoveId === g.id ? 'Confirm?' : 'Remove'}
+                      </button>
+                      {pendingRemoveId === g.id && (
+                        <button className="btn btn-secondary btn-sm" onClick={() => setPendingRemoveId(null)}>Cancel</button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -675,9 +707,15 @@ export default function App() {
                   onClick={handleRestoreCloud}
                   disabled={isSyncing}
                 >
-                  {isSyncing ? 'Working...' : 'Restore from Server'}
+                  {isSyncing ? 'Working...' : pendingRestore ? 'Click again to overwrite local saves' : 'Restore from Server'}
                 </button>
               </div>
+              {pendingRestore && !isSyncing && (
+                <div className="confirm-bar" role="alert">
+                  <span>Restoring overwrites local saves with the server copy.</span>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setPendingRestore(false)}>Cancel</button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -817,7 +855,7 @@ export default function App() {
               {settings.scanRoots.length > 0 ? (
                 <ul className="scan-list">
                   {settings.scanRoots.map((r, i) => (
-                    <li key={i} className="scan-row">{r} <span className="remove-link" onClick={() => handleRemoveRoot(r)}>[remove]</span></li>
+                    <li key={i} className="scan-row">{r} <button className="link-btn-danger" onClick={() => handleRemoveRoot(r)}>remove</button></li>
                   ))}
                 </ul>
               ) : (
@@ -829,8 +867,9 @@ export default function App() {
               <h3 className="card-title">Dune Server Integration</h3>
 
               <div className="form-group">
-                <label>Dune Server Address (with Port)</label>
+                <label htmlFor="server-url">Dune server address (with port)</label>
                 <input
+                  id="server-url"
                   type="text"
                   className={!cloud.url || isValidUrl(cloud.url) ? '' : 'input-error'}
                   placeholder="e.g. http://192.168.1.100:3030"
@@ -839,6 +878,20 @@ export default function App() {
                 />
                 {cloud.url && !isValidUrl(cloud.url) && (
                   <p className="error-text">Invalid URL format</p>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="server-api-key">Server API key</label>
+                <input
+                  id="server-api-key"
+                  type="password"
+                  placeholder="Paste a key from the server (required for sync)"
+                  value={serverApiKey}
+                  onChange={e => handleServerKeyChange(e.target.value)}
+                />
+                {!serverApiKey && (
+                  <p className="error-text">No key set — server features will be rejected (401).</p>
                 )}
               </div>
 

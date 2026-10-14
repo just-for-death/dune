@@ -24,6 +24,7 @@ const store = new Store({
   defaults: {
     games: defaultGames,
     cloud: { url: '' },
+    serverApiKey: '',
     settings: {
       runInBackground: false,
       autoSyncEnabled: false,
@@ -33,6 +34,13 @@ const store = new Store({
     }
   }
 })
+
+// Auth header for Dune Server calls. The server requires x-api-key on every
+// route except /health; without it the whole client↔server integration 401s.
+function serverHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const key = store.get('serverApiKey', '') as string;
+  return key ? { ...extra, 'x-api-key': key } : { ...extra };
+}
 
 function expandPath(p: string) {
   if (!p) return ''
@@ -88,12 +96,12 @@ async function uploadFile(baseUrl: string, gameName: string, localPath: string, 
   const cleanUrl = normalizeUrl(baseUrl);
   const stream = fs.createReadStream(localPath);
   await axios.post(`${cleanUrl}/api/upload-file`, stream, {
-    headers: {
+    headers: serverHeaders({
       'x-game': gameName,
       'x-path': relativePath,
       'x-sync-id': syncId || 'default',
       'Content-Type': 'application/octet-stream'
-    }
+    })
   });
 }
 
@@ -251,7 +259,7 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
       const overallPercent = 10 + Math.round((i / games.length) * 85);
       progress(overallPercent, `Checking server for: ${game.name}`);
 
-      const listRes = await axios.get(`${cleanUrl}/api/list-files?game=${encodeURIComponent(game.name)}`);
+      const listRes = await axios.get(`${cleanUrl}/api/list-files?game=${encodeURIComponent(game.name)}`, { headers: serverHeaders() });
       const files: { path: string; name: string; size: number }[] = listRes.data.files || [];
 
       if (files.length > 0) {
@@ -279,7 +287,7 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
 
             const response = await axios.get(
               `${cleanUrl}/api/download-file?game=${encodeURIComponent(game.name)}&path=${encodeURIComponent(relPath)}`,
-              { responseType: 'arraybuffer' }
+              { responseType: 'arraybuffer', headers: serverHeaders() }
             );
             fs.writeFileSync(target, Buffer.from(response.data));
           }));
@@ -475,7 +483,7 @@ ipcMain.handle('sync:restore', async (_event, credentials) => {
 ipcMain.handle('sync:test', async (_event, credentials) => {
   try {
     const cleanUrl = normalizeUrl(credentials.url)
-    const res = await axios.get(`${cleanUrl}/api/saves`);
+    const res = await axios.get(`${cleanUrl}/api/saves`, { headers: serverHeaders() });
     if (res.data.success) return { success: true, message: '✅ Connection to Dune Server successful!' }
     else return { success: false, message: '❌ Server reached but returned an error response.' }
   } catch (err: any) {
@@ -636,7 +644,7 @@ ipcMain.handle('playtime:record', async (_event, session) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/playtime`, session, {
-      headers: { 'Content-Type': 'application/json' }
+      headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
   } catch (e: any) {
@@ -651,7 +659,7 @@ ipcMain.handle('playtime:summary', async (_event, game) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = game ? `${cleanUrl}/api/playtime?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/playtime`
-    const res = await axios.get(url)
+    const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, summary: [] }
@@ -665,7 +673,7 @@ ipcMain.handle('playtime:recent', async (_event, limit) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = `${cleanUrl}/api/playtime/recent${limit ? `?limit=${limit}` : ''}`
-    const res = await axios.get(url)
+    const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, sessions: [] }
@@ -678,7 +686,7 @@ ipcMain.handle('playtime:total', async () => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/playtime/total`)
+    const res = await axios.get(`${cleanUrl}/api/playtime/total`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, totalMinutes: 0 }
@@ -692,7 +700,7 @@ ipcMain.handle('achievements:get', async (_event, game) => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/achievements/${encodeURIComponent(game)}`)
+    const res = await axios.get(`${cleanUrl}/api/achievements/${encodeURIComponent(game)}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, achievements: [] }
@@ -706,7 +714,7 @@ ipcMain.handle('achievements:summary', async (_event, game) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = game ? `${cleanUrl}/api/achievements?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/achievements`
-    const res = await axios.get(url)
+    const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, summary: [] }
@@ -720,7 +728,7 @@ ipcMain.handle('achievements:recent', async (_event, limit) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = `${cleanUrl}/api/achievements/recent${limit ? `?limit=${limit}` : ''}`
-    const res = await axios.get(url)
+    const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, unlocks: [] }
@@ -734,7 +742,7 @@ ipcMain.handle('hltb:get', async (_event, gameName) => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/hltb/${encodeURIComponent(gameName)}`)
+    const res = await axios.get(`${cleanUrl}/api/hltb/${encodeURIComponent(gameName)}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
@@ -749,7 +757,7 @@ ipcMain.handle('ai:analyze', async (_event, { gameName, files }) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/analyze-files-ai`, { gameName, files }, {
-      headers: { 'Content-Type': 'application/json' }
+      headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
   } catch (e: any) {
@@ -764,7 +772,7 @@ ipcMain.handle('art:search', async (_event, query) => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/search-art?query=${encodeURIComponent(query)}`)
+    const res = await axios.get(`${cleanUrl}/api/search-art?query=${encodeURIComponent(query)}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
@@ -777,7 +785,7 @@ ipcMain.handle('art:auto-match', async () => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/auto-match-all`)
+    const res = await axios.get(`${cleanUrl}/api/auto-match-all`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
@@ -791,7 +799,7 @@ ipcMain.handle('local-sync:trigger', async () => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.post(`${cleanUrl}/api/local-sync`)
+    const res = await axios.post(`${cleanUrl}/api/local-sync`, {}, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
@@ -804,7 +812,7 @@ ipcMain.handle('local-sources:get', async () => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/local-sources`)
+    const res = await axios.get(`${cleanUrl}/api/local-sources`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, sources: [] }
@@ -818,7 +826,7 @@ ipcMain.handle('local-sources:add', async (_event, sourcePath) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/local-sources`, { path: sourcePath }, {
-      headers: { 'Content-Type': 'application/json' }
+      headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
   } catch (e: any) {
@@ -832,7 +840,7 @@ ipcMain.handle('local-sources:remove', async (_event, id) => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.delete(`${cleanUrl}/api/local-sources/${id}`)
+    const res = await axios.delete(`${cleanUrl}/api/local-sources/${id}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
@@ -846,7 +854,7 @@ ipcMain.handle('remote-servers:get', async () => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/remote-servers`)
+    const res = await axios.get(`${cleanUrl}/api/remote-servers`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, servers: [] }
@@ -860,7 +868,7 @@ ipcMain.handle('remote-servers:add', async (_event, url) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/remote-servers`, { url }, {
-      headers: { 'Content-Type': 'application/json' }
+      headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
   } catch (e: any) {
@@ -874,7 +882,7 @@ ipcMain.handle('remote-servers:remove', async (_event, id) => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.delete(`${cleanUrl}/api/remote-servers/${id}`)
+    const res = await axios.delete(`${cleanUrl}/api/remote-servers/${id}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
@@ -888,7 +896,7 @@ ipcMain.handle('api-keys:get', async () => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/api-keys`)
+    const res = await axios.get(`${cleanUrl}/api/api-keys`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, keys: [] }
@@ -902,7 +910,7 @@ ipcMain.handle('api-keys:add', async (_event, { key, description }) => {
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/api-keys`, { key, description }, {
-      headers: { 'Content-Type': 'application/json' }
+      headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
   } catch (e: any) {
@@ -916,7 +924,7 @@ ipcMain.handle('api-keys:remove', async (_event, key) => {
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.delete(`${cleanUrl}/api/api-keys/${encodeURIComponent(key)}`)
+    const res = await axios.delete(`${cleanUrl}/api/api-keys/${encodeURIComponent(key)}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
@@ -925,8 +933,12 @@ ipcMain.handle('api-keys:remove', async (_event, key) => {
 
 // Ollama
 ipcMain.handle('ollama:models', async (_event, endpoint) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', models: [] }
+
   try {
-    const res = await axios.get(`${endpoint}/api/ollama-models?endpoint=${encodeURIComponent(endpoint)}`)
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/ollama-models?endpoint=${encodeURIComponent(endpoint)}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message, models: [] }
@@ -936,15 +948,25 @@ ipcMain.handle('ollama:models', async (_event, endpoint) => {
 ipcMain.handle('ollama:health', async () => {
   const cloud = store.get('cloud')
   if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
-  
+
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.get(`${cleanUrl}/api/ollama-health`)
+    const res = await axios.get(`${cleanUrl}/api/ollama-health`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
   }
 })
+
+// Server API key (stored locally, sent as x-api-key on every server call)
+ipcMain.handle('server-key:get', () => {
+  return { success: true, key: (store.get('serverApiKey', '') as string) || '' };
+});
+
+ipcMain.handle('server-key:set', (_event, key: string) => {
+  store.set('serverApiKey', (key || '').trim());
+  return { success: true };
+});
 
 function createWindow() {
   mainWindow = new BrowserWindow({

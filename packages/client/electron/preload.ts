@@ -147,4 +147,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('reportRendererError', report),
   openErrorLog: () =>
     ipcRenderer.invoke('openErrorLog'),
+
+  // Server API key
+  getServerKey: () =>
+    ipcRenderer.invoke('server-key:get'),
+  setServerKey: (key: string) =>
+    ipcRenderer.invoke('server-key:set', key),
 });

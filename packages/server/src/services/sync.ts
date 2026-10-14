@@ -188,20 +188,37 @@ export async function handleUploadFile(
   }
 }
 
-export async function handleLocalSync(): Promise<{ success: boolean; count: number; games: string[] }> {
+export async function handleLocalSync(): Promise<{ success: boolean; count: number; games: string[]; errors: string[] }> {
   const settings = database.getSettings();
   const sources = settings.localSources || [];
   const maxVersions = settings.maxVersions || 10;
   let totalFilesSynced = 0;
   const syncedGames: string[] = [];
+  const errors: string[] = [];
 
   for (const source of sources) {
     if (!fs.existsSync(source.path)) continue;
 
-    const gamesInSource = findSaveFolders(source.path, 3);
+    let gamesInSource: string[];
+    try {
+      gamesInSource = findSaveFolders(source.path, 3);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ err: error, source: source.path }, 'Local sync scan failed');
+      errors.push(`${source.path}: ${message}`);
+      continue;
+    }
     for (const gamePath of gamesInSource) {
       const gameName = path.basename(gamePath);
-      const result = syncLocalFolder(gamePath, gameName, savesRoot(), maxVersions);
+      let result;
+      try {
+        result = syncLocalFolder(gamePath, gameName, savesRoot(), maxVersions);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error({ err: error, game: gameName }, 'Local sync folder failed');
+        errors.push(`${gameName}: ${message}`);
+        continue;
+      }
 
       if (result.filesSynced > 0) {
         totalFilesSynced += result.filesSynced;
@@ -233,5 +250,5 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
     });
   }
 
-  return { success: true, count: totalFilesSynced, games: syncedGames };
+  return { success: true, count: totalFilesSynced, games: syncedGames, errors };
 }

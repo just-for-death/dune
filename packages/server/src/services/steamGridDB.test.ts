@@ -42,16 +42,16 @@ describe('searchArt', () => {
 });
 
 describe('autoMatchAll', () => {
-  it('counts matches and skips games that already have thumbnails', async () => {
+  it('returns matches and skips games that already have thumbnails', async () => {
     getMock.mockImplementation(async (url: string) => {
       if (String(url).includes('autocomplete')) return { data: { success: true, data: [{ id: 1, name: 'A' }] } };
       return { data: { success: true, data: [{ url: 'http://img/a.jpg' }] } };
     });
-    const count = await autoMatchAll('key', [
+    const matched = await autoMatchAll('key', [
       { name: 'A', thumbnail: '' },
       { name: 'B', thumbnail: 'http://already/has.jpg' },
     ]);
-    expect(count).toBe(1);
+    expect(matched).toEqual([{ name: 'A', thumbnail: 'http://img/a.jpg' }]);
     // One search + one grids call for A only
     expect(getMock).toHaveBeenCalledTimes(2);
   });

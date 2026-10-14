@@ -55,8 +55,8 @@ export async function searchArt(apiKey: string, query: string): Promise<SteamGri
   return { success: true, results: images };
 }
 
-export async function autoMatchAll(apiKey: string, games: Array<{ name: string; thumbnail: string }>): Promise<number> {
-  let matched = 0;
+export async function autoMatchAll(apiKey: string, games: Array<{ name: string; thumbnail: string }>): Promise<Array<{ name: string; thumbnail: string }>> {
+  const matched: Array<{ name: string; thumbnail: string }> = [];
   
   for (const game of games) {
     if (game.thumbnail) continue;
@@ -64,7 +64,7 @@ export async function autoMatchAll(apiKey: string, games: Array<{ name: string; 
     try {
       const response = await searchArt(apiKey, game.name);
       if (response.success && response.results && response.results.length > 0) {
-        matched++;
+        matched.push({ name: game.name, thumbnail: response.results[0] });
       }
       await new Promise(r => setTimeout(r, 300));
     } catch {
