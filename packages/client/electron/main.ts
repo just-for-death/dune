@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import Store from 'electron-store'
@@ -25,6 +25,7 @@ const store = new Store({
     games: defaultGames,
     cloud: { url: '' },
     serverApiKey: '',
+    serverApiKeyEnc: '',
     settings: {
       runInBackground: false,
       autoSyncEnabled: false,
@@ -38,8 +39,43 @@ const store = new Store({
 // Auth header for Dune Server calls. The server requires x-api-key on every
 // route except /health; without it the whole client↔server integration 401s.
 function serverHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  const key = store.get('serverApiKey', '') as string;
+  const key = loadServerKey();
   return key ? { ...extra, 'x-api-key': key } : { ...extra };
+}
+
+// Server API key storage. Prefer the OS keychain via Electron safeStorage;
+// fall back to plaintext electron-store where encryption is unavailable
+// (e.g. Linux without a keyring) — single-user self-hosted threat model.
+const LEGACY_KEY = 'serverApiKey';
+const ENC_KEY = 'serverApiKeyEnc';
+
+function loadServerKey(): string {
+  const enc = store.get(ENC_KEY, '') as string;
+  if (enc) {
+    try {
+      return safeStorage.decryptString(Buffer.from(enc, 'base64')).toString();
+    } catch {
+      return '';
+    }
+  }
+  // Legacy plaintext (pre-keychain installs): use as-is; next set() migrates.
+  return (store.get(LEGACY_KEY, '') as string) || '';
+}
+
+function saveServerKey(key: string): void {
+  const clean = (key || '').trim();
+  if (clean && safeStorage.isEncryptionAvailable()) {
+    try {
+      store.set(ENC_KEY, safeStorage.encryptString(clean).toString('base64'));
+      store.delete(LEGACY_KEY);
+      return;
+    } catch {
+      // Fall through to plaintext.
+    }
+  } else if (!clean) {
+    store.delete(ENC_KEY);
+  }
+  store.set(LEGACY_KEY, clean);
 }
 
 function expandPath(p: string) {
@@ -960,11 +996,11 @@ ipcMain.handle('ollama:health', async () => {
 
 // Server API key (stored locally, sent as x-api-key on every server call)
 ipcMain.handle('server-key:get', () => {
-  return { success: true, key: (store.get('serverApiKey', '') as string) || '' };
+  return { success: true, key: loadServerKey() };
 });
 
 ipcMain.handle('server-key:set', (_event, key: string) => {
-  store.set('serverApiKey', (key || '').trim());
+  saveServerKey(key);
   return { success: true };
 });
 
