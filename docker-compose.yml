@@ -18,9 +18,6 @@ services:
         required: false
     volumes:
       - ./data:/app/backend/data
-    depends_on:
-      ollama:
-        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3030/ready"]
       interval: 30s
@@ -29,21 +26,6 @@ services:
       start_period: 10s
     networks:
       - dune-net
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: dune-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    networks:
-      - dune-net
-
-volumes:
-  ollama-data:
-    driver: local
 
 networks:
   dune-net:

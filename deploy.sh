@@ -33,10 +33,10 @@ case "$cmd" in
     docker compose build
     ;;
   up|deploy)
-    echo "==> Starting stack (server + ollama)…"
+    echo "==> Starting stack (server only; ollama is optional)…"
     docker compose up -d --build
     docker compose ps
-    echo "Server: http://localhost:3023  |  tRPC: http://localhost:3023/trpc  |  Ollama: http://localhost:11434"
+    echo "Server: http://localhost:3023  |  tRPC: http://localhost:3023/trpc"
     ;;
   down)
     docker compose down
