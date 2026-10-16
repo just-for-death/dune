@@ -1,5 +1,6 @@
 import type { CreateHTTPContextOptions } from '@trpc/server/adapters/standalone';
 import { database } from '../db/index.js';
+import { extractApiKey } from '../utils/authKey.js';
 import type { Settings } from '../types/index.js';
 
 export interface TRPCContext {
@@ -12,27 +13,15 @@ export interface TRPCContext {
   userId?: string;
 }
 
-function extractApiKey(req: CreateHTTPContextOptions['req']): string | null {
-  const header = req.headers['x-api-key'];
-  if (typeof header === 'string' && header.length > 0) return header;
-  if (Array.isArray(header) && header.length > 0) return header[0];
-  // Support ?api_key= for browser-driven dashboard fetches
-  const url = req.url || '';
-  const qIndex = url.indexOf('?');
-  if (qIndex >= 0) {
-    try {
-      const params = new URLSearchParams(url.slice(qIndex + 1));
-      const q = params.get('api_key');
-      if (q) return q;
-    } catch {
-      return null;
-    }
-  }
-  return null;
+function extractKey(req: CreateHTTPContextOptions['req']): string | null {
+  return extractApiKey(
+    req.headers as Record<string, string | string[] | undefined>,
+    req.url,
+  );
 }
 
 export async function createContext({ req }: CreateHTTPContextOptions): Promise<TRPCContext> {
-  const apiKey = extractApiKey(req);
+  const apiKey = extractKey(req);
   return {
     db: database.getGames(),
     settings: database.getSettings(),

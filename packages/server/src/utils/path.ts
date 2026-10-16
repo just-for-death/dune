@@ -17,13 +17,79 @@ export function savesDir(): string {
   return path.join(dataDir(), 'saves');
 }
 
-export function normalizeUrl(url: string): string {
-  if (!url) return '';
-  let normalized = url.trim();
-  if (!/^https?:\/\//i.test(normalized)) {
+export function validateServerUrl(rawUrl: string): { valid: boolean; url: string; error?: string } {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return { valid: false, url: '', error: 'Server URL is required' };
+  }
+  let normalized = rawUrl.trim();
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//i.test(normalized)) {
+    if (!/^https?:\/\//i.test(normalized)) {
+      return { valid: false, url: '', error: 'Only HTTP and HTTPS protocols are allowed' };
+    }
+  } else {
     normalized = 'http://' + normalized;
   }
-  return normalized.replace(/\/+$/, '');
+  normalized = normalized.replace(/\/+$/, '');
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return { valid: false, url: '', error: 'Invalid URL format' };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { valid: false, url: '', error: 'Only HTTP and HTTPS protocols are allowed' };
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  // SSRF Protection: Block cloud metadata endpoints & link-local addresses
+  const blockedHostnames = [
+    '169.254.169.254',
+    'metadata.google.internal',
+    '100.100.100.200',
+    '169.254.169.253',
+    'instance-data',
+  ];
+  if (blockedHostnames.includes(hostname) || hostname.endsWith('.metadata.google.internal')) {
+    return { valid: false, url: '', error: 'Access to cloud metadata endpoints is prohibited' };
+  }
+
+  // Block IPv4 link-local (169.254.0.0/16)
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+    return { valid: false, url: '', error: 'Access to link-local IPv4 addresses is prohibited' };
+  }
+
+  // Block IPv6 link-local and unique local
+  if (
+    hostname.startsWith('fe80:') ||
+    hostname.startsWith('fd00:') ||
+    hostname.startsWith('[fe80:') ||
+    hostname.startsWith('[fd00:')
+  ) {
+    return { valid: false, url: '', error: 'Access to link-local/unique-local IPv6 addresses is prohibited' };
+  }
+
+  // Dangerous non-HTTP ports
+  if (parsed.port) {
+    const port = parseInt(parsed.port, 10);
+    const blockedPorts = [21, 22, 23, 25, 53, 69, 110, 119, 123, 143, 161, 194, 445];
+    if (blockedPorts.includes(port)) {
+      return { valid: false, url: '', error: `Port ${port} is not allowed` };
+    }
+  }
+
+  return { valid: true, url: normalized };
+}
+
+export function normalizeUrl(url: string): string {
+  if (!url) return '';
+  const check = validateServerUrl(url);
+  if (!check.valid) {
+    throw new Error(check.error || 'Invalid server URL');
+  }
+  return check.url;
 }
 
 export function getGameRoot(gameName: string): string {

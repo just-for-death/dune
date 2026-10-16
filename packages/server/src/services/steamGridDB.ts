@@ -57,6 +57,7 @@ export async function searchArt(apiKey: string, query: string): Promise<SteamGri
 
 export async function autoMatchAll(apiKey: string, games: Array<{ name: string; thumbnail: string }>): Promise<Array<{ name: string; thumbnail: string }>> {
   const matched: Array<{ name: string; thumbnail: string }> = [];
+  const errors: Array<{ game: string; error: string }> = [];
   
   for (const game of games) {
     if (game.thumbnail) continue;
@@ -67,9 +68,15 @@ export async function autoMatchAll(apiKey: string, games: Array<{ name: string; 
         matched.push({ name: game.name, thumbnail: response.results[0] });
       }
       await new Promise(r => setTimeout(r, 300));
-    } catch {
-      // Continue on error
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn({ err: message, game: game.name }, 'SteamGridDB auto-match failed for game');
+      errors.push({ game: game.name, error: message });
     }
+  }
+  
+  if (errors.length > 0) {
+    logger.warn({ errors }, 'Some games failed auto-match');
   }
   
   return matched;

@@ -48,6 +48,8 @@ test-results/
 playwright-report/
 backups/
 release/
+# Local dev runtime config (created on first run; never commit)
+config/
 
 # OS
 Thumbs.db

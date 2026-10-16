@@ -6,15 +6,14 @@ import type {
   HLTBTimes,
   PlaytimeSummary,
   AchievementSummary,
+  Settings as SharedSettings,
+  FileAnalysis,
 } from '@dune/shared';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // Must mirror every key exposed in electron/preload.ts contextBridge call
-// (preload.ts is the runtime truth). Domain shapes Cloud/Toast/HLTBTimes/
-// PlaytimeSummary/AchievementSummary are canonical in @dune/shared; Game,
-// Settings and Achievement stay local until shared matches the preload wire
-// format exactly (shared currently requires createdAt/updatedAt and uses
-// server-side Settings).
+// (preload.ts is the runtime truth). Domain shapes from @dune/shared are
+// canonical; local interfaces only for client-specific UI state.
 interface ElectronAPI {
   exportSaves: () => Promise<{ success: boolean; path?: string; message?: string }>;
   syncCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
@@ -67,15 +66,21 @@ interface Game {
   lastSync: string;
   status: string;
   thumbnail: string;
+  analysis?: Record<string, FileAnalysis>;
+  createdAt: string;
+  updatedAt: string;
 }
 
-interface Settings {
-  runInBackground: boolean;
-  autoSyncEnabled: boolean;
-  autoSyncFreq: string;
-  steamGridDbKey: string;
-  scanRoots: string[];
-}
+// Use shared Settings type (includes server-side fields)
+// Local-only settings that differ from shared: runInBackground, autoSyncEnabled, etc.
+// We extend the shared type with client-only fields
+type Settings = SharedSettings & {
+  runInBackground?: boolean;
+  autoSyncEnabled?: boolean;
+  autoSyncFreq?: string;
+  steamGridDbKey?: string;
+  scanRoots?: string[];
+};
 
 interface Achievement {
   id: number;
@@ -87,6 +92,8 @@ interface Achievement {
   unlockTime: string | null;
   rarity: number;
   hidden: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 declare global {
@@ -133,7 +140,15 @@ export default function App() {
     autoSyncEnabled: false,
     autoSyncFreq: 'never',
     steamGridDbKey: '',
-    scanRoots: []
+    scanRoots: [],
+    // Server-side settings from shared
+    maxVersions: 10,
+    steamGridApiKey: '',
+    ollamaEndpoint: 'http://localhost:11434',
+    ollamaModel: 'phi4-mini:latest',
+    apiKeys: [],
+    localSources: [],
+    remoteServers: [],
   });
 
   const [newGameName, setNewGameName] = useState('');
@@ -239,18 +254,18 @@ export default function App() {
   const handleAddRoot = async () => {
     const res = await window.electronAPI.selectDirectory();
     if (res && res.success && res.path) {
-      if (settings.scanRoots.includes(res.path)) {
+      if ((settings.scanRoots ?? []).includes(res.path)) {
         showToast('Location already added', 'info');
         return;
       }
-      const roots = [...settings.scanRoots, res.path];
+      const roots = [...(settings.scanRoots ?? []), res.path];
       saveSettings({ scanRoots: roots });
       showToast('Scan location added', 'success');
     }
   };
 
   const handleRemoveRoot = (r: string) => {
-    saveSettings({ scanRoots: settings.scanRoots.filter(x => x !== r) });
+    saveSettings({ scanRoots: (settings.scanRoots ?? []).filter(x => x !== r) });
   };
 
   const handleAddGame = async () => {
@@ -267,13 +282,16 @@ export default function App() {
       return;
     }
     try {
+      const now = new Date().toISOString();
       const added = await window.electronAPI.addGame({
         name: newGameName.trim(),
         winPath: newGameWin.trim(),
         linPath: newGameLin.trim(),
         lastSync: 'Never',
         status: 'Pending Upload',
-        thumbnail: ''
+        thumbnail: '',
+        createdAt: now,
+        updatedAt: now
       });
       setGames(added);
       setNewGameName(''); setNewGameWin(''); setNewGameLin('');
@@ -286,7 +304,7 @@ export default function App() {
   const handleAutoScan = async () => {
     setIsScanning(true);
     try {
-      const res = await window.electronAPI.autoDetectGames(settings.scanRoots);
+      const res = await window.electronAPI.autoDetectGames(settings.scanRoots ?? []);
       setGames(res.currentGames);
       showToast(`Scan complete! Found ${res.count} game(s)`, 'success');
     } catch {
@@ -852,9 +870,9 @@ export default function App() {
                 Custom Scan Locations
                 <button className="btn btn-secondary btn-sm" onClick={handleAddRoot}>+ Add Root</button>
               </h3>
-              {settings.scanRoots.length > 0 ? (
+              {(settings.scanRoots ?? []).length > 0 ? (
                 <ul className="scan-list">
-                  {settings.scanRoots.map((r, i) => (
+                  {(settings.scanRoots ?? []).map((r, i) => (
                     <li key={i} className="scan-row">{r} <button className="link-btn-danger" onClick={() => handleRemoveRoot(r)}>remove</button></li>
                   ))}
                 </ul>

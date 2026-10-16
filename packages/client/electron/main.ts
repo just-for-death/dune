@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage, session } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import Store from 'electron-store'
@@ -24,7 +24,6 @@ const store = new Store({
   defaults: {
     games: defaultGames,
     cloud: { url: '' },
-    serverApiKey: '',
     serverApiKeyEnc: '',
     settings: {
       runInBackground: false,
@@ -43,47 +42,152 @@ function serverHeaders(extra: Record<string, string> = {}): Record<string, strin
   return key ? { ...extra, 'x-api-key': key } : { ...extra };
 }
 
-// Server API key storage. Prefer the OS keychain via Electron safeStorage;
-// fall back to plaintext electron-store where encryption is unavailable
-// (e.g. Linux without a keyring) — single-user self-hosted threat model.
+// Server API key storage. Enforce OS keychain via Electron safeStorage;
+// NEVER persist plaintext API keys to disk. If keychain is unavailable,
+// hold key in memory for the active session only with an explicit security warning.
 const LEGACY_KEY = 'serverApiKey';
 const ENC_KEY = 'serverApiKeyEnc';
+let sessionServerKey = '';
 
 function loadServerKey(): string {
+  if (sessionServerKey) return sessionServerKey;
   const enc = store.get(ENC_KEY, '') as string;
   if (enc) {
     try {
-      return safeStorage.decryptString(Buffer.from(enc, 'base64')).toString();
+      if (safeStorage.isEncryptionAvailable()) {
+        return safeStorage.decryptString(Buffer.from(enc, 'base64')).toString();
+      }
     } catch {
       return '';
     }
   }
-  // Legacy plaintext (pre-keychain installs): use as-is; next set() migrates.
-  return (store.get(LEGACY_KEY, '') as string) || '';
+  // If legacy plaintext key was present in store, migrate if possible and purge from disk
+  const legacy = (store as any).get(LEGACY_KEY, '') as string;
+  if (legacy) {
+    (store as any).delete(LEGACY_KEY);
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        store.set(ENC_KEY, safeStorage.encryptString(legacy).toString('base64'));
+        return legacy;
+      } catch {
+        return '';
+      }
+    } else {
+      console.warn('[Security] Plaintext legacy API key removed from disk. Keychain unavailable; held in memory for this session only.');
+      sessionServerKey = legacy;
+      return legacy;
+    }
+  }
+  return '';
 }
 
 function saveServerKey(key: string): void {
   const clean = (key || '').trim();
-  if (clean && safeStorage.isEncryptionAvailable()) {
+  if (!clean) {
+    sessionServerKey = '';
+    store.delete(ENC_KEY);
+    (store as any).delete(LEGACY_KEY);
+    return;
+  }
+
+  if (safeStorage.isEncryptionAvailable()) {
     try {
       store.set(ENC_KEY, safeStorage.encryptString(clean).toString('base64'));
-      store.delete(LEGACY_KEY);
+      (store as any).delete(LEGACY_KEY);
+      sessionServerKey = '';
       return;
-    } catch {
-      // Fall through to plaintext.
+    } catch (err) {
+      console.error('[Security] Failed to encrypt API key with OS keychain:', err);
     }
-  } else if (!clean) {
-    store.delete(ENC_KEY);
   }
-  store.set(LEGACY_KEY, clean);
+
+  // OS keychain unavailable or encryption failed:
+  // Never write plaintext to disk (electron-store). Keep only in memory for this session.
+  console.warn('[Security] OS keychain encryption unavailable. Refusing to persist server API key in plaintext to disk. Key held in memory for current session only.');
+  sessionServerKey = clean;
+  (store as any).delete(LEGACY_KEY);
+}
+
+export function validateServerUrl(rawUrl: string): { valid: boolean; url: string; error?: string } {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return { valid: false, url: '', error: 'Server URL is required' };
+  }
+  let normalized = rawUrl.trim();
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//i.test(normalized)) {
+    if (!/^https?:\/\//i.test(normalized)) {
+      return { valid: false, url: '', error: 'Only HTTP and HTTPS protocols are allowed' };
+    }
+  } else {
+    normalized = 'http://' + normalized;
+  }
+  normalized = normalized.replace(/\/+$/, '');
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return { valid: false, url: '', error: 'Invalid URL format' };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { valid: false, url: '', error: 'Only HTTP and HTTPS protocols are allowed' };
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  // SSRF Protection: Block cloud metadata endpoints & link-local addresses
+  const blockedHostnames = [
+    '169.254.169.254',
+    'metadata.google.internal',
+    '100.100.100.200',
+    '169.254.169.253',
+    'instance-data',
+  ];
+  if (blockedHostnames.includes(hostname) || hostname.endsWith('.metadata.google.internal')) {
+    return { valid: false, url: '', error: 'Access to cloud metadata endpoints is prohibited' };
+  }
+
+  // Block IPv4 link-local (169.254.0.0/16)
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+    return { valid: false, url: '', error: 'Access to link-local IPv4 addresses is prohibited' };
+  }
+
+  // Block IPv6 link-local and unique local
+  if (
+    hostname.startsWith('fe80:') ||
+    hostname.startsWith('fd00:') ||
+    hostname.startsWith('[fe80:') ||
+    hostname.startsWith('[fd00:')
+  ) {
+    return { valid: false, url: '', error: 'Access to link-local/unique-local IPv6 addresses is prohibited' };
+  }
+
+  // Dangerous non-HTTP ports
+  if (parsed.port) {
+    const port = parseInt(parsed.port, 10);
+    const blockedPorts = [21, 22, 23, 25, 53, 69, 110, 119, 123, 143, 161, 194, 445];
+    if (blockedPorts.includes(port)) {
+      return { valid: false, url: '', error: `Port ${port} is not allowed` };
+    }
+  }
+
+  return { valid: true, url: normalized };
+}
+
+function normalizeUrl(url: string): string {
+  const check = validateServerUrl(url);
+  if (!check.valid) {
+    throw new Error(check.error || 'Invalid server URL');
+  }
+  return check.url;
 }
 
 function expandPath(p: string) {
-  if (!p) return ''
+  if (!p) return '';
   if (process.platform === 'win32') {
-    return p.replace(/%USERPROFILE%/g, process.env.USERPROFILE || '')
+    return p.replace(/%USERPROFILE%/g, process.env.USERPROFILE || '');
   } else {
-    return p.replace(/^~/, process.env.HOME || '')
+    return p.replace(/^~/, process.env.HOME || '');
   }
 }
 
@@ -92,15 +196,6 @@ let tray: Tray | null = null;
 let isQuitting = false;
 let mainWindow: BrowserWindow | null = null;
 let isCloudSyncing = false;
-
-function normalizeUrl(url: string) {
-  if (!url) return '';
-  let normalized = url.trim();
-  if (!/^https?:\/\//i.test(normalized)) {
-    normalized = 'http://' + normalized;
-  }
-  return normalized.replace(/\/+$/, '');
-}
 
 function setupAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
@@ -451,16 +546,18 @@ ipcMain.handle('dialog:selectDirectory', async () => {
 })
 
 ipcMain.handle('games:autodetect', async (_event, customRoots) => {
-  const detected = await autoDetectGames(customRoots || [])
-  const games: any = store.get('games') || []
+  const storedRoots = (store.get('settings') as any)?.scanRoots || [];
+  const roots = Array.isArray(customRoots) && customRoots.length > 0 ? customRoots : storedRoots;
+  const detected = await autoDetectGames(roots);
+  const games: any = store.get('games') || [];
   for (const d of detected) {
     if (!games.find((g: any) => g.name === d.name)) {
-      games.push({ ...d, thumbnail: '' })
+      games.push({ ...d, thumbnail: '' });
     }
   }
-  store.set('games', games)
-  return { count: detected.length, currentGames: games }
-})
+  store.set('games', games);
+  return { count: detected.length, currentGames: games };
+});
 
 ipcMain.handle('sync:export', async () => {
   if (!mainWindow) return { success: false }
@@ -1100,26 +1197,52 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(() => {
-  if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true })
-
-  protocol.registerFileProtocol('local', (request, callback) => {
-    // Sandbox: only thumbnails written by this app are servable. Anything
-    // else (including traversal attempts) is rejected.
-    try {
-      const resolved = path.resolve(decodeURIComponent(request.url.replace('local://', '')))
-      const root = path.resolve(thumbDir) + path.sep
-      if (!resolved.startsWith(root)) {
-        return callback({ error: -6 })
-      }
-      return callback({ path: resolved })
-    } catch (e) {
-      console.error(e)
-      return callback({ error: -6 })
+// Single instance lock: prevent multiple client instances from corrupting store data
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
     }
-  })
+  });
 
-  createWindow()
-  setupAutoSync()
-  setupAutoUpdates()
-})
+  app.whenReady().then(() => {
+    // Content-Security-Policy: restrict origins, disallow untrusted execution
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [
+            "default-src 'self' 'unsafe-inline' local: data:; connect-src 'self' http: https:; img-src 'self' local: data: https: http:; font-src 'self' data: https:;"
+          ]
+        }
+      });
+    });
+
+    if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
+
+    protocol.registerFileProtocol('local', (request, callback) => {
+      // Sandbox: only thumbnails written by this app are servable. Anything
+      // else (including traversal attempts) is rejected.
+      try {
+        const resolved = path.resolve(decodeURIComponent(request.url.replace('local://', '')));
+        const root = path.resolve(thumbDir) + path.sep;
+        if (!resolved.startsWith(root)) {
+          return callback({ error: -6 });
+        }
+        return callback({ path: resolved });
+      } catch (e) {
+        console.error(e);
+        return callback({ error: -6 });
+      }
+    });
+
+    createWindow();
+    setupAutoSync();
+    setupAutoUpdates();
+  });
+}

@@ -261,7 +261,10 @@ export function initConfig(customPath?: string): ConfigManager {
     return globalConfigManager;
   }
   
-  const resolvedPath = customPath || process.env.DUNE_CONFIG_PATH || path.join(process.cwd(), 'config', 'dune.config.json');
+  const resolvedPath = customPath
+    || (process.env.DUNE_CONFIG_DIR ? path.join(process.env.DUNE_CONFIG_DIR, 'dune.config.json') : undefined)
+    || process.env.DUNE_CONFIG_PATH
+    || path.join(process.cwd(), 'config', 'dune.config.json');
   
   globalConfigManager = new ConfigManager({
     configPath: resolvedPath,

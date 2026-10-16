@@ -52,9 +52,9 @@ export async function handleUploadFile(
 
     // Per-game file-count cap (cheap guard against zip-bombs / runaway syncs)
     try {
+      let count = 0;
       const gameRoot = getGameRoot(gameName);
       if (fs.existsSync(gameRoot) && !fs.existsSync(finalPath)) {
-        let count = 0;
         const stack: string[] = [gameRoot];
         while (stack.length > 0) {
           const dir = stack.pop() as string;
@@ -196,38 +196,37 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
   const syncedGames: string[] = [];
   const errors: string[] = [];
 
-  for (const source of sources) {
-    if (!fs.existsSync(source.path)) continue;
+  // Use a single lock for the entire local sync operation to prevent
+  // race conditions between concurrent syncs (from auto-sync + manual trigger)
+  return withDbLock(async () => {
+    for (const source of sources) {
+      if (!fs.existsSync(source.path)) continue;
 
-    let gamesInSource: string[];
-    try {
-      gamesInSource = findSaveFolders(source.path, 3);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error({ err: error, source: source.path }, 'Local sync scan failed');
-      errors.push(`${source.path}: ${message}`);
-      continue;
-    }
-    for (const gamePath of gamesInSource) {
-      const gameName = path.basename(gamePath);
-      let result;
+      let gamesInSource: string[];
       try {
-        result = syncLocalFolder(gamePath, gameName, savesRoot(), maxVersions);
+        gamesInSource = findSaveFolders(source.path, 3);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        logger.error({ err: error, game: gameName }, 'Local sync folder failed');
-        errors.push(`${gameName}: ${message}`);
+        logger.error({ err: error, source: source.path }, 'Local sync scan failed');
+        errors.push(`${source.path}: ${message}`);
         continue;
       }
+      for (const gamePath of gamesInSource) {
+        const gameName = path.basename(gamePath);
+        let result;
+        try {
+          result = syncLocalFolder(gamePath, gameName, savesRoot(), maxVersions);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error({ err: error, game: gameName }, 'Local sync folder failed');
+          errors.push(`${gameName}: ${message}`);
+          continue;
+        }
 
-      if (result.filesSynced > 0) {
-        totalFilesSynced += result.filesSynced;
-        syncedGames.push(gameName);
+        if (result.filesSynced > 0) {
+          totalFilesSynced += result.filesSynced;
+          syncedGames.push(gameName);
 
-        // Serialize against concurrent uploads: upsertGame is
-        // read-modify-write, and the FS work above awaits, so an
-        // unlocked upsert here could clobber a parallel status update.
-        await withDbLock(() => {
           const ts = new Date().toISOString();
           database.upsertGame({
             id: Date.now() + Math.random(),
@@ -236,19 +235,19 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
             lastSync: ts,
             thumbnail: '',
             createdAt: ts,
-            updatedAt: ts,
+            updatedAt: ts
           });
-        });
+        }
       }
     }
-  }
 
-  if (syncedGames.length > 0) {
-    const uniqueGames = [...new Set(syncedGames)];
-    setImmediate(() => {
-      triggerRemoteSync(uniqueGames).catch(err => logger.error({ err }, 'Remote sync error'));
-    });
-  }
+    if (syncedGames.length > 0) {
+      const uniqueGames = [...new Set(syncedGames)];
+      setImmediate(() => {
+        triggerRemoteSync(uniqueGames).catch(err => logger.error({ err }, 'Remote sync error'));
+      });
+    }
 
-  return { success: true, count: totalFilesSynced, games: syncedGames, errors };
+    return { success: true, count: totalFilesSynced, games: syncedGames, errors };
+  });
 }

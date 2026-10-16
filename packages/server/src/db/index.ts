@@ -199,6 +199,8 @@ if (getApiKeys().length === 0) {
   const defaultKey = 'dune-dev-key-' + Date.now();
   addApiKey(defaultKey, 'Default development key');
   logger.warn('Generated default API key — replace it via apiKeys.add and delete this one');
+  // Full key shown once on purpose: a fresh install has no other way to
+  // obtain a key (adding one requires auth). Rotate it immediately.
   logger.info({ apiKey: defaultKey }, 'Default API key (shown once)');
 }
 

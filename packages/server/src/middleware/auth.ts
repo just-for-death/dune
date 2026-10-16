@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { database } from '../db/index.js';
+import { extractApiKey } from '../utils/authKey.js';
 
 export interface AuthenticatedRequest extends Request {
   apiKey?: string;
@@ -14,7 +15,7 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
     return next();
   }
 
-  const apiKey = req.headers['x-api-key'] as string || req.query.api_key as string;
+  const apiKey = extractApiKey(req.headers as Record<string, string | string[] | undefined>, req.url);
   
   if (!apiKey) {
     res.status(401).json({ success: false, message: 'API key required' });
@@ -31,7 +32,7 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
 }
 
 export function optionalAuthMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  const apiKey = req.headers['x-api-key'] as string || req.query.api_key as string;
+  const apiKey = extractApiKey(req.headers as Record<string, string | string[] | undefined>, req.url);
 
   if (apiKey) {
     if (database.isValidApiKey(apiKey)) {
