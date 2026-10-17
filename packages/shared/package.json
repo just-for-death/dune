@@ -1,6 +1,6 @@
 {
   "name": "@dune/shared",
-  "version": "0.1.0-beta.1",
+  "version": "0.2.0-beta.1",
   "description": "Shared TypeScript types for Dune ecosystem \u2014 client (Electron) and server (Express) type contracts, IPC API definitions, and domain models",
   "keywords": [
     "dune",
