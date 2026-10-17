@@ -6,6 +6,7 @@ import { database, writeDB, withDbLock } from '../db/index.js';
 import { getGameRoot, validateGamePath, savesDir } from '../utils/path.js';
 import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
+import { invalidateGame } from './manifest.js';
 import { logger } from '../middleware/logging.js';
 
 const execFileAsync = promisify(execFile);
@@ -158,6 +159,9 @@ export async function handleUploadFile(
       }
     }
 
+    // Fingerprints for this game are now stale (new/overwritten files).
+    invalidateGame(gameName);
+
     // Status update re-reads inside the lock: awaits above (streaming
     // upload, unzip) yield, so a snapshot taken earlier could clobber
     // a concurrent upload's update.
@@ -236,6 +240,7 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
         if (result.filesSynced > 0) {
           totalFilesSynced += result.filesSynced;
           syncedGames.push(gameName);
+          invalidateGame(gameName);
 
           const ts = new Date().toISOString();
           // Omit thumbnail/analysis: omit means "preserve", so re-syncing a

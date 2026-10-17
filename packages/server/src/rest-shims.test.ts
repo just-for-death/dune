@@ -237,3 +237,42 @@ describe('bundled dashboard (tracked, dependency-free)', () => {
     expect(res.body).toEqual({ success: false, message: 'Not found' });
   });
 });
+
+describe('delta sync endpoints', () => {
+  const game = 'DeltaGame';
+  const gameDir = path.join(TMP, 'saves', game);
+
+  it('returns a content-hash manifest, and 400 without a game', async () => {
+    fs.mkdirSync(gameDir, { recursive: true });
+    fs.writeFileSync(path.join(gameDir, 'slot1.sav'), 'hello');
+
+    expect((await api(request(app).get('/api/manifest'))).status).toBe(400);
+
+    const res = await api(request(app).get(`/api/manifest?game=${game}`));
+    expect(res.status).toBe(200);
+    expect(res.body.files[0]).toMatchObject({ path: 'slot1.sav', size: 5 });
+    expect(res.body.files[0].hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('removes a file, contains traversal, and rejects an escaping path', async () => {
+    fs.mkdirSync(gameDir, { recursive: true });
+    fs.writeFileSync(path.join(gameDir, 'slot1.sav'), 'hello');
+
+    // Leading `../` is neutralized by validateGamePath: never touches the parent.
+    await api(request(app).delete(`/api/file?game=${game}&path=../escape.sav`));
+    expect(fs.existsSync(path.join(TMP, 'saves', 'escape.sav'))).toBe(false);
+
+    // A path that still normalizes outside the game root is rejected outright.
+    const escaping = await api(
+      request(app).delete(
+        `/api/file?game=${game}&path=${encodeURIComponent('sub/../../../../etc/passwd')}`,
+      ),
+    );
+    expect(escaping.status).toBe(400);
+
+    const ok = await api(request(app).delete(`/api/file?game=${game}&path=slot1.sav`));
+    expect(ok.status).toBe(200);
+    expect(fs.existsSync(path.join(gameDir, 'slot1.sav'))).toBe(false);
+    expect((await api(request(app).delete(`/api/file?game=${game}&path=slot1.sav`))).status).toBe(404);
+  });
+});

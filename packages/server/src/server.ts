@@ -6,6 +6,7 @@ import { authMiddleware, optionalAuthMiddleware, AuthenticatedRequest } from './
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
 import { dataDir, validateGamePath, getGameRoot, listFilesInDir } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
+import { manifestForGame, removeGameFile } from './services/manifest.js';
 import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
 import { checkReadiness } from './services/health.js';
@@ -158,6 +159,36 @@ app.get('/api/list-files', authMiddleware, (req, res) => {
     const gameDir = getGameRoot(game.toString());
     if (!fs.existsSync(gameDir)) return res.json({ success: true, files: [] });
     res.json({ success: true, files: listFilesInDir(gameDir) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// Delta sync: content-hash manifest for a game. Clients diff this against the
+// manifest they last pulled to transfer only changed files.
+app.get('/api/manifest', authMiddleware, (req, res) => {
+  try {
+    const { game } = req.query;
+    if (!game) return res.status(400).json({ success: false, message: 'Game required' });
+    res.json({ success: true, files: manifestForGame(game.toString()) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// Delta sync: remove a single file (client mirrors a local deletion).
+app.delete('/api/file', authMiddleware, (req, res) => {
+  try {
+    const { game, path: filePath } = req.query;
+    if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
+    try {
+      validateGamePath(game.toString(), filePath.toString());
+    } catch {
+      return res.status(400).json({ success: false, message: 'Invalid path' });
+    }
+    const removed = removeGameFile(game.toString(), filePath.toString());
+    if (!removed) return res.status(404).json({ success: false, message: 'File not found' });
+    res.json({ success: true });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }

@@ -3,12 +3,13 @@ import { z } from 'zod';
 import { router, publicProcedure, authedProcedure } from './trpc.js';
 import { database } from '../db/index.js';
 import { handleLocalSync } from '../services/sync.js';
+import { manifestForGame, removeGameFile } from '../services/manifest.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from '../services/ollama.js';
 import { getHLTBTimes, bulkFetchHLTB } from '../services/hltb.js';
 import { searchArt, autoMatchAll } from '../services/steamGridDB.js';
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from '../services/playtime.js';
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from '../services/achievements.js';
-import { normalizeUrl, getGameRoot, listFilesInDir } from '../utils/path.js';
+import { normalizeUrl, getGameRoot, listFilesInDir, validateGamePath } from '../utils/path.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
@@ -99,6 +100,12 @@ export const appRouter = router({
       const result = await handleLocalSync();
       return result;
     }),
+
+    manifest: authedProcedure
+      .input(z.object({ game: z.string() }))
+      .query(async ({ input }) => {
+        return { success: true, files: manifestForGame(path.basename(input.game)) };
+      }),
   },
 
   files: {
@@ -116,6 +123,21 @@ export const appRouter = router({
       .input(z.object({ game: z.string(), path: z.string() }))
       .query(async () => {
         return { success: true, message: 'Use REST endpoint for file download' };
+      }),
+
+    remove: authedProcedure
+      .input(z.object({ game: z.string(), path: z.string() }))
+      .mutation(async ({ input }) => {
+        const gameName = path.basename(input.game);
+        try {
+          validateGamePath(gameName, input.path);
+        } catch {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid path' });
+        }
+        if (!removeGameFile(gameName, input.path)) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'File not found' });
+        }
+        return { success: true };
       }),
 
     versions: {

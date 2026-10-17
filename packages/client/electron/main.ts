@@ -4,6 +4,8 @@ import * as fs from 'fs'
 import Store from 'electron-store'
 import AdmZip from 'adm-zip'
 import axios from 'axios'
+import { diffFingerprints, changedPaths } from '@dune/shared'
+import type { FileManifest, HashManifest } from '@dune/shared'
 import { autoDetectGames } from './scanner'
 import { autoUpdater } from 'electron-updater'
 
@@ -25,6 +27,9 @@ const store = new Store({
     games: defaultGames,
     cloud: { url: '' },
     serverApiKeyEnc: '',
+    // Per-game delta state: `uploaded` = fingerprints this client last pushed,
+    // `remote` = the server manifest this client last pulled.
+    syncState: {},
     settings: {
       runInBackground: false,
       autoSyncEnabled: false,
@@ -223,6 +228,100 @@ function setupAutoSync() {
   }
 }
 
+// ── Delta sync ───────────────────────────────────────────────────────────────
+// Only changed files are transferred. Manifests are keyed by POSIX relative
+// paths so upload/restore diffs are correct across operating systems.
+interface GameSyncState {
+  uploaded?: FileManifest;
+  remote?: HashManifest;
+}
+type SyncState = Record<string, GameSyncState>;
+
+function toPosix(rel: string): string {
+  return rel.split(path.sep).join('/');
+}
+
+function getSyncState(): SyncState {
+  return (store.get('syncState') as SyncState) || {};
+}
+
+function saveGameState(game: string, patch: Partial<GameSyncState>): void {
+  const state = getSyncState();
+  state[game] = { ...(state[game] || {}), ...patch };
+  store.set('syncState', state);
+}
+
+/** size+mtime fingerprint for every readable local file, keyed by POSIX rel. */
+function buildLocalManifest(files: { local: string; rel: string }[]): FileManifest {
+  const manifest: FileManifest = {};
+  for (const f of files) {
+    try {
+      const stat = fs.statSync(f.local);
+      manifest[toPosix(f.rel)] = { size: stat.size, mtimeMs: Math.round(stat.mtimeMs) };
+    } catch {
+      /* unreadable: treat as absent */
+    }
+  }
+  return manifest;
+}
+
+interface PlannedUpload {
+  game: string;
+  rel: string;
+  local: string;
+}
+
+/**
+ * Reduce a game's local files to the ones that changed since the last push.
+ * `deleted` names files that were pushed before but are gone now; it stays
+ * empty when the local tree is empty, so an unmounted/empty save dir can never
+ * wipe the server copy.
+ */
+function planUpload(
+  game: string,
+  files: { local: string; rel: string }[],
+): { plan: PlannedUpload[]; localManifest: FileManifest; deleted: string[] } {
+  const localManifest = buildLocalManifest(files);
+  const delta = diffFingerprints(getSyncState()[game]?.uploaded || {}, localManifest);
+  const wanted = new Set(changedPaths(delta));
+  const plan = files
+    .map(f => ({ game, rel: toPosix(f.rel), local: f.local }))
+    .filter(f => wanted.has(f.rel));
+  const deleted = files.length > 0 ? delta.deleted : [];
+  return { plan, localManifest, deleted };
+}
+
+/** Persist what actually landed: unchanged + succeeded, minus failures. */
+function commitUploaded(game: string, localManifest: FileManifest, failedRels: string[]): void {
+  const uploaded = { ...localManifest };
+  for (const rel of failedRels) delete uploaded[rel];
+  saveGameState(game, { uploaded });
+}
+
+async function deleteRemoteFile(baseUrl: string, gameName: string, relativePath: string): Promise<void> {
+  const cleanUrl = normalizeUrl(baseUrl);
+  await axios.delete(`${cleanUrl}/api/file`, {
+    headers: serverHeaders(),
+    params: { game: gameName, path: relativePath },
+  });
+}
+
+/**
+ * Pull a game's server manifest and store it as the restore baseline. Called
+ * after a push so a later restore only downloads what actually changed instead
+ * of re-fetching everything this client just uploaded.
+ */
+async function refreshRemoteManifest(baseUrl: string, gameName: string): Promise<void> {
+  const cleanUrl = normalizeUrl(baseUrl);
+  const res = await axios.get(`${cleanUrl}/api/manifest?game=${encodeURIComponent(gameName)}`, {
+    headers: serverHeaders(),
+  });
+  const files: { path: string; hash: string }[] = res.data.files || [];
+  const manifest: HashManifest = {};
+  for (const file of files) manifest[file.path] = file.hash;
+  saveGameState(gameName, { remote: manifest });
+}
+
 async function uploadFile(baseUrl: string, gameName: string, localPath: string, relativePath: string, syncId?: string) {
   const cleanUrl = normalizeUrl(baseUrl);
   const stream = fs.createReadStream(localPath);
@@ -275,27 +374,45 @@ async function performCloudSync(credentials: any) {
         }
 
         const syncId = Date.now().toString();
+        const { plan, localManifest, deleted } = planUpload(game.name, filePaths);
         let attempted = 0;
-        let failed = 0;
-        for (let i = 0; i < filePaths.length; i += 5) {
-          const chunk = filePaths.slice(i, i + 5);
+        const failedRels: string[] = [];
+        for (let i = 0; i < plan.length; i += 5) {
+          const chunk = plan.slice(i, i + 5);
           await Promise.all(chunk.map(async (f) => {
             attempted++;
             try {
-              await uploadFile(cleanUrl, game.name, f.local, f.rel, syncId);
+              await uploadFile(cleanUrl, f.game, f.local, f.rel, syncId);
             } catch (e) {
-              failed++;
+              failedRels.push(f.rel);
               console.error(`Failed to sync ${f.rel}:`, e);
             }
           }));
         }
+        // Mirror local deletions (best-effort; never fatal).
+        for (const rel of deleted) {
+          try {
+            await deleteRemoteFile(cleanUrl, game.name, rel);
+          } catch {
+            /* keep going */
+          }
+        }
+        commitUploaded(game.name, localManifest, failedRels);
+        if (plan.length > 0) {
+          try {
+            await refreshRemoteManifest(cleanUrl, game.name);
+          } catch {
+            /* non-fatal: a stale baseline only costs an extra download later */
+          }
+        }
+
         totalAttempted += attempted
-        totalFailed += failed
-        // Never claim "In Sync" for a game whose files didn't all land.
-        if (attempted > 0 && failed === 0) {
+        totalFailed += failedRels.length
+        // Never claim "In Sync" for a game whose changed files didn't all land.
+        if (failedRels.length === 0 && filePaths.length > 0) {
           game.status = 'In Sync'
           game.lastSync = new Date().toISOString()
-        } else if (failed > 0) {
+        } else if (failedRels.length > 0) {
           game.status = 'Error'
         }
       }
@@ -357,57 +474,93 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
       return { success: false, message: 'No valid saves to sync. Check your game path mappings.' }
     }
 
+    // Group by game and keep only files that changed since the last push.
+    const byGame = new Map<string, { local: string; rel: string }[]>();
+    for (const f of filesToUpload) {
+      const list = byGame.get(f.game) || [];
+      list.push({ local: f.local, rel: f.rel });
+      byGame.set(f.game, list);
+    }
+    const plans = new Map<string, ReturnType<typeof planUpload>>();
+    for (const [game, files] of byGame) plans.set(game, planUpload(game, files));
+
+    const toUpload = [...plans.values()].flatMap(p => p.plan);
+    const deletions = [...plans.entries()].flatMap(([game, p]) =>
+      p.deleted.map(rel => ({ game, rel })),
+    );
+
     const syncId = Date.now().toString();
     const CHUNK_SIZE = 5;
+    const failedByGame = new Map<string, string[]>();
+    const total = toUpload.length;
 
-    // Track per-game outcomes so a partially-failed game is never reported as
-    // fully synced (and never marked "In Sync").
-    const attemptedByGame = new Map<string, number>();
-    const failedByGame = new Map<string, number>();
-    for (const f of filesToUpload) {
-      attemptedByGame.set(f.game, (attemptedByGame.get(f.game) ?? 0) + 1);
+    if (total > 0) {
+      progress(20, `Uploading ${total} changed file(s)...`);
     }
-
-    for (let i = 0; i < filesToUpload.length; i += CHUNK_SIZE) {
-      const chunk = filesToUpload.slice(i, i + CHUNK_SIZE);
-      const percent = 20 + Math.round((i / filesToUpload.length) * 75);
-      progress(percent, `Uploading: Batch ${Math.floor(i / CHUNK_SIZE) + 1} / ${Math.ceil(filesToUpload.length / CHUNK_SIZE)}`);
+    for (let i = 0; i < total; i += CHUNK_SIZE) {
+      const chunk = toUpload.slice(i, i + CHUNK_SIZE);
+      const percent = 20 + Math.round((i / Math.max(1, total)) * 75);
+      progress(percent, `Uploading: Batch ${Math.floor(i / CHUNK_SIZE) + 1} / ${Math.ceil(total / CHUNK_SIZE)}`);
 
       await Promise.all(chunk.map(async (file) => {
         try {
           await uploadFile(cleanUrl, file.game, file.local, file.rel, syncId);
         } catch (e: any) {
-          failedByGame.set(file.game, (failedByGame.get(file.game) ?? 0) + 1);
+          failedByGame.set(file.game, [...(failedByGame.get(file.game) || []), file.rel]);
           console.error(`Sync error on ${file.rel}:`, e.message);
         }
       }));
     }
 
-    // Update status: "In Sync" only when every file for that game succeeded.
+    // Mirror local deletions (best-effort; never fatal).
+    for (const { game, rel } of deletions) {
+      try {
+        await deleteRemoteFile(cleanUrl, game, rel);
+      } catch {
+        /* keep going */
+      }
+    }
+
+    // Persist exactly what landed, per game.
+    for (const [game, p] of plans) {
+      commitUploaded(game, p.localManifest, failedByGame.get(game) || []);
+    }
+
+    // Refresh the server baseline for games we pushed to, so a later restore is
+    // a no-op rather than re-downloading files we just uploaded.
+    for (const [game, p] of plans) {
+      if (p.plan.length === 0) continue;
+      try {
+        await refreshRemoteManifest(cleanUrl, game);
+      } catch {
+        /* non-fatal: a stale baseline only costs an extra download later */
+      }
+    }
+
+    // Update status: "In Sync" only when every changed file for that game succeeded.
     games.forEach((g: any) => {
-      const attempted = attemptedByGame.get(g.name) ?? 0;
-      const failed = failedByGame.get(g.name) ?? 0;
-      const rawPath = process.platform === 'win32' ? g.winPath : g.linPath
-      const expandedPath = expandPath(rawPath);
-      if (attempted > 0 && expandedPath && fs.existsSync(expandedPath)) {
-        if (failed === 0) {
-          g.status = 'In Sync';
-          g.lastSync = new Date().toISOString();
-        } else {
-          g.status = 'Error';
-        }
+      if (!plans.has(g.name)) return;
+      const failed = failedByGame.get(g.name)?.length ?? 0;
+      if (failed === 0) {
+        g.status = 'In Sync';
+        g.lastSync = new Date().toISOString();
+      } else {
+        g.status = 'Error';
       }
     });
 
     store.set('games', games)
 
-    const failedTotal = [...failedByGame.values()].reduce((a, b) => a + b, 0);
+    const failedTotal = [...failedByGame.values()].reduce((a, b) => a + b.length, 0);
     if (failedTotal > 0) {
       progress(100, `Sync finished with ${failedTotal} failed file(s)`);
-      return { success: false, message: `Sync completed with ${failedTotal} of ${filesToUpload.length} file(s) failed.` };
+      return { success: false, message: `Sync completed with ${failedTotal} of ${total} changed file(s) failed.` };
     }
     progress(100, 'Sync complete! 🎉')
-    return { success: true, message: 'Saves synced successfully!' }
+    return {
+      success: true,
+      message: total === 0 ? 'Already up to date — no changed files.' : `Synced ${total} changed file(s).`,
+    }
   } catch (err: any) {
     progress(0, '')
     return { success: false, message: 'Sync failed: ' + (err.message || String(err)) }
@@ -435,24 +588,39 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
       const overallPercent = 10 + Math.round((i / games.length) * 85);
       progress(overallPercent, `Checking server for: ${game.name}`);
 
-      const listRes = await axios.get(`${cleanUrl}/api/list-files?game=${encodeURIComponent(game.name)}`, { headers: serverHeaders() });
-      const files: { path: string; name: string; size: number }[] = listRes.data.files || [];
+      const manifestRes = await axios.get(
+        `${cleanUrl}/api/manifest?game=${encodeURIComponent(game.name)}`,
+        { headers: serverHeaders() },
+      );
+      const files: { path: string; size: number; mtimeMs: number; hash: string }[] = manifestRes.data.files || [];
 
       if (files.length > 0) {
         const rawPath = process.platform === 'win32' ? game.winPath : game.linPath;
         const expanded = expandPath(rawPath);
         if (!expanded) continue;
 
-        // CRITICAL BUG FIX: If 'expanded' is a direct file path, 'restoreBase' must be the parent directory.
-        // If 'expanded' is a directory, 'restoreBase' is the directory itself.
-        // If 'expanded' doesn't exist yet, we guess from the extension.
+        // If 'expanded' is a direct file path, 'restoreBase' is its parent; if it
+        // is (or will be) a directory, 'restoreBase' is the directory itself.
         const exists = fs.existsSync(expanded);
         const restoreBase = (exists && !fs.statSync(expanded).isDirectory()) || (!exists && path.extname(expanded))
           ? path.dirname(expanded)
           : expanded;
 
-        for (let j = 0; j < files.length; j += CHUNK_SIZE) {
-          const chunk = files.slice(j, j + CHUNK_SIZE);
+        // Delta: download only files that are missing locally or whose server
+        // content changed since this client last pulled the manifest.
+        const known = getSyncState()[game.name]?.remote || {};
+        const serverHashes: HashManifest = {};
+        const toDownload: typeof files = [];
+        for (const file of files) {
+          serverHashes[file.path] = file.hash;
+          const target = path.join(restoreBase, file.path);
+          if (!fs.existsSync(target) || known[file.path] !== file.hash) toDownload.push(file);
+        }
+
+        progress(overallPercent, `Restoring ${game.name}: ${toDownload.length}/${files.length} file(s)`);
+
+        for (let j = 0; j < toDownload.length; j += CHUNK_SIZE) {
+          const chunk = toDownload.slice(j, j + CHUNK_SIZE);
           await Promise.all(chunk.map(async (file) => {
             const relPath = file.path;
             const target = path.join(restoreBase, relPath);
@@ -468,6 +636,10 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
             fs.writeFileSync(target, Buffer.from(response.data));
           }));
         }
+
+        // Record the server state we just reconciled against.
+        saveGameState(game.name, { remote: serverHashes });
+
         game.status = 'In Sync';
         game.lastSync = new Date().toISOString();
         restoredCount++;
