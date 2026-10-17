@@ -87,22 +87,6 @@ export const appRouter = router({
   },
 
   sync: {
-    export: authedProcedure.mutation(async () => {
-      return { success: true, message: 'Use REST endpoint for file download' };
-    }),
-
-    push: authedProcedure
-      .input(z.object({ url: z.string().url() }))
-      .mutation(async () => {
-        return { success: true, message: 'Use REST endpoint for file upload with streaming' };
-      }),
-
-    restore: authedProcedure
-      .input(z.object({ url: z.string().url() }))
-      .mutation(async () => {
-        return { success: true, message: 'Use REST endpoint for restore' };
-      }),
-
     test: authedProcedure
       .input(z.object({ url: z.string().url() }))
       .mutation(async ({ input }) => {
@@ -139,12 +123,6 @@ export const appRouter = router({
         if (!fs.existsSync(gameDir)) return { success: true, files: [] };
         const files = listFilesInDir(gameDir);
         return { success: true, files };
-      }),
-
-    download: authedProcedure
-      .input(z.object({ game: z.string(), path: z.string() }))
-      .query(async () => {
-        return { success: true, message: 'Use REST endpoint for file download' };
       }),
 
     remove: authedProcedure
@@ -186,12 +164,6 @@ export const appRouter = router({
           const files = listFilesInDir(versionDir);
           return { success: true, files };
         }),
-
-      download: authedProcedure
-        .input(z.object({ game: z.string(), versionId: z.string().regex(/^\d+$/), path: z.string() }))
-        .query(async () => {
-          return { success: true, message: 'Use REST endpoint for version file download' };
-        }),
     },
   },
 
@@ -230,12 +202,6 @@ export const appRouter = router({
         game.thumbnail = input.url;
         database.upsertGame(game);
         return { success: true };
-      }),
-
-    upload: authedProcedure
-      .input(z.object({ gameName: z.string(), file: z.string() }))
-      .mutation(async () => {
-        return { success: true, message: 'Use REST endpoint for file upload' };
       }),
   },
 

@@ -234,12 +234,6 @@ describe('files + versions contract', () => {
     expect((await c.files.versions.list({ game: 'Nope' })).versions).toEqual([]);
     expect((await c.files.versions.files({ game: 'Nope', versionId: '1' })).files).toEqual([]);
   });
-
-  it('stub download endpoints stay stable', async () => {
-    const c = appRouter.createCaller(ctx());
-    expect((await c.files.download({ game: 'x', path: 'y' })).success).toBe(true);
-    expect((await c.sync.export()).success).toBe(true);
-  });
 });
 
 describe('localSources + remoteServers contract', () => {
