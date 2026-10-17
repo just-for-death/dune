@@ -133,6 +133,21 @@ describe('admin gate', () => {
     // Read-only procedures stay available to members.
     await expect(c.settings.get()).resolves.toMatchObject({ success: true });
   });
+
+  it('does not leak the SteamGridDB key or API keys to members', async () => {
+    const admin = appRouter.createCaller(ctx());
+    await admin.settings.update({ steamGridApiKey: 'sgdb-super-secret' });
+
+    const member = appRouter.createCaller(memberCtx());
+    const seen = (await member.settings.get()).settings;
+    expect(seen.steamGridApiKey).not.toBe('sgdb-super-secret');
+    expect(JSON.stringify(seen)).not.toContain('sgdb-super-secret');
+    expect(seen.apiKeys.every(k => k === '****')).toBe(true);
+
+    // Admins still see the real value (needed for the dashboard/ops).
+    expect((await admin.settings.get()).settings.steamGridApiKey).toBe('sgdb-super-secret');
+    await admin.settings.update({ steamGridApiKey: '' });
+  });
 });
 
 describe('users contract', () => {

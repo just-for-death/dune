@@ -511,9 +511,19 @@ export const appRouter = router({
   },
 
   settings: {
-    get: authedProcedure.query(async () => {
+    get: authedProcedure.query(async ({ ctx }) => {
       const settings = database.getSettings();
-      return { success: true, settings: { ...settings, apiKeys: settings.apiKeys.map(() => '****') } };
+      // Third-party secret: the server performs SteamGridDB lookups itself, so
+      // members never need the key — only admins get it in the clear.
+      const isAdmin = ctx.user.role === 'admin';
+      return {
+        success: true,
+        settings: {
+          ...settings,
+          apiKeys: settings.apiKeys.map(() => '****'),
+          steamGridApiKey: isAdmin ? settings.steamGridApiKey : settings.steamGridApiKey ? '****' : '',
+        },
+      };
     }),
 
     update: adminProcedure
