@@ -31,13 +31,13 @@
     "@types/node": "^20.19.37",
     "@types/react": "^18.2.15",
     "@types/react-dom": "^18.2.7",
-    "@vitejs/plugin-react": "^4.0.3",
+    "@vitejs/plugin-react": "^5.2.0",
     "electron": "44.8.0",
     "electron-builder": "^26.15.3",
     "typescript": "^5.0.2",
-    "vite": "^5.4.21",
-    "vite-plugin-electron": "^0.28.8",
-    "vite-plugin-electron-renderer": "^0.14.6"
+    "vite": "^6.4.4",
+    "vite-plugin-electron": "^1.1.2",
+    "vite-plugin-electron-renderer": "^1.0.0"
   },
   "allowScripts": {
     "electron@44.8.0": true
