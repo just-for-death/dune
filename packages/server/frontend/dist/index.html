@@ -16,6 +16,16 @@
     margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
     font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.5;
   }
+  .login-overlay {
+    position: fixed; inset: 0; background: var(--bg); z-index: 100;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .login-card { width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 28px; }
+  .login-card h1 { font-size: 20px; margin: 0 0 6px; }
+  .login-card p { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+  .login-card input { margin-bottom: 12px; }
+  .login-card .err { color: var(--red); min-height: 1.2em; font-size: 13px; margin-bottom: 8px; }
   main { max-width: 960px; margin: 0 auto; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   h1 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--sand); margin-right: 8px; }
@@ -56,6 +66,15 @@
 </style>
 </head>
 <body>
+  <div class="login-overlay" id="login">
+    <div class="login-card">
+      <h1>Dune</h1>
+      <p>Game save sync server. Paste a server API key to continue.</p>
+      <input id="login-key" type="password" placeholder="Server API key (x-api-key)" autocomplete="off" />
+      <div class="err" id="login-err"></div>
+      <button id="login-connect" style="width:100%">Connect</button>
+    </div>
+  </div>
 <main>
   <h1><span class="dot" aria-hidden="true"></span>Dune</h1>
   <p class="sub">Game save sync server — status dashboard. All calls stay on this origin; the key lives only in this browser's local storage.</p>
@@ -148,7 +167,11 @@
   'use strict';
   var keyInput = document.getElementById('key');
   var errBox = document.getElementById('err');
+  var loginOverlay = document.getElementById('login');
+  var loginKey = document.getElementById('login-key');
+  var loginErr = document.getElementById('login-err');
   keyInput.value = localStorage.getItem('dune_api_key') || '';
+  loginKey.value = localStorage.getItem('dune_api_key') || '';
 
   function headers() {
     var h = {};
@@ -159,6 +182,41 @@
   function fail(msg) {
     errBox.textContent = msg;
   }
+
+  async function verifyKey(k) {
+    if (!k) return false;
+    try {
+      var r = await fetch('/api/users/me', { headers: { 'x-api-key': k } });
+      if (!r.ok) return false;
+      var j = await r.json();
+      return !!(j && j.user);
+    } catch (e) { return false; }
+  }
+  async function tryAutoLogin() {
+    var k = (localStorage.getItem('dune_api_key') || '').trim();
+    if (!k) { loginOverlay.style.display = 'flex'; return; }
+    if (await verifyKey(k)) {
+      keyInput.value = k;
+      loginOverlay.style.display = 'none';
+      refresh();
+    } else {
+      loginOverlay.style.display = 'flex';
+      loginErr.textContent = 'Stored key is invalid. Enter a new one.';
+    }
+  }
+  document.getElementById('login-connect').addEventListener('click', async function () {
+    loginErr.textContent = '';
+    var k = loginKey.value.trim();
+    if (!k) { loginErr.textContent = 'Enter a key.'; return; }
+    if (await verifyKey(k)) {
+      localStorage.setItem('dune_api_key', k);
+      keyInput.value = k;
+      loginOverlay.style.display = 'none';
+      refresh();
+    } else {
+      loginErr.textContent = 'Invalid key.';
+    }
+  });
   async function get(path) {
     var res = await fetch(path, { headers: headers() });
     if (res.status === 401 || res.status === 403) throw new Error('Rejected (401/403) — set a valid server API key.');
@@ -374,7 +432,7 @@
     try { await loadKeys(); } catch (e) { /* ignore */ }
   };
 
-  refresh();
+  tryAutoLogin();
 })();
 </script>
 </body>
