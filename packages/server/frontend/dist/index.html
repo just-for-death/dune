@@ -1,14 +1,173 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Dune</title>
-    <script type="module" crossorigin src="./assets/index-bf679151.js"></script>
-    <link rel="stylesheet" href="./assets/index-1e44605d.css">
-  </head>
-  <body>
-    <div id="root"></div>
-    
-  </body>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dune — Server Dashboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e0f13; --panel: #15171d; --line: #262b36;
+    --text: #e9ebf1; --muted: #98a1b3;
+    --sand: #e8b44a; --green: #3fb950; --red: #f05548;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.5;
+  }
+  main { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h1 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--sand); margin-right: 8px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .stat { flex: 1; min-width: 140px; }
+  .stat b { font-size: 22px; font-variant-numeric: tabular-nums; }
+  .stat span { display: block; color: var(--muted); font-size: 12.5px; }
+  .ok { color: var(--green); } .bad { color: var(--red); } .muted { color: var(--muted); }
+  input, select, button { font: inherit; border-radius: 8px; }
+  input {
+    width: 100%; padding: 9px 12px; margin-bottom: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  }
+  input:focus { outline: none; border-color: var(--sand); }
+  button {
+    padding: 8px 14px; font-weight: 600; cursor: pointer;
+    background: var(--sand); color: #1a1405; border: none;
+  }
+  button.secondary { background: #1b1e26; color: var(--text); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-size: 11.5px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.ok { background: var(--green); } .dot.warn { background: var(--sand); }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); }
+  #err { color: var(--red); min-height: 1.2em; }
+  :focus-visible { outline: 2px solid var(--sand); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot" aria-hidden="true"></span>Dune</h1>
+  <p class="sub">Game save sync server — status dashboard. All calls stay on this origin; the key lives only in this browser's local storage.</p>
+
+  <div class="card">
+    <h2>Connection</h2>
+    <div class="row">
+      <div style="flex:2;min-width:220px">
+        <input id="key" type="password" placeholder="Server API key (x-api-key)" autocomplete="off" />
+      </div>
+      <div><button id="save">Save key</button>
+      <button id="refresh" class="secondary">Refresh</button></div>
+    </div>
+    <div id="err" role="alert"></div>
+    <div class="row">
+      <div class="stat"><b id="st-health">–</b><span>liveness</span></div>
+      <div class="stat"><b id="st-ready">–</b><span>readiness</span></div>
+      <div class="stat"><b id="st-games">–</b><span>games</span></div>
+      <div class="stat"><b id="st-files">–</b><span>files</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Games</h2>
+      <button id="sync" class="secondary">Run local sync</button>
+    </div>
+    <div style="overflow-x:auto;margin-top:8px">
+    <table>
+      <thead><tr><th>Game</th><th>Status</th><th>Last sync</th><th>Files</th><th>Versions</th></tr></thead>
+      <tbody id="games"><tr><td colspan="5" class="muted">No data yet — save a key and refresh.</td></tr></tbody>
+    </table>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  var keyInput = document.getElementById('key');
+  var errBox = document.getElementById('err');
+  keyInput.value = localStorage.getItem('dune_api_key') || '';
+
+  function headers() {
+    var h = {};
+    var k = keyInput.value.trim();
+    if (k) h['x-api-key'] = k;
+    return h;
+  }
+  function fail(msg) {
+    errBox.textContent = msg;
+  }
+  async function get(path) {
+    var res = await fetch(path, { headers: headers() });
+    if (res.status === 401 || res.status === 403) throw new Error('Rejected (401/403) — set a valid server API key.');
+    if (!res.ok) throw new Error('Request failed: ' + res.status);
+    return res.json();
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  async function refresh() {
+    errBox.textContent = '';
+    try {
+      var health = await get('/health').catch(function () { return null; });
+      document.getElementById('st-health').textContent = health && health.status === 'ok' ? 'ok' : 'down';
+      var ready = await get('/ready').catch(function () { return null; });
+      document.getElementById('st-ready').textContent = ready && ready.ready ? 'ready' : 'not ready';
+      var saves = await get('/api/saves');
+      var games = saves.games || [];
+      document.getElementById('st-games').textContent = games.length;
+      var totalFiles = 0;
+      var rows = '';
+      for (var i = 0; i < games.length; i++) {
+        var g = games[i];
+        var files = [];
+        var vers = [];
+        try {
+          var lf = await get('/api/list-files?game=' + encodeURIComponent(g.name));
+          files = lf.files || [];
+          var vl = await get('/trpc/files.versions.list?batch=1&input=' + encodeURIComponent(JSON.stringify({ 0: { game: g.name } })));
+          vers = (((vl[0] || {}).result || {}).data || {}).versions || [];
+        } catch (e) { /* per-game failure must not break the table */ }
+        totalFiles += files.length;
+        var synced = g.status === 'In Sync';
+        rows += '<tr><td>' + esc(g.name) + '</td>'
+          + '<td><span class="dot ' + (synced ? 'ok' : 'warn') + '"></span>' + esc(g.status) + '</td>'
+          + '<td>' + esc(g.lastSync || 'Never') + '</td>'
+          + '<td>' + files.length + '</td>'
+          + '<td>' + vers.length + '</td></tr>';
+      }
+      document.getElementById('st-files').textContent = totalFiles;
+      document.getElementById('games').innerHTML = rows || '<tr><td colspan="5" class="muted">No games tracked yet.</td></tr>';
+    } catch (e) {
+      fail(e.message || String(e));
+    }
+  }
+
+  document.getElementById('save').addEventListener('click', function () {
+    localStorage.setItem('dune_api_key', keyInput.value.trim());
+    refresh();
+  });
+  document.getElementById('refresh').addEventListener('click', refresh);
+  document.getElementById('sync').addEventListener('click', async function () {
+    errBox.textContent = '';
+    try {
+      var res = await fetch('/api/local-sync', { method: 'POST', headers: headers() });
+      if (!res.ok) throw new Error('Sync failed: ' + res.status);
+      refresh();
+    } catch (e) {
+      fail(e.message || String(e));
+    }
+  });
+  refresh();
+})();
+</script>
+</body>
 </html>

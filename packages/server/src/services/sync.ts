@@ -14,6 +14,16 @@ function savesRoot(): string {
   return savesDir();
 }
 
+/**
+ * Version snapshots live at `.versions/<versionId>`, so the id becomes a
+ * directory name. It arrives from the `x-sync-id` header (attacker-controlled),
+ * so accept digits only: anything else would let `../../x` escape the game
+ * root via path.join normalization. Non-numeric ids fall back to "now".
+ */
+function safeVersionId(syncId: string): string {
+  return /^\d+$/.test(syncId) ? syncId : Date.now().toString();
+}
+
 export interface SyncProgress {
   percent: number;
   message: string;
@@ -77,7 +87,7 @@ export async function handleUploadFile(
     }
 
     if (fs.existsSync(finalPath)) {
-      const versionDir = path.join(getGameRoot(gameName), '.versions', syncId);
+      const versionDir = path.join(getGameRoot(gameName), '.versions', safeVersionId(syncId));
       const archivePath = path.join(versionDir, filePath);
       
       if (!fs.existsSync(path.dirname(archivePath))) {
@@ -228,12 +238,13 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
           syncedGames.push(gameName);
 
           const ts = new Date().toISOString();
+          // Omit thumbnail/analysis: omit means "preserve", so re-syncing a
+          // game never wipes its cover art or AI analysis.
           database.upsertGame({
             id: Date.now() + Math.random(),
             name: gameName,
             status: 'In Sync',
             lastSync: ts,
-            thumbnail: '',
             createdAt: ts,
             updatedAt: ts
           });

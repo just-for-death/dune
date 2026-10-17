@@ -104,8 +104,11 @@ export function validateGamePath(gameName: string, requestedPath: string): strin
   
   const resolvedFinal = path.resolve(finalPath);
   const resolvedRoot = path.resolve(gameRoot);
-  
-  if (!resolvedFinal.startsWith(resolvedRoot)) {
+
+  // Compare against the root *plus* a separator: a bare startsWith would also
+  // accept a sibling whose name shares the prefix (e.g. /saves/Game vs
+  // /saves/Game-evil).
+  if (resolvedFinal !== resolvedRoot && !resolvedFinal.startsWith(resolvedRoot + path.sep)) {
     throw new Error('Forbidden path: path traversal attempt detected');
   }
   

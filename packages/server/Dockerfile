@@ -4,7 +4,7 @@
 # Build context is the repo root (see docker-compose.yml).
 
 # ── Stage 1: Install + build TypeScript ─────────────────────────────────
-FROM node:20-alpine AS backend-builder
+FROM node:22-alpine AS backend-builder
 
 WORKDIR /build
 
@@ -28,7 +28,7 @@ RUN npm run build --workspace=@dune/server
 RUN npm prune --omit=dev && npm cache clean --force
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 # Security: upgrade + minimal tools (unzip/zip for save extraction, su-exec for user switching)
 RUN apk update && apk upgrade --no-cache \

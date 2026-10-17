@@ -47,7 +47,9 @@ export const appRouter = router({
           id: Date.now() + Math.random(),
           status: input.status || 'Pending Upload',
           lastSync: input.lastSync || 'Never',
-          thumbnail: input.thumbnail || '',
+          // undefined preserves an existing game's cover art on re-add;
+          // upsertGame defaults it to '' for brand-new rows.
+          thumbnail: input.thumbnail,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         });
@@ -167,7 +169,7 @@ export const appRouter = router({
       const games = database.getGames();
       const matched = await autoMatchAll(apiKey, games);
       for (const m of matched) {
-        const game = database.getGames().find(g => g.name === m.name);
+        const game = games.find(g => g.name === m.name);
         if (game && !game.thumbnail) {
           game.thumbnail = m.thumbnail;
           database.upsertGame(game);

@@ -196,17 +196,20 @@ describe('D. adversarial app conditions', () => {
   });
 
   it('preserves a corrupt DB and boots with defaults', async () => {
-    const dbFile = path.join(TMP, 'dune.json');
-    const backup = fs.existsSync(dbFile) ? fs.readFileSync(dbFile, 'utf-8') : null;
+    const { closeDbForTests } = await import('./db/index.js');
+    closeDbForTests();
+    const dbFile = path.join(TMP, 'dune.sqlite');
     try {
-      fs.writeFileSync(dbFile, '{corrupt-json!!!');
+      fs.writeFileSync(dbFile, '{corrupt-sqlite!!!');
       const games = database.getGames();
       expect(games).toEqual([]);
-      const corruptCopies = fs.readdirSync(TMP).filter((f) => f.startsWith('dune.json.corrupt-'));
+      const corruptCopies = fs.readdirSync(TMP).filter((f) => f.startsWith('dune.sqlite.corrupt-'));
       expect(corruptCopies.length).toBeGreaterThanOrEqual(1);
     } finally {
-      if (backup !== null) fs.writeFileSync(dbFile, backup);
-      else if (fs.existsSync(dbFile)) fs.unlinkSync(dbFile);
+      closeDbForTests();
+      for (const f of fs.readdirSync(TMP)) {
+        if (f.startsWith('dune.sqlite')) fs.rmSync(path.join(TMP, f), { force: true });
+      }
     }
   });
 });

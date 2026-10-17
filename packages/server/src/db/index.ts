@@ -1,16 +1,11 @@
-import * as path from 'path';
 import type { Game, Settings, LocalSource, RemoteServer } from '../types/index.js';
 import { hashApiKey, looksHashed, isValidApiKey as checkKey } from '../utils/crypto.js';
 import { logger } from '../middleware/logging.js';
-import { dataDir } from '../utils/path.js';
-import { readJsonFile, writeJsonFileAtomic } from './jsonStore.js';
+import { getDb } from './sqlite.js';
 import { withDbLock } from './mutex.js';
 
 export { withDbLock };
-
-function dbPath(): string {
-  return path.join(dataDir(), 'dune.json');
-}
+export { closeDbForTests } from './sqlite.js';
 
 const defaultSettings: Settings = {
   maxVersions: 10,
@@ -22,142 +17,200 @@ const defaultSettings: Settings = {
   remoteServers: []
 };
 
-function readDB(): { games: Game[]; settings: Settings } {
-  const raw = readJsonFile<{ games?: Game[]; settings?: Settings }>(dbPath(), { games: [], settings: defaultSettings }, 'dune.json');
-  return {
-    games: raw.games || [],
-    settings: { ...defaultSettings, ...raw.settings }
-  };
+function readSettingsRow(): Settings {
+  const row = getDb().prepare('SELECT value FROM kv WHERE key = ?').get('settings') as
+    | { value: string }
+    | undefined;
+  if (!row) return { ...defaultSettings };
+  try {
+    return { ...defaultSettings, ...(JSON.parse(row.value) as Partial<Settings>) };
+  } catch {
+    return { ...defaultSettings };
+  }
 }
 
-export function writeDB(data: { games: Game[]; settings: Settings }): void {
-  writeJsonFileAtomic(dbPath(), data);
+function readGamesRows(): Game[] {
+  // rowid order = insertion order, matching the old JSON array semantics.
+  const rows = getDb().prepare('SELECT * FROM games ORDER BY rowid').all() as Array<{
+    id: number;
+    name: string;
+    status: string;
+    lastSync: string;
+    thumbnail: string;
+    analysis: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    status: r.status as Game['status'],
+    lastSync: r.lastSync,
+    thumbnail: r.thumbnail,
+    ...(r.analysis ? { analysis: JSON.parse(r.analysis) } : {}),
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }));
 }
 
 function getSettings(): Settings {
-  return readDB().settings;
+  return readSettingsRow();
 }
 
 function saveSettings(settings: Settings): void {
-  const db = readDB();
-  db.settings = settings;
-  writeDB(db);
+  getDb()
+    .prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run('settings', JSON.stringify(settings));
 }
 
 function getGames(): Game[] {
-  return readDB().games;
+  return readGamesRows();
 }
 
-function upsertGame(game: Omit<Game, 'createdAt'> & { createdAt?: string }): Game {
-  const db = readDB();
-  const now = new Date().toISOString();
-  const existingIdx = db.games.findIndex(g => g.name === game.name);
-  
-  if (existingIdx >= 0) {
-    const existing = db.games[existingIdx];
-    const updated = { 
-      ...game, 
-      id: existing.id, 
-      createdAt: existing.createdAt, 
-      updatedAt: now 
-    };
-    db.games[existingIdx] = updated;
-    writeDB(db);
-    return updated;
-  } else {
-    const newGame = { 
-      ...game, 
-      id: Date.now() + Math.random(), 
-      createdAt: now, 
-      updatedAt: now 
-    };
-    db.games.push(newGame);
-    writeDB(db);
-    return newGame;
+export function writeDB(data: { games: Game[]; settings: Settings }): void {
+  const database = getDb();
+  const insertGame = database.prepare(
+    'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    database.prepare('DELETE FROM games').run();
+    for (const g of data.games) {
+      insertGame.run(
+        g.id, g.name, g.status, g.lastSync, g.thumbnail || '',
+        g.analysis ? JSON.stringify(g.analysis) : null,
+        g.createdAt, g.updatedAt,
+      );
+    }
+    saveSettings(data.settings);
+    database.exec('COMMIT');
+  } catch (err) {
+    database.exec('ROLLBACK');
+    throw err;
   }
+}
+
+function upsertGame(
+  game: Omit<Game, 'createdAt' | 'thumbnail' | 'id' | 'updatedAt'> &
+    Partial<Pick<Game, 'id' | 'thumbnail' | 'createdAt' | 'updatedAt'>>,
+): Game {
+  const now = new Date().toISOString();
+  const existing = getDb()
+    .prepare('SELECT id, createdAt, thumbnail, analysis FROM games WHERE name = ?')
+    .get(game.name) as
+    | { id: number; createdAt: string; thumbnail: string; analysis: string | null }
+    | undefined;
+
+  if (existing) {
+    // Preserve stored fields the caller didn't supply: a bare status update
+    // (e.g. local sync) must not silently wipe AI analysis or cover art.
+    const thumbnail = game.thumbnail !== undefined ? game.thumbnail : existing.thumbnail;
+    const analysis = game.analysis !== undefined ? JSON.stringify(game.analysis) : existing.analysis;
+    getDb()
+      .prepare(
+        'UPDATE games SET status = ?, lastSync = ?, thumbnail = ?, analysis = ?, updatedAt = ? WHERE name = ?',
+      )
+      .run(game.status, game.lastSync, thumbnail, analysis, now, game.name);
+    return { ...game, thumbnail, id: existing.id, createdAt: existing.createdAt, updatedAt: now };
+  }
+
+  const created: Game = {
+    ...game,
+    thumbnail: game.thumbnail ?? '',
+    id: Date.now() + Math.random(),
+    createdAt: now,
+    updatedAt: now,
+  };
+  getDb()
+    .prepare(
+      'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(
+      created.id, created.name, created.status, created.lastSync, created.thumbnail,
+      created.analysis ? JSON.stringify(created.analysis) : null,
+      created.createdAt, created.updatedAt,
+    );
+  return created;
 }
 
 function deleteGame(id: number): boolean {
-  const db = readDB();
-  const initialLength = db.games.length;
-  db.games = db.games.filter(g => g.id !== id);
-  if (db.games.length !== initialLength) {
-    writeDB(db);
-    return true;
-  }
-  return false;
+  const res = getDb().prepare('DELETE FROM games WHERE id = ?').run(id);
+  return (res.changes as number) > 0;
 }
 
 function getLocalSources(): LocalSource[] {
-  return readDB().settings.localSources || [];
+  return readSettingsRow().localSources || [];
 }
 
 function addLocalSource(sourcePath: string): LocalSource {
-  const db = readDB();
-  if (!db.settings.localSources) db.settings.localSources = [];
-  const source = { id: Date.now(), path: sourcePath };
-  db.settings.localSources.push(source);
-  writeDB(db);
+  const settings = readSettingsRow();
+  if (!settings.localSources) settings.localSources = [];
+  // Date.now() alone collides for two adds in the same millisecond, which
+  // would make removeLocalSource(id) delete both rows.
+  const source = { id: Date.now() + Math.random(), path: sourcePath };
+  settings.localSources.push(source);
+  saveSettings(settings);
   return source;
 }
 
 function removeLocalSource(id: number): boolean {
-  const db = readDB();
-  const initialLength = db.settings.localSources?.length || 0;
-  db.settings.localSources = (db.settings.localSources || []).filter(s => s.id !== id);
-  if (db.settings.localSources.length !== initialLength) {
-    writeDB(db);
+  const settings = readSettingsRow();
+  const initialLength = settings.localSources?.length || 0;
+  settings.localSources = (settings.localSources || []).filter(s => s.id !== id);
+  if (settings.localSources.length !== initialLength) {
+    saveSettings(settings);
     return true;
   }
   return false;
 }
 
 function getRemoteServers(): RemoteServer[] {
-  return readDB().settings.remoteServers || [];
+  return readSettingsRow().remoteServers || [];
 }
 
 function addRemoteServer(url: string): RemoteServer {
-  const db = readDB();
-  if (!db.settings.remoteServers) db.settings.remoteServers = [];
-  const server = { id: Date.now(), url };
-  db.settings.remoteServers.push(server);
-  writeDB(db);
+  const settings = readSettingsRow();
+  if (!settings.remoteServers) settings.remoteServers = [];
+  // See addLocalSource: avoid same-millisecond id collisions.
+  const server = { id: Date.now() + Math.random(), url };
+  settings.remoteServers.push(server);
+  saveSettings(settings);
   return server;
 }
 
 function removeRemoteServer(id: number): boolean {
-  const db = readDB();
-  const initialLength = db.settings.remoteServers?.length || 0;
-  db.settings.remoteServers = (db.settings.remoteServers || []).filter(s => s.id !== id);
-  if (db.settings.remoteServers.length !== initialLength) {
-    writeDB(db);
+  const settings = readSettingsRow();
+  const initialLength = settings.remoteServers?.length || 0;
+  settings.remoteServers = (settings.remoteServers || []).filter(s => s.id !== id);
+  if (settings.remoteServers.length !== initialLength) {
+    saveSettings(settings);
     return true;
   }
   return false;
 }
 
 function getApiKeys(): string[] {
-  return readDB().settings.apiKeys || [];
+  return readSettingsRow().apiKeys || [];
 }
 
 /** Store only hashes — never plaintext. */
 function addApiKey(key: string, _description = ''): void {
-  const db = readDB();
-  if (!db.settings.apiKeys) db.settings.apiKeys = [];
+  const settings = readSettingsRow();
+  if (!settings.apiKeys) settings.apiKeys = [];
   const hashed = hashApiKey(key);
-  if (!db.settings.apiKeys.includes(hashed)) {
-    db.settings.apiKeys.push(hashed);
-    writeDB(db);
+  if (!settings.apiKeys.includes(hashed)) {
+    settings.apiKeys.push(hashed);
+    saveSettings(settings);
   }
 }
 
 function removeApiKey(key: string): boolean {
-  const db = readDB();
-  const initialLength = db.settings.apiKeys?.length || 0;
+  const settings = readSettingsRow();
+  const initialLength = settings.apiKeys?.length || 0;
   const hashed = hashApiKey(key);
-  db.settings.apiKeys = (db.settings.apiKeys || []).filter(k => k !== hashed);
-  if (db.settings.apiKeys.length !== initialLength) {
-    writeDB(db);
+  settings.apiKeys = (settings.apiKeys || []).filter(k => k !== hashed);
+  if (settings.apiKeys.length !== initialLength) {
+    saveSettings(settings);
     return true;
   }
   return false;
@@ -173,8 +226,8 @@ function isValidApiKey(candidate: string | undefined | null): boolean {
  * Idempotent — already-hashed entries are untouched.
  */
 function migrateApiKeys(): boolean {
-  const db = readDB();
-  const keys = db.settings.apiKeys || [];
+  const settings = readSettingsRow();
+  const keys = settings.apiKeys || [];
   let changed = false;
   const migrated = keys.map(k => {
     if (looksHashed(k)) return k;
@@ -184,8 +237,8 @@ function migrateApiKeys(): boolean {
   // Deduplicate in case two plaintext keys hashed identically
   const deduped = [...new Set(migrated)];
   if (changed || deduped.length !== keys.length) {
-    db.settings.apiKeys = deduped;
-    writeDB(db);
+    settings.apiKeys = deduped;
+    saveSettings(settings);
     return true;
   }
   return false;

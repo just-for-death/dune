@@ -216,3 +216,24 @@ describe('REST shims happy paths', () => {
     expect(Array.isArray(res.body.errors)).toBe(true);
   });
 });
+
+describe('bundled dashboard (tracked, dependency-free)', () => {
+  it('serves the dashboard shell at / with no auth', async () => {
+    const res = await request(app).get('/');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Dune — Server Dashboard');
+    expect(res.text).not.toMatch(/assets\/index-[a-f0-9]+\.js/);
+  });
+
+  it('falls back to the dashboard shell for unknown paths', async () => {
+    const res = await request(app).get('/no-such-view');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Dune — Server Dashboard');
+  });
+
+  it('does not serve the shell for unknown /api routes (JSON 404 instead)', async () => {
+    const res = await request(app).get('/api/definitely-not-a-route');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ success: false, message: 'Not found' });
+  });
+});

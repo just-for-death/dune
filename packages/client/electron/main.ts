@@ -226,20 +226,29 @@ function setupAutoSync() {
 async function uploadFile(baseUrl: string, gameName: string, localPath: string, relativePath: string, syncId?: string) {
   const cleanUrl = normalizeUrl(baseUrl);
   const stream = fs.createReadStream(localPath);
-  await axios.post(`${cleanUrl}/api/upload-file`, stream, {
-    headers: serverHeaders({
-      'x-game': gameName,
-      'x-path': relativePath,
-      'x-sync-id': syncId || 'default',
-      'Content-Type': 'application/octet-stream'
-    })
-  });
+  try {
+    await axios.post(`${cleanUrl}/api/upload-file`, stream, {
+      headers: serverHeaders({
+        'x-game': gameName,
+        'x-path': relativePath,
+        'x-sync-id': syncId || 'default',
+        'Content-Type': 'application/octet-stream'
+      })
+    });
+  } finally {
+    // A failed POST aborts without draining the stream, which leaks the file
+    // descriptor. Always release it.
+    stream.destroy();
+  }
 }
 
 async function performCloudSync(credentials: any) {
   try {
     const games: any = store.get('games') || []
     const cleanUrl = normalizeUrl(credentials.url)
+
+    let totalAttempted = 0
+    let totalFailed = 0
 
     for (const game of games) {
       const rawPath = process.platform === 'win32' ? game.winPath : game.linPath
@@ -266,22 +275,36 @@ async function performCloudSync(credentials: any) {
         }
 
         const syncId = Date.now().toString();
+        let attempted = 0;
+        let failed = 0;
         for (let i = 0; i < filePaths.length; i += 5) {
           const chunk = filePaths.slice(i, i + 5);
           await Promise.all(chunk.map(async (f) => {
+            attempted++;
             try {
               await uploadFile(cleanUrl, game.name, f.local, f.rel, syncId);
             } catch (e) {
+              failed++;
               console.error(`Failed to sync ${f.rel}:`, e);
             }
           }));
         }
-        game.status = 'In Sync'
-        game.lastSync = new Date().toISOString()
+        totalAttempted += attempted
+        totalFailed += failed
+        // Never claim "In Sync" for a game whose files didn't all land.
+        if (attempted > 0 && failed === 0) {
+          game.status = 'In Sync'
+          game.lastSync = new Date().toISOString()
+        } else if (failed > 0) {
+          game.status = 'Error'
+        }
       }
     }
 
     store.set('games', games)
+    if (totalFailed > 0) {
+      return { success: false, message: `Background sync completed with ${totalFailed}/${totalAttempted} file(s) failed.` }
+    }
     return { success: true, message: 'Background sync complete.' }
   } catch (err: any) {
     return { success: false, message: 'Background sync failed: ' + (err.message || String(err)) }
@@ -336,6 +359,15 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
 
     const syncId = Date.now().toString();
     const CHUNK_SIZE = 5;
+
+    // Track per-game outcomes so a partially-failed game is never reported as
+    // fully synced (and never marked "In Sync").
+    const attemptedByGame = new Map<string, number>();
+    const failedByGame = new Map<string, number>();
+    for (const f of filesToUpload) {
+      attemptedByGame.set(f.game, (attemptedByGame.get(f.game) ?? 0) + 1);
+    }
+
     for (let i = 0; i < filesToUpload.length; i += CHUNK_SIZE) {
       const chunk = filesToUpload.slice(i, i + CHUNK_SIZE);
       const percent = 20 + Math.round((i / filesToUpload.length) * 75);
@@ -345,22 +377,35 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
         try {
           await uploadFile(cleanUrl, file.game, file.local, file.rel, syncId);
         } catch (e: any) {
+          failedByGame.set(file.game, (failedByGame.get(file.game) ?? 0) + 1);
           console.error(`Sync error on ${file.rel}:`, e.message);
         }
       }));
     }
 
-    // Update status
+    // Update status: "In Sync" only when every file for that game succeeded.
     games.forEach((g: any) => {
+      const attempted = attemptedByGame.get(g.name) ?? 0;
+      const failed = failedByGame.get(g.name) ?? 0;
       const rawPath = process.platform === 'win32' ? g.winPath : g.linPath
       const expandedPath = expandPath(rawPath);
-      if (expandedPath && fs.existsSync(expandedPath)) {
-        g.status = 'In Sync';
-        g.lastSync = new Date().toISOString();
+      if (attempted > 0 && expandedPath && fs.existsSync(expandedPath)) {
+        if (failed === 0) {
+          g.status = 'In Sync';
+          g.lastSync = new Date().toISOString();
+        } else {
+          g.status = 'Error';
+        }
       }
     });
 
     store.set('games', games)
+
+    const failedTotal = [...failedByGame.values()].reduce((a, b) => a + b, 0);
+    if (failedTotal > 0) {
+      progress(100, `Sync finished with ${failedTotal} failed file(s)`);
+      return { success: false, message: `Sync completed with ${failedTotal} of ${filesToUpload.length} file(s) failed.` };
+    }
     progress(100, 'Sync complete! 🎉')
     return { success: true, message: 'Saves synced successfully!' }
   } catch (err: any) {
@@ -751,12 +796,17 @@ ipcMain.handle('game:fetchArt', async (_event, id, name) => {
 
     const imgUrl = gridRes.data.data[0].url
     const response = await axios.get(imgUrl, { responseType: 'arraybuffer' })
-    const ext = path.extname(new URL(imgUrl).pathname) || '.jpg'
-    const targetPath = path.join(thumbDir, `${id}${ext}`)
+    const numericId = Number(id)
+    if (!Number.isFinite(numericId)) return { success: false, message: 'Invalid game id' }
+    // Same allowlist as setCustomArt: the remote URL must not dictate the
+    // extension written into thumbDir.
+    const rawExt = path.extname(new URL(imgUrl).pathname).toLowerCase()
+    const ext = ART_EXTS.includes(rawExt) ? rawExt : '.jpg'
+    const targetPath = path.join(thumbDir, `${numericId}${ext}`)
     fs.writeFileSync(targetPath, Buffer.from(response.data))
 
     const games: any = store.get('games') || []
-    const game = games.find((g: any) => g.id === id)
+    const game = games.find((g: any) => g.id === numericId)
     if (game) {
       game.thumbnail = `local://${targetPath}`
       store.set('games', games)

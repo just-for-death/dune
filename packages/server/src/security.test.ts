@@ -103,6 +103,30 @@ describe('Security: Path Traversal Prevention', () => {
   });
 });
 
+describe('Security: version-id (x-sync-id) path traversal', () => {
+  const game = 'SyncIdGame';
+
+  const upload = (syncId: string, body: string) =>
+    request(app)
+      .post('/api/upload-file')
+      .set('Content-Type', 'application/octet-stream')
+      .set('x-api-key', VALID_KEY)
+      .set('x-game', game)
+      .set('x-path', 'slot1.sav')
+      .set('x-sync-id', syncId)
+      .send(Buffer.from(body));
+
+  it('a non-numeric x-sync-id can never write outside the saves dir', async () => {
+    await upload('1', 'v1'); // create the base file so the overwrite path runs
+    const res = await upload('../../../pwned', 'v2');
+    expect(res.status).toBe(200);
+
+    // versionDir = <saves>/<game>/.versions/../../../pwned  →  <DATA_DIR>/pwned
+    expect(fs.existsSync(path.join(TMP, 'pwned'))).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(TMP), 'pwned'))).toBe(false);
+  });
+});
+
 describe('Security: Authentication & Key Extraction', () => {
   it('extracts API key from x-api-key header', () => {
     const key = extractApiKey({ 'x-api-key': 'my-secret-key' });
@@ -146,5 +170,19 @@ describe('Security: Authentication & Key Extraction', () => {
       .get(`/api/saves?api_key=${VALID_KEY}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+});
+
+describe('Security: CORS origin allow-list', () => {
+  it('allows a known origin', async () => {
+    const res = await request(app).get('/health').set('Origin', 'http://localhost:5173');
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+  });
+
+  it('denies an unknown origin without erroring or echoing it back', async () => {
+    const res = await request(app).get('/health').set('Origin', 'http://evil.example');
+    // Denial is expressed by the absence of the ACAO header (not a 500).
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
 });

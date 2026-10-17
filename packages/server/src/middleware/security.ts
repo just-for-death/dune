@@ -40,24 +40,25 @@ export const corsConfig = cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
-    
+
     const allowedOrigins = [
       'http://localhost:3023',
       'http://localhost:5173',
       'http://127.0.0.1:3023',
       'http://127.0.0.1:5173',
     ];
-    
+
     // In production, add your domain
     if (process.env.ALLOWED_ORIGINS) {
-      allowedOrigins.push(...process.env.ALLOWED_ORIGINS.split(','));
+      allowedOrigins.push(
+        ...process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean),
+      );
     }
-    
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+
+    // Deny by omitting the CORS headers (the browser then blocks the
+    // response). Throwing here would surface as an opaque 500 from the
+    // default Express error handler instead of a clean denial.
+    callback(null, allowedOrigins.includes(origin));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],

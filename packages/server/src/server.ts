@@ -276,8 +276,9 @@ app.get('/api/auto-match-all', authMiddleware, async (_req, res) => {
     const apiKey = database.getSettings().steamGridApiKey;
     if (!apiKey) return res.status(400).json({ success: false, message: 'SteamGridDB API key not configured' });
     const matched = await autoMatchAll(apiKey, database.getGames());
+    const games = database.getGames();
     for (const m of matched) {
-      const game = database.getGames().find(g => g.name === m.name);
+      const game = games.find(g => g.name === m.name);
       if (game && !game.thumbnail) {
         game.thumbnail = m.thumbnail;
         database.upsertGame(game);
@@ -408,6 +409,12 @@ app.get('/api/ollama-health', authMiddleware, async (_req, res) => {
   } catch (e) {
     restError(_req, res, e, 'API internal error');
   }
+});
+
+// Unmatched /api/* requests are API errors, not frontend routes — answer with
+// JSON 404 instead of letting the SPA catch-all serve index.html with a 200.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ success: false, message: 'Not found' });
 });
 
 if (fs.existsSync(FRONTEND_DIR)) {

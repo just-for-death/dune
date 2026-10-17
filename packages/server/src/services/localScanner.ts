@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { getFileCategory } from '../utils/path.js';
 
 const SAVE_EXTS = ['.sav', '.bin', '.dat', '.json', '.xml', '.cfg', '.ini', '.txt', '.sl2', '.prof', '.sqlite', '.db', '.rpgsave'];
 
@@ -110,7 +109,14 @@ export function syncLocalFolder(sourcePath: string, gameName: string, savesDir: 
   const versionsDir = path.join(targetDir, '.versions');
   if (fs.existsSync(versionsDir)) {
     const versions = fs.readdirSync(versionsDir)
-      .filter(v => fs.statSync(path.join(versionsDir, v)).isDirectory())
+      .filter(v => {
+        // A stray file inside .versions must not abort pruning.
+        try {
+          return fs.statSync(path.join(versionsDir, v)).isDirectory();
+        } catch {
+          return false;
+        }
+      })
       .sort((a, b) => parseInt(a) - parseInt(b));
 
     if (versions.length > maxVersions) {
@@ -124,43 +130,3 @@ export function syncLocalFolder(sourcePath: string, gameName: string, savesDir: 
   return { filesSynced, syncId };
 }
 
-export function listFilesInDir(dirPath: string): Array<{ path: string; name: string; size: number; modified: string; category: 'Save' | 'Config' | 'Cache' | 'Other' }> {
-  const files: Array<{ path: string; name: string; size: number; modified: string; category: 'Save' | 'Config' | 'Cache' | 'Other' }> = [];
-  
-  const walk = (dir: string, base: string): void => {
-    const items = fs.readdirSync(dir, { withFileTypes: true });
-    for (const item of items) {
-      if (item.name === '.versions') continue;
-      if (item.isSymbolicLink()) continue;
-      
-      const fullPath = path.join(dir, item.name);
-      if (item.isDirectory()) {
-        walk(fullPath, base);
-      } else {
-        const rel = path.relative(base, fullPath);
-        const meta = getFileMetadata(base, rel);
-        if (meta) files.push(meta);
-      }
-    }
-  };
-  
-  walk(dirPath, dirPath);
-  return files;
-}
-
-function getFileMetadata(root: string, relPath: string): { path: string; name: string; size: number; modified: string; category: 'Save' | 'Config' | 'Cache' | 'Other' } | null {
-  try {
-    const fullPath = path.join(root, relPath);
-    if (!fs.existsSync(fullPath)) return null;
-    const stats = fs.statSync(fullPath);
-    return {
-      path: relPath,
-      name: path.basename(relPath),
-      size: stats.size,
-      modified: stats.mtime.toISOString(),
-      category: getFileCategory(relPath)
-    };
-  } catch {
-    return null;
-  }
-}

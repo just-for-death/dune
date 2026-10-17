@@ -8,7 +8,7 @@ dune/
 │   ├── client/   # @dune/client — Electron + React + Vite desktop app
 │   ├── server/   # @dune/server — Express + tRPC API, Dockerized
 │   └── shared/   # @dune/shared — Game, Settings, ElectronAPI, Playtime, Achievements, HLTB types
-├── docker-compose.yml   # server + ollama stack
+├── docker-compose.yml   # server stack (Ollama runs on the host by default)
 ├── deploy.sh            # install / build / test / up / logs
 └── package.json         # workspaces root
 ```
@@ -26,7 +26,7 @@ dune/
 # 3. Run tests
 ./deploy.sh test
 
-# 4. Start production stack (server :3023 + ollama :11434)
+# 4. Start production stack (server :3023)
 ./deploy.sh up
 ```
 
@@ -38,8 +38,8 @@ dune/
 
 | Package | Stack | Purpose |
 |---------|-------|---------|
-| `@dune/client` | Electron 25, React 18, Vite 4, TS | Desktop app: save mapping (Win/Linux paths), auto-detect via ludusavi manifest + Wine prefixes, cloud sync/restore with progress, Playtime + Achievements + HLTB tabs, SteamGridDB art, toasts, tray/background mode |
-| `@dune/server` | Express 4, tRPC 11, Zod, TS strict | Save sync API (streaming upload, versioning, atomic JSON DB), playtime/achievements/HLTB services, Ollama AI analysis, SteamGridDB proxy, local dual-boot sync, remote replication, API-key auth, rate-limit, helmet, CORS |
+| `@dune/client` | Electron 44, React 18, Vite 5, TS | Desktop app: save mapping (Win/Linux paths), auto-detect via ludusavi manifest + Wine prefixes, cloud sync/restore with progress, Playtime + Achievements + HLTB tabs, SteamGridDB art, toasts, tray/background mode |
+| `@dune/server` | Express 4, tRPC 11, Zod, TS strict | Save sync API (streaming upload, versioning, SQLite DB via `node:sqlite`), playtime/achievements/HLTB services, Ollama AI analysis, SteamGridDB proxy, local dual-boot sync, remote replication, API-key auth, rate-limit, helmet, CORS |
 | `@dune/shared` | TypeScript only | Single source of truth: `Game`, `Settings`, `ElectronAPI` (full IPC contract), `PlaytimeSession/Summary`, `Achievement/Summary`, `HLTBTimes`, `APIResponse`, `SyncProgress` |
 
 ## Features
@@ -51,8 +51,8 @@ dune/
 - **HLTB** — completion times with 7-day file cache + bulk fetch
 - **AI file analysis** — Ollama (`phi4-mini` default) classifies Save/Config/Cache/Other
 - **Security** — API-key auth, 100 req/15min + 20 uploads/min rate limits, helmet CSP, CORS allowlist, path-traversal guards, atomic writes
-- **59 unit tests** — path utils, scanner, playtime, achievements, HLTB (Vitest)
-- **Docker** — multi-stage build, non-root user, tini, healthcheck; compose includes Ollama
+- **237 unit tests** — path utils, scanner, playtime, achievements, HLTB, SQLite DB, security, tRPC + REST shims (Vitest, 80% coverage gate)
+- **Docker** — multi-stage build (Node 22), non-root user, tini, healthcheck; Ollama is expected on the host (or point `ollamaEndpoint` at any reachable instance)
 
 ## Development
 
@@ -68,7 +68,7 @@ npm run dev --workspace=@dune/client   # vite dev
 
 ```bash
 ./deploy.sh docker:build
-./deploy.sh up      # server + ollama
+./deploy.sh up      # server stack
 ./deploy.sh logs    # follow server logs
 ./deploy.sh down
 ```
