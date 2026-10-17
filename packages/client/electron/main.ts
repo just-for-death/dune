@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage, session } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage, session, net } from 'electron'
+import { pathToFileURL } from 'node:url'
 import * as path from 'path'
 import * as fs from 'fs'
 import Store from 'electron-store'
@@ -1448,19 +1449,22 @@ if (!gotSingleInstanceLock) {
 
     if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
 
-    protocol.registerFileProtocol('local', (request, callback) => {
+    // protocol.handle replaces the deprecated registerFileProtocol. Serving via
+    // net.fetch keeps streaming + Range support and avoids blocking the main
+    // process on large files.
+    protocol.handle('local', (request) => {
       // Sandbox: only thumbnails written by this app are servable. Anything
       // else (including traversal attempts) is rejected.
       try {
         const resolved = path.resolve(decodeURIComponent(request.url.replace('local://', '')));
         const root = path.resolve(thumbDir) + path.sep;
         if (!resolved.startsWith(root)) {
-          return callback({ error: -6 });
+          return new Response('Forbidden', { status: 403 });
         }
-        return callback({ path: resolved });
+        return net.fetch(pathToFileURL(resolved).toString());
       } catch (e) {
         console.error(e);
-        return callback({ error: -6 });
+        return new Response('Not found', { status: 404 });
       }
     });
 
