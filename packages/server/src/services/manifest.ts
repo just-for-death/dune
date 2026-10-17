@@ -39,8 +39,8 @@ function fingerprint(absPath: string): (FileFingerprint & { hash: string }) | nu
  * relative to the game root and use the platform separator, matching the
  * `x-path` values the client uploads with.
  */
-export function manifestForGame(gameName: string): ManifestEntry[] {
-  const root = getGameRoot(gameName);
+export function manifestForGame(gameName: string, ownerId?: string): ManifestEntry[] {
+  const root = getGameRoot(gameName, ownerId);
   if (!fs.existsSync(root)) return [];
 
   const entries: ManifestEntry[] = [];
@@ -73,8 +73,8 @@ export function manifestForGame(gameName: string): ManifestEntry[] {
  * whole subtree so zip extraction (which can restore original mtimes) can't
  * leave a stale entry behind.
  */
-export function invalidateGame(gameName: string): void {
-  const prefix = getGameRoot(gameName) + path.sep;
+export function invalidateGame(gameName: string, ownerId?: string): void {
+  const prefix = getGameRoot(gameName, ownerId) + path.sep;
   for (const key of hashCache.keys()) {
     if (key.startsWith(prefix)) hashCache.delete(key);
   }
@@ -89,8 +89,8 @@ export function clearManifestCache(): void {
  * Delete a single file inside a game's save tree. `relPath` is validated by the
  * caller (`validateGamePath`); this only performs the unlink + cache drop.
  */
-export function removeGameFile(gameName: string, relPath: string): boolean {
-  const abs = path.join(getGameRoot(gameName), relPath);
+export function removeGameFile(gameName: string, relPath: string, ownerId?: string): boolean {
+  const abs = path.join(getGameRoot(gameName, ownerId), relPath);
   try {
     if (!fs.existsSync(abs)) return false;
     fs.rmSync(abs);

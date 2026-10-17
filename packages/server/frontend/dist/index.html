@@ -85,8 +85,8 @@
     </div>
     <div style="overflow-x:auto;margin-top:8px">
     <table>
-      <thead><tr><th>Game</th><th>Status</th><th>Last sync</th><th>Files</th><th>Versions</th></tr></thead>
-      <tbody id="games"><tr><td colspan="5" class="muted">No data yet — save a key and refresh.</td></tr></tbody>
+      <thead><tr><th>Game</th><th>Status</th><th>Last sync</th><th>Files</th><th>Versions</th><th></th></tr></thead>
+      <tbody id="games"><tr><td colspan="6" class="muted">No data yet — save a key and refresh.</td></tr></tbody>
     </table>
     </div>
   </div>
@@ -106,6 +106,39 @@
     <table>
       <thead><tr><th>Name</th><th>Role</th><th>Keys</th><th>Actions</th></tr></thead>
       <tbody id="users"><tr><td colspan="4" class="muted">Admin only.</td></tr></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card" id="settings-card" hidden>
+    <h2>Settings</h2>
+    <p class="sub" style="margin:-4px 0 12px">Server-wide configuration. Admin only.</p>
+    <div class="row">
+      <div style="flex:1;min-width:220px"><label>SteamGridDB API key</label><input id="st-steamgrid" type="password" autocomplete="off" placeholder="(unchanged)" /></div>
+      <div style="flex:1;min-width:220px"><label>Ollama endpoint</label><input id="st-ollama-endpoint" placeholder="http://ollama:11434" /></div>
+    </div>
+    <div class="row">
+      <div style="flex:1;min-width:220px"><label>Ollama model</label><input id="st-ollama-model" placeholder="phi4-mini:latest" /></div>
+      <div style="width:140px"><label>Max versions</label><input id="st-maxversions" type="number" min="1" max="100" /></div>
+    </div>
+    <div class="row">
+      <button id="settings-save">Save settings</button>
+      <span id="settings-status" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card" id="keys-card">
+    <h2>My API keys</h2>
+    <p class="sub" style="margin:-4px 0 12px">Issue a new key for your own account. Shown once.</p>
+    <div class="row">
+      <div style="flex:1;min-width:180px"><input id="key-desc" placeholder="Description (optional)" autocomplete="off" /></div>
+      <button id="key-issue">Issue new key</button>
+    </div>
+    <div id="key-new" class="muted" style="word-break:break-all;margin:6px 0"></div>
+    <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Id</th><th>Description</th><th>Created</th><th></th></tr></thead>
+      <tbody id="keys"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
     </table>
     </div>
   </div>
@@ -166,10 +199,11 @@
           + '<td><span class="dot ' + (synced ? 'ok' : 'warn') + '"></span>' + esc(g.status) + '</td>'
           + '<td>' + esc(g.lastSync || 'Never') + '</td>'
           + '<td>' + files.length + '</td>'
-          + '<td>' + vers.length + '</td></tr>';
+          + '<td>' + vers.length + '</td>'
+          + '<td><button class="secondary" data-delgame="' + esc(g.name) + '">Delete</button></td></tr>';
       }
       document.getElementById('st-files').textContent = totalFiles;
-      document.getElementById('games').innerHTML = rows || '<tr><td colspan="5" class="muted">No games tracked yet.</td></tr>';
+      document.getElementById('games').innerHTML = rows || '<tr><td colspan="6" class="muted">No games tracked yet.</td></tr>';
       try { await loadUsers(); } catch (e) { usersCard.hidden = true; }
     } catch (e) {
       fail(e.message || String(e));
@@ -255,6 +289,91 @@
       fail(e.message || String(e));
     }
   });
+  document.getElementById('games').addEventListener('click', async function (ev) {
+    var t = ev.target;
+    var del = t.getAttribute && t.getAttribute('data-delgame');
+    if (!del) return;
+    if (!window.confirm('Delete game \"' + del + '\" and all its saves?')) return;
+    errBox.textContent = '';
+    try {
+      var r = await fetch('/api/saves?game=' + encodeURIComponent(del), { method: 'DELETE', headers: headers() });
+      if (!r.ok) throw new Error('Delete failed: ' + r.status);
+      refresh();
+    } catch (e) { fail(e.message || String(e)); }
+  });
+  // ── Settings (admin) ────────────────────────────────────────────────────────
+  var settingsCard = document.getElementById('settings-card');
+  async function loadSettings() {
+    var me = await get('/api/users/me');
+    if (!me.user || me.user.role !== 'admin') { settingsCard.hidden = true; return; }
+    settingsCard.hidden = false;
+    var s = await get('/api/settings');
+    if (s.settings) {
+      document.getElementById('st-ollama-endpoint').value = s.settings.ollamaEndpoint || '';
+      document.getElementById('st-ollama-model').value = s.settings.ollamaModel || '';
+      document.getElementById('st-maxversions').value = s.settings.maxVersions || 10;
+    }
+  }
+  document.getElementById('settings-save').addEventListener('click', async function () {
+    errBox.textContent = '';
+    try {
+      var body = {
+        ollamaEndpoint: document.getElementById('st-ollama-endpoint').value.trim(),
+        ollamaModel: document.getElementById('st-ollama-model').value.trim(),
+        maxVersions: parseInt(document.getElementById('st-maxversions').value, 10) || 10,
+      };
+      var sg = document.getElementById('st-steamgrid').value.trim();
+      if (sg) body.steamGridApiKey = sg;
+      var r = await fetch('/api/settings', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body) });
+      if (!r.ok) throw new Error('Save failed: ' + r.status);
+      document.getElementById('st-steamgrid').value = '';
+      document.getElementById('settings-status').textContent = 'Saved.';
+      setTimeout(function () { document.getElementById('settings-status').textContent = ''; }, 2000);
+    } catch (e) { fail(e.message || String(e)); }
+  });
+
+  // ── API keys (self-service) ────────────────────────────────────────────────
+  async function loadKeys() {
+    var list = await get('/api/api-keys');
+    var keys = list.keys || [];
+    var rows = keys.map(function (k) {
+      return '<tr><td>' + esc(k.id) + '</td><td>' + esc(k.description || '') + '</td><td>' + esc(k.createdAt) + '</td>'
+        + '<td><button class="secondary" data-revoke="' + esc(k.id) + '">Revoke</button></td></tr>';
+    }).join('');
+    document.getElementById('keys').innerHTML = rows || '<tr><td colspan="4" class="muted">No keys.</td></tr>';
+  }
+  document.getElementById('key-issue').addEventListener('click', async function () {
+    errBox.textContent = '';
+    try {
+      var desc = document.getElementById('key-desc').value.trim();
+      var r = await fetch('/api/api-keys', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ description: desc }) });
+      if (!r.ok) throw new Error('Issue failed: ' + r.status);
+      var j = await r.json();
+      document.getElementById('key-desc').value = '';
+      document.getElementById('key-new').textContent = 'New key (copy now): ' + j.key;
+      loadKeys();
+    } catch (e) { fail(e.message || String(e)); }
+  });
+  document.getElementById('keys').addEventListener('click', async function (ev) {
+    var t = ev.target;
+    var id = t.getAttribute && t.getAttribute('data-revoke');
+    if (!id) return;
+    if (!window.confirm('Revoke this key?')) return;
+    errBox.textContent = '';
+    try {
+      var r = await fetch('/api/api-keys/' + encodeURIComponent(id), { method: 'DELETE', headers: headers() });
+      if (!r.ok) throw new Error('Revoke failed: ' + r.status);
+      loadKeys();
+    } catch (e) { fail(e.message || String(e)); }
+  });
+
+  var _origRefresh = refresh;
+  refresh = async function () {
+    await _origRefresh();
+    try { await loadSettings(); } catch (e) { settingsCard.hidden = true; }
+    try { await loadKeys(); } catch (e) { /* ignore */ }
+  };
+
   refresh();
 })();
 </script>

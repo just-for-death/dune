@@ -92,13 +92,17 @@ export function normalizeUrl(url: string): string {
   return check.url;
 }
 
-export function getGameRoot(gameName: string): string {
+export function getGameRoot(gameName: string, ownerId?: string): string {
   const safeName = path.basename(gameName).replace(/[<>:"|?*]/g, '_').replace(/\.\./g, '');
+  if (ownerId) {
+    const safeOwner = path.basename(ownerId).replace(/[<>:"|?*]/g, '_').replace(/\.\./g, '');
+    return path.join(savesDir(), safeOwner, safeName);
+  }
   return path.join(savesDir(), safeName);
 }
 
-export function validateGamePath(gameName: string, requestedPath: string): string {
-  const gameRoot = getGameRoot(gameName);
+export function validateGamePath(gameName: string, requestedPath: string, ownerId?: string): string {
+  const gameRoot = getGameRoot(gameName, ownerId);
   const safePath = requestedPath.replace(/^(\.\.(\/|\\|$))+/g, '').replace(/[<>:"|?*]/g, '_');
   const finalPath = path.join(gameRoot, safePath);
   

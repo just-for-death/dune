@@ -74,7 +74,7 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
       return res.status(413).json({ success: false, message: 'File exceeds upload size limit' });
     }
 
-    const result = await handleUploadFile(game, filePath, req, syncId);
+    const result = await handleUploadFile(game, filePath, req, syncId, (req as AuthenticatedRequest).user?.id);
     if (!result.success && result.status) {
       return res.status(result.status).json(result);
     }
@@ -91,7 +91,7 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
 
 app.post('/api/local-sync', authMiddleware, requireAdmin, async (_req, res) => {
   try {
-    const result = await handleLocalSync();
+    const result = await handleLocalSync((_req as AuthenticatedRequest).user?.id);
     res.json(result);
   } catch (e) {
     logger.error({ reqId: (_req as LoggedRequest).reqId, err: e }, 'API internal error');
@@ -108,7 +108,7 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
 
     let fullPath: string;
     try {
-      fullPath = validateGamePath(game.toString(), filePath.toString());
+      fullPath = validateGamePath(game.toString(), filePath.toString(), (req as AuthenticatedRequest).user?.id);
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid path' });
     }
@@ -132,7 +132,7 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
     if (!ensureGameRead(req as AuthenticatedRequest, res, path.basename(game.toString()))) return;
     let fullPath: string;
     try {
-      fullPath = validateGamePath(game.toString(), path.join('.versions', versionId.toString(), filePath.toString()));
+      fullPath = validateGamePath(game.toString(), path.join('.versions', versionId.toString(), filePath.toString()), (req as AuthenticatedRequest).user?.id);
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid path' });
     }
@@ -191,7 +191,7 @@ app.get('/api/list-files', authMiddleware, (req: AuthenticatedRequest, res) => {
     const { game } = req.query;
     if (!game) return res.status(400).json({ success: false, message: 'Game required' });
     if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
-    const gameDir = getGameRoot(game.toString());
+    const gameDir = getGameRoot(game.toString(), (req as AuthenticatedRequest).user?.id);
     if (!fs.existsSync(gameDir)) return res.json({ success: true, files: [] });
     res.json({ success: true, files: listFilesInDir(gameDir) });
   } catch (e) {
@@ -206,7 +206,7 @@ app.get('/api/manifest', authMiddleware, (req: AuthenticatedRequest, res) => {
     const { game } = req.query;
     if (!game) return res.status(400).json({ success: false, message: 'Game required' });
     if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
-    res.json({ success: true, files: manifestForGame(game.toString()) });
+    res.json({ success: true, files: manifestForGame(game.toString(), (req as AuthenticatedRequest).user?.id) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -219,11 +219,11 @@ app.delete('/api/file', authMiddleware, (req: AuthenticatedRequest, res) => {
     if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
     if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
     try {
-      validateGamePath(game.toString(), filePath.toString());
+      validateGamePath(game.toString(), filePath.toString(), (req as AuthenticatedRequest).user?.id);
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid path' });
     }
-    const removed = removeGameFile(game.toString(), filePath.toString());
+    const removed = removeGameFile(game.toString(), filePath.toString(), (req as AuthenticatedRequest).user?.id);
     if (!removed) return res.status(404).json({ success: false, message: 'File not found' });
     res.json({ success: true });
   } catch (e) {
@@ -576,7 +576,61 @@ app.use('/api', (_req, res) => {
 });
 
 if (fs.existsSync(FRONTEND_DIR)) {
-  app.get('*', (_req, res) => {
+  // ── Settings (REST shim) ─────────────────────────────────────────────────────
+app.get('/api/settings', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const s = database.getSettings();
+    const isAdmin = req.user?.role === 'admin';
+    res.json({
+      success: true,
+      settings: {
+        maxVersions: s.maxVersions,
+        ollamaEndpoint: s.ollamaEndpoint,
+        ollamaModel: s.ollamaModel,
+        steamGridApiKey: isAdmin ? s.steamGridApiKey : s.steamGridApiKey ? '****' : '',
+        apiKeys: s.apiKeys.map(() => '****'),
+        localSources: s.localSources,
+        remoteServers: s.remoteServers,
+      },
+    });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedRequest, res) => {
+  try {
+    const current = database.getSettings();
+    const input = req.body ?? {};
+    const merged = { ...current };
+    if (typeof input.maxVersions === 'number' && input.maxVersions > 0) merged.maxVersions = input.maxVersions;
+    if (typeof input.steamGridApiKey === 'string') merged.steamGridApiKey = input.steamGridApiKey;
+    if (typeof input.ollamaEndpoint === 'string') merged.ollamaEndpoint = input.ollamaEndpoint;
+    if (typeof input.ollamaModel === 'string') merged.ollamaModel = input.ollamaModel;
+    database.saveSettings(merged);
+    res.json({ success: true });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// Delete a game (admin-only). Removes the row and its save tree.
+app.delete('/api/saves', authMiddleware, requireAdmin, (req: AuthenticatedRequest, res) => {
+  try {
+    const game = (req.query.game as string | undefined)?.toString();
+    if (!game) return res.status(400).json({ success: false, message: 'Game required' });
+    const row = database.getGames().find(g => g.name === game);
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    database.deleteGame(row.id);
+    const root = getGameRoot(game, row.ownerId);
+    if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
+    res.json({ success: true });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.get('*', (_req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
   });
 }

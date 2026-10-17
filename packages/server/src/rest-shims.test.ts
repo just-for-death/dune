@@ -262,7 +262,8 @@ describe('bundled dashboard (tracked, dependency-free)', () => {
 
 describe('delta sync endpoints', () => {
   const game = 'DeltaGame';
-  const gameDir = path.join(TMP, 'saves', game);
+  const adminId = database.listUsers()[0].id;
+  const gameDir = path.join(TMP, 'saves', adminId, game);
 
   it('returns a content-hash manifest, and 400 without a game', async () => {
     fs.mkdirSync(gameDir, { recursive: true });

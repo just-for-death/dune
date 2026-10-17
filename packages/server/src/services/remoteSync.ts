@@ -13,7 +13,7 @@ function savesRoot(): string {
   return savesDir();
 }
 
-export async function triggerRemoteSync(syncedGames: string[]): Promise<void> {
+export async function triggerRemoteSync(syncedGames: string[], ownerId?: string): Promise<void> {
   const settings = database.getSettings();
   const remoteServers = settings.remoteServers || [];
   // Shared key for server-to-server push. Remote upload routes require
@@ -24,10 +24,10 @@ export async function triggerRemoteSync(syncedGames: string[]): Promise<void> {
   if (remoteServers.length === 0) return;
 
   for (const gameName of syncedGames) {
-    const gameDir = path.join(savesRoot(), gameName);
+    const gameDir = path.join(savesRoot(), ownerId ?? '', gameName);
     if (!fs.existsSync(gameDir)) continue;
 
-    const zipPath = path.join(savesRoot(), `${gameName}_sync.zip`);
+    const zipPath = path.join(savesRoot(), ownerId ?? '', `${gameName}_sync.zip`);
     
     try {
       await execFileAsync('zip', ['-r', zipPath, '.', '-x', '.versions/*'], { cwd: gameDir });

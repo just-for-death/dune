@@ -52,14 +52,15 @@ function openSchema(file: string): DatabaseSync {
       PRAGMA journal_mode = DELETE;
       CREATE TABLE IF NOT EXISTS games (
         id REAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
         status TEXT NOT NULL,
         lastSync TEXT NOT NULL,
         thumbnail TEXT NOT NULL DEFAULT '',
         analysis TEXT,
         ownerId TEXT,
         createdAt TEXT NOT NULL,
-        updatedAt TEXT NOT NULL
+        updatedAt TEXT NOT NULL,
+        UNIQUE(ownerId, name)
       );
       CREATE TABLE IF NOT EXISTS kv (
         key TEXT PRIMARY KEY,
@@ -92,18 +93,41 @@ function openSchema(file: string): DatabaseSync {
 }
 
 /**
- * Pre-multi-user databases have `games` without an `ownerId` column. Add it
- * (nullable) so ownership can be backfilled. One-time: skipped once present.
- *
- * Game names stay globally unique on purpose — saves live at
- * `data/saves/<name>` and are not namespaced per user, so two users cannot own
- * a game with the same name.
+ * Pre-multi-user databases have `games` without an `ownerId` column, and
+ * pre-namespacing databases have a *global* `UNIQUE(name)`. Rebuild the table
+ * so `ownerId` exists and uniqueness is per-owner (allowing two users to own
+ * a game with the same title once saves are namespaced by owner). One-time:
+ * skipped once the composite unique constraint is present.
  */
 function ensureOwnerColumn(handle: DatabaseSync): void {
+  const row = handle.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'games'").get() as { sql: string } | undefined;
+  if (row && row.sql && row.sql.includes('UNIQUE(ownerId, name)')) return;
+
   const cols = handle.prepare('PRAGMA table_info(games)').all() as Array<{ name: string }>;
-  if (cols.some((c) => c.name === 'ownerId')) return;
-  handle.exec('ALTER TABLE games ADD COLUMN ownerId TEXT;');
-  logger.info('Migrated games table: added ownerId column');
+  const hasOwner = cols.some((c) => c.name === 'ownerId');
+  const ownerSelect = hasOwner ? 'ownerId' : 'NULL';
+
+  handle.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE games RENAME TO games_legacy;
+    CREATE TABLE games (
+      id REAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      lastSync TEXT NOT NULL,
+      thumbnail TEXT NOT NULL DEFAULT '',
+      analysis TEXT,
+      ownerId TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      UNIQUE(ownerId, name)
+    );
+    INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt)
+      SELECT id, name, status, lastSync, thumbnail, analysis, ${ownerSelect}, createdAt, updatedAt FROM games_legacy;
+    DROP TABLE games_legacy;
+    COMMIT;
+  `);
+  logger.info('Migrated games table: ownerId + per-owner unique name');
 }
 
 /** One-way import from the pre-SQLite dune.json. Never deletes the original. */

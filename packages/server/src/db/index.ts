@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type {
   Game,
@@ -12,6 +14,7 @@ import { hashApiKey, looksHashed, matchStoredHash } from '../utils/crypto.js';
 import { logger } from '../middleware/logging.js';
 import { getDb } from './sqlite.js';
 import { withDbLock } from './mutex.js';
+import { getGameRoot } from '../utils/path.js';
 
 export { withDbLock };
 export { closeDbForTests } from './sqlite.js';
@@ -115,8 +118,9 @@ export function writeDB(data: { games: Game[]; settings: Settings }): void {
   }
 }
 
-function getGameByName(name: string): Game | undefined {
-  return getGames().find((g) => g.name === name);
+function getGameByName(name: string, ownerId?: string): Game | undefined {
+  const rows = ownerId ? getGames(ownerId) : getGames();
+  return rows.find((g) => g.name === name);
 }
 
 function upsertGame(
@@ -124,10 +128,11 @@ function upsertGame(
     Partial<Pick<Game, 'id' | 'thumbnail' | 'createdAt' | 'updatedAt'>>,
 ): Game {
   const now = new Date().toISOString();
+  const ownerId = game.ownerId ?? null;
   const existing = getDb()
-    .prepare('SELECT id, createdAt, thumbnail, analysis, ownerId FROM games WHERE name = ?')
-    .get(game.name) as
-    | { id: number; createdAt: string; thumbnail: string; analysis: string | null; ownerId: string | null }
+    .prepare('SELECT id, createdAt, thumbnail, analysis FROM games WHERE name = ? AND ownerId IS ?')
+    .get(game.name, ownerId) as
+    | { id: number; createdAt: string; thumbnail: string; analysis: string | null }
     | undefined;
 
   if (existing) {
@@ -135,18 +140,14 @@ function upsertGame(
     // (e.g. local sync) must not silently wipe AI analysis or cover art.
     const thumbnail = game.thumbnail !== undefined ? game.thumbnail : existing.thumbnail;
     const analysis = game.analysis !== undefined ? JSON.stringify(game.analysis) : existing.analysis;
-    // Ownership is sticky: whoever first claimed the row keeps it; an unowned
-    // (pre-multi-user) row adopts the next caller's owner.
-    const ownerId = existing.ownerId ?? game.ownerId ?? null;
     getDb()
       .prepare(
-        'UPDATE games SET status = ?, lastSync = ?, thumbnail = ?, analysis = ?, ownerId = ?, updatedAt = ? WHERE name = ?',
+        'UPDATE games SET status = ?, lastSync = ?, thumbnail = ?, analysis = ?, updatedAt = ? WHERE name = ? AND ownerId IS ?',
       )
-      .run(game.status, game.lastSync, thumbnail, analysis, ownerId, now, game.name);
+      .run(game.status, game.lastSync, thumbnail, analysis, now, game.name, ownerId);
     return { ...game, thumbnail, ownerId: ownerId ?? undefined, id: existing.id, createdAt: existing.createdAt, updatedAt: now };
   }
 
-  const ownerId = game.ownerId ?? null;
   const created: Game = {
     ...game,
     thumbnail: game.thumbnail ?? '',
@@ -183,8 +184,7 @@ function deleteGame(id: number, ownerId?: string): boolean {
  */
 function canAccessGame(user: User, gameName: string): boolean {
   if (user.role === 'admin') return true;
-  const game = getGameByName(gameName);
-  return !!game && game.ownerId === user.id;
+  return getGames(user.id).some((g) => g.name === gameName);
 }
 
 /** Insert a minimal game row owned by `ownerId` (no-op if the name exists). */
@@ -454,6 +454,24 @@ function migrateApiKeys(): boolean {
  * `settings.apiKeys` hashes onto the first admin, then clears them so keys are
  * managed per-user from here on. Idempotent.
  */
+function migrateSavesLayout(): void {
+  for (const game of getGames()) {
+    if (!game.ownerId) continue;
+    const legacy = getGameRoot(game.name);
+    const target = getGameRoot(game.name, game.ownerId);
+    if (legacy === target) continue;
+    if (!fs.existsSync(legacy)) continue;
+    if (fs.existsSync(target)) continue;
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.renameSync(legacy, target);
+      logger.info({ game: game.name, owner: game.ownerId }, 'Migrated saves into per-owner layout');
+    } catch (err) {
+      logger.warn({ err, game: game.name }, 'Failed to migrate saves layout');
+    }
+  }
+}
+
 function ensureMultiUser(): void {
   let admins = listUsers().filter((u) => u.role === 'admin');
   if (listUsers().length === 0) {
@@ -488,6 +506,8 @@ export function runBootMigrations(): void {
   }
 
   ensureMultiUser();
+
+  migrateSavesLayout();
 
   if (listKeyHashes().length === 0) {
     const admin = listUsers()[0];

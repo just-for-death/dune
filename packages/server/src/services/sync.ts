@@ -50,10 +50,11 @@ export async function handleUploadFile(
   gameName: string,
   filePath: string,
   fileStream: NodeJS.ReadableStream,
-  syncId: string
+  syncId: string,
+  ownerId?: string,
 ): Promise<{ success: boolean; message: string; status?: number }> {
   try {
-    const finalPath = validateGamePath(gameName, filePath);
+    const finalPath = validateGamePath(gameName, filePath, ownerId);
     const finalDir = path.dirname(finalPath);
 
     const maxUploadBytes =
@@ -64,7 +65,7 @@ export async function handleUploadFile(
     // Per-game file-count cap (cheap guard against zip-bombs / runaway syncs)
     try {
       let count = 0;
-      const gameRoot = getGameRoot(gameName);
+      const gameRoot = getGameRoot(gameName, ownerId);
       if (fs.existsSync(gameRoot) && !fs.existsSync(finalPath)) {
         const stack: string[] = [gameRoot];
         while (stack.length > 0) {
@@ -88,7 +89,7 @@ export async function handleUploadFile(
     }
 
     if (fs.existsSync(finalPath)) {
-      const versionDir = path.join(getGameRoot(gameName), '.versions', safeVersionId(syncId));
+      const versionDir = path.join(getGameRoot(gameName, ownerId), '.versions', safeVersionId(syncId));
       const archivePath = path.join(versionDir, filePath);
       
       if (!fs.existsSync(path.dirname(archivePath))) {
@@ -98,7 +99,7 @@ export async function handleUploadFile(
 
       const settings = database.getSettings();
       const maxVersions = settings.maxVersions || 10;
-      const versionsRoot = path.join(getGameRoot(gameName), '.versions');
+      const versionsRoot = path.join(getGameRoot(gameName, ownerId), '.versions');
       
       if (fs.existsSync(versionsRoot)) {
         const versions = fs.readdirSync(versionsRoot)
@@ -145,12 +146,12 @@ export async function handleUploadFile(
 
     if (path.basename(filePath) === 'saves.zip') {
       try {
-        const tempExtractDir = path.join(getGameRoot(gameName), '_extract_tmp');
+        const tempExtractDir = path.join(getGameRoot(gameName, ownerId), '_extract_tmp');
         if (fs.existsSync(tempExtractDir)) fs.rmSync(tempExtractDir, { recursive: true });
         fs.mkdirSync(tempExtractDir, { recursive: true });
 
         await execFileAsync('unzip', ['-o', finalPath, '-d', tempExtractDir]);
-        await fs.promises.cp(tempExtractDir, getGameRoot(gameName), { recursive: true });
+        await fs.promises.cp(tempExtractDir, getGameRoot(gameName, ownerId), { recursive: true });
 
         fs.rmSync(tempExtractDir, { recursive: true });
         fs.unlinkSync(finalPath);
@@ -160,7 +161,7 @@ export async function handleUploadFile(
     }
 
     // Fingerprints for this game are now stale (new/overwritten files).
-    invalidateGame(gameName);
+    invalidateGame(gameName, ownerId);
 
     // Status update re-reads inside the lock: awaits above (streaming
     // upload, unzip) yield, so a snapshot taken earlier could clobber
@@ -168,7 +169,7 @@ export async function handleUploadFile(
     await withDbLock(() => {
       const timestamp = new Date().toISOString();
       const games = database.getGames();
-      const gameIdx = games.findIndex(g => g.name.toLowerCase() === gameName.toLowerCase());
+      const gameIdx = games.findIndex(g => g.name.toLowerCase() === gameName.toLowerCase() && (g.ownerId ?? null) === (ownerId ?? null));
 
       if (gameIdx !== -1) {
         games[gameIdx].status = 'In Sync';
@@ -178,6 +179,7 @@ export async function handleUploadFile(
         games.push({
           id: Date.now() + Math.random(),
           name: gameName,
+          ownerId,
           status: 'In Sync',
           lastSync: timestamp,
           thumbnail: '',
@@ -202,10 +204,11 @@ export async function handleUploadFile(
   }
 }
 
-export async function handleLocalSync(): Promise<{ success: boolean; count: number; games: string[]; errors: string[] }> {
+export async function handleLocalSync(ownerId?: string): Promise<{ success: boolean; count: number; games: string[]; errors: string[] }> {
   const settings = database.getSettings();
   const sources = settings.localSources || [];
   const maxVersions = settings.maxVersions || 10;
+  const ownerIdResolved = ownerId ?? (database.listUsers().find(u => u.role === 'admin')?.id);
   let totalFilesSynced = 0;
   const syncedGames: string[] = [];
   const errors: string[] = [];
@@ -229,7 +232,7 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
         const gameName = path.basename(gamePath);
         let result;
         try {
-          result = syncLocalFolder(gamePath, gameName, savesRoot(), maxVersions);
+          result = syncLocalFolder(gamePath, gameName, path.join(savesRoot(), ownerIdResolved ?? ''), maxVersions);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           logger.error({ err: error, game: gameName }, 'Local sync folder failed');
@@ -248,6 +251,7 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
           database.upsertGame({
             id: Date.now() + Math.random(),
             name: gameName,
+            ownerId: ownerIdResolved,
             status: 'In Sync',
             lastSync: ts,
             createdAt: ts,
@@ -260,7 +264,7 @@ export async function handleLocalSync(): Promise<{ success: boolean; count: numb
     if (syncedGames.length > 0) {
       const uniqueGames = [...new Set(syncedGames)];
       setImmediate(() => {
-        triggerRemoteSync(uniqueGames).catch(err => logger.error({ err }, 'Remote sync error'));
+        triggerRemoteSync(uniqueGames, ownerIdResolved).catch(err => logger.error({ err }, 'Remote sync error'));
       });
     }
 

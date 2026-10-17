@@ -101,8 +101,8 @@ export const appRouter = router({
       }),
 
     // Server-side folder scan into the shared library: admin-only.
-    local: adminProcedure.mutation(async () => {
-      const result = await handleLocalSync();
+    local: adminProcedure.mutation(async ({ ctx }) => {
+      const result = await handleLocalSync(ctx.user.id);
       return result;
     }),
 
@@ -110,7 +110,7 @@ export const appRouter = router({
       .input(z.object({ game: z.string() }))
       .query(async ({ ctx, input }) => {
         const gameName = assertGameAccess(ctx.user, input.game);
-        return { success: true, files: manifestForGame(gameName) };
+        return { success: true, files: manifestForGame(gameName, ctx.user.id) };
       }),
   },
 
@@ -119,7 +119,7 @@ export const appRouter = router({
       .input(z.object({ game: z.string() }))
       .query(async ({ ctx, input }) => {
         const gameName = assertGameAccess(ctx.user, input.game);
-        const gameDir = getGameRoot(gameName);
+        const gameDir = getGameRoot(gameName, ctx.user.id);
         if (!fs.existsSync(gameDir)) return { success: true, files: [] };
         const files = listFilesInDir(gameDir);
         return { success: true, files };
@@ -130,11 +130,11 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const gameName = assertGameAccess(ctx.user, input.game);
         try {
-          validateGamePath(gameName, input.path);
+          validateGamePath(gameName, input.path, ctx.user.id);
         } catch {
           throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid path' });
         }
-        if (!removeGameFile(gameName, input.path)) {
+        if (!removeGameFile(gameName, input.path, ctx.user.id)) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'File not found' });
         }
         return { success: true };
@@ -145,7 +145,7 @@ export const appRouter = router({
         .input(z.object({ game: z.string() }))
         .query(async ({ ctx, input }) => {
           const gameName = assertGameAccess(ctx.user, input.game);
-          const versionsRoot = path.join(getGameRoot(gameName), '.versions');
+          const versionsRoot = path.join(getGameRoot(gameName, ctx.user.id), '.versions');
           if (!fs.existsSync(versionsRoot)) return { success: true, versions: [] };
           const folders = fs.readdirSync(versionsRoot).filter(f => !isNaN(Number(f)));
           const versions = folders.map(f => ({
@@ -159,7 +159,7 @@ export const appRouter = router({
         .input(z.object({ game: z.string(), versionId: z.string().regex(/^\d+$/) }))
         .query(async ({ ctx, input }) => {
           const gameName = assertGameAccess(ctx.user, input.game);
-          const versionDir = path.join(getGameRoot(gameName), '.versions', input.versionId);
+          const versionDir = path.join(getGameRoot(gameName, ctx.user.id), '.versions', input.versionId);
           if (!fs.existsSync(versionDir)) return { success: true, files: [] };
           const files = listFilesInDir(versionDir);
           return { success: true, files };
