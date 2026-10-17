@@ -617,12 +617,21 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
 // Delete a game (admin-only). Removes the row and its save tree.
 app.delete('/api/saves', authMiddleware, requireAdmin, (req: AuthenticatedRequest, res) => {
   try {
+    const idParam = (req.query.id as string | undefined)?.toString();
     const game = (req.query.game as string | undefined)?.toString();
-    if (!game) return res.status(400).json({ success: false, message: 'Game required' });
-    const row = database.getGames().find(g => g.name === game);
+    let row;
+    if (idParam) {
+      const id = Number(idParam);
+      if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
+      row = database.getGames().find(g => g.id === id);
+    } else if (game) {
+      row = database.getGames().find(g => g.name === game);
+    } else {
+      return res.status(400).json({ success: false, message: 'id or game required' });
+    }
     if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
     database.deleteGame(row.id);
-    const root = getGameRoot(game, row.ownerId);
+    const root = getGameRoot(row.name, row.ownerId);
     if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
     res.json({ success: true });
   } catch (e) {

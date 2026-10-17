@@ -243,7 +243,7 @@ export async function handleLocalSync(ownerId?: string): Promise<{ success: bool
         if (result.filesSynced > 0) {
           totalFilesSynced += result.filesSynced;
           syncedGames.push(gameName);
-          invalidateGame(gameName);
+          invalidateGame(gameName, ownerIdResolved);
 
           const ts = new Date().toISOString();
           // Omit thumbnail/analysis: omit means "preserve", so re-syncing a

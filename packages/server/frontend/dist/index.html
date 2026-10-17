@@ -258,7 +258,7 @@
           + '<td>' + esc(g.lastSync || 'Never') + '</td>'
           + '<td>' + files.length + '</td>'
           + '<td>' + vers.length + '</td>'
-          + '<td><button class="secondary" data-delgame="' + esc(g.name) + '">Delete</button></td></tr>';
+          + '<td><button class="secondary" data-delgameid="' + esc(String(g.id)) + '" data-delgamename="' + esc(g.name) + '">Delete</button></td></tr>';
       }
       document.getElementById('st-files').textContent = totalFiles;
       document.getElementById('games').innerHTML = rows || '<tr><td colspan="6" class="muted">No games tracked yet.</td></tr>';
@@ -349,12 +349,13 @@
   });
   document.getElementById('games').addEventListener('click', async function (ev) {
     var t = ev.target;
-    var del = t.getAttribute && t.getAttribute('data-delgame');
-    if (!del) return;
-    if (!window.confirm('Delete game \"' + del + '\" and all its saves?')) return;
+    var delId = t.getAttribute && t.getAttribute('data-delgameid');
+    var delName = t.getAttribute && t.getAttribute('data-delgamename');
+    if (!delId) return;
+    if (!window.confirm('Delete game \"' + (delName || delId) + '\" and all its saves?')) return;
     errBox.textContent = '';
     try {
-      var r = await fetch('/api/saves?game=' + encodeURIComponent(del), { method: 'DELETE', headers: headers() });
+      var r = await fetch('/api/saves?id=' + encodeURIComponent(delId), { method: 'DELETE', headers: headers() });
       if (!r.ok) throw new Error('Delete failed: ' + r.status);
       refresh();
     } catch (e) { fail(e.message || String(e)); }
