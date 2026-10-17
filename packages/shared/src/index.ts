@@ -51,6 +51,8 @@ export interface Settings {
   autoSyncEnabled?: boolean;
   autoSyncFreq?: string;
   scanRoots?: string[];
+  /** Client-only: SteamGridDB key stored locally (server key is separate). */
+  steamGridDbKey?: string;
 }
 
 // Local source for dual-boot sync
@@ -194,14 +196,14 @@ export interface ElectronAPI {
   
   // Playtime
   recordPlaytime: (session: Omit<PlaytimeSession, 'id' | 'createdAt'>) => Promise<{ success: boolean; message?: string }>;
-  getPlaytimeSummary: (game?: string) => Promise<{ success: boolean; summary: PlaytimeSummary[] }>;
-  getRecentSessions: (limit?: number) => Promise<{ success: boolean; sessions: PlaytimeSession[] }>;
-  getTotalPlaytime: () => Promise<{ success: boolean; totalMinutes: number }>;
+  getPlaytimeSummary: (game?: string) => Promise<{ success: boolean; summary: PlaytimeSummary[]; message?: string }>;
+  getRecentSessions: (limit?: number) => Promise<{ success: boolean; sessions: PlaytimeSession[]; message?: string }>;
+  getTotalPlaytime: () => Promise<{ success: boolean; totalMinutes: number; message?: string }>;
   
   // Achievements
-  getAchievements: (game: string) => Promise<{ success: boolean; achievements: Achievement[] }>;
-  getAchievementSummary: (game?: string) => Promise<{ success: boolean; summary: AchievementSummary[] }>;
-  getRecentUnlocks: (limit?: number) => Promise<{ success: boolean; unlocks: Achievement[] }>;
+  getAchievements: (game: string) => Promise<{ success: boolean; achievements: Achievement[]; message?: string }>;
+  getAchievementSummary: (game?: string) => Promise<{ success: boolean; summary: AchievementSummary[]; message?: string }>;
+  getRecentUnlocks: (limit?: number) => Promise<{ success: boolean; unlocks: Achievement[]; message?: string }>;
   
   // HLTB
   getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string }>;
@@ -214,24 +216,30 @@ export interface ElectronAPI {
   autoMatchAll: () => Promise<{ success: boolean; count: number; message?: string }>;
   
   // Local sync
-  triggerLocalSync: () => Promise<{ success: boolean; count: number; games: string[] }>;
-  getLocalSources: () => Promise<{ success: boolean; sources: LocalSource[] }>;
+  triggerLocalSync: () => Promise<{ success: boolean; count: number; games: string[]; message?: string }>;
+  getLocalSources: () => Promise<{ success: boolean; sources: LocalSource[]; message?: string }>;
   addLocalSource: (path: string) => Promise<{ success: boolean; source?: LocalSource; message?: string }>;
-  removeLocalSource: (id: number) => Promise<{ success: boolean }>;
+  removeLocalSource: (id: number) => Promise<{ success: boolean; message?: string }>;
   
   // Remote servers
-  getRemoteServers: () => Promise<{ success: boolean; servers: RemoteServer[] }>;
+  getRemoteServers: () => Promise<{ success: boolean; servers: RemoteServer[]; message?: string }>;
   addRemoteServer: (url: string) => Promise<{ success: boolean; server?: RemoteServer; message?: string }>;
-  removeRemoteServer: (id: number) => Promise<{ success: boolean }>;
+  removeRemoteServer: (id: number) => Promise<{ success: boolean; message?: string }>;
   
   // API Keys (self-service: keys belong to the authenticated user)
-  getApiKeys: () => Promise<{ success: boolean; keys: ApiKeyInfo[] }>;
+  getApiKeys: () => Promise<{ success: boolean; keys: ApiKeyInfo[]; message?: string }>;
   addApiKey: (description?: string) => Promise<{ success: boolean; key?: string; message?: string }>;
   removeApiKey: (id: string) => Promise<{ success: boolean; message?: string }>;
   
   // Ollama
   getOllamaModels: (endpoint: string) => Promise<{ success: boolean; models?: string[]; message?: string }>;
   checkOllamaHealth: () => Promise<HealthStatus>;
+
+  // Renderer diagnostics, secret store, and help (client-only bridge methods)
+  reportRendererError: (report: { message: string; stack?: string; url?: string }) => Promise<unknown>;
+  openErrorLog: () => Promise<unknown>;
+  getServerKey: () => Promise<{ success: boolean; key: string }>;
+  setServerKey: (key: string) => Promise<{ success: boolean }>;
 }
 
 // NOTE: no `declare global Window` here on purpose. This package is a pure

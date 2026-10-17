@@ -6,95 +6,15 @@ import type {
   HLTBTimes,
   PlaytimeSummary,
   AchievementSummary,
-  Settings as SharedSettings,
-  FileAnalysis,
+  Game,
+  Settings,
+  Achievement,
+  ElectronAPI,
 } from '@dune/shared';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
-// Must mirror every key exposed in electron/preload.ts contextBridge call
-// (preload.ts is the runtime truth). Domain shapes from @dune/shared are
-// canonical; local interfaces only for client-specific UI state.
-interface ElectronAPI {
-  exportSaves: () => Promise<{ success: boolean; path?: string; message?: string }>;
-  syncCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
-  restoreCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
-  loadConfig: () => Promise<{ games: Game[]; cloud: Cloud; settings: Settings } | null>;
-  saveConfig: (config: Partial<{ games: Game[]; cloud: Cloud; settings: Settings }>) => Promise<boolean>;
-  addGame: (game: Omit<Game, 'id'>) => Promise<Game[]>;
-  removeGame: (id: number) => Promise<Game[]>;
-  autoDetectGames: (roots: string[]) => Promise<{ count: number; currentGames: Game[] }>;
-  selectDirectory: () => Promise<{ success: boolean; path?: string }>;
-  testCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
-  fetchArt: (id: number, name: string) => Promise<{ success: boolean; thumbnail?: string; message?: string }>;
-  setCustomArt: (id: number) => Promise<string | false>;
-  onSyncProgress: (cb: (data: { percent: number; message: string }) => void) => () => void;
-  // New server integration
-  recordPlaytime: (session: { game: string; platform: string; sessionStart: string; sessionEnd: string }) => Promise<{ success: boolean; message?: string }>;
-  getPlaytimeSummary: (game?: string) => Promise<{ success: boolean; summary: PlaytimeSummary[]; message?: string }>;
-  getRecentSessions: (limit?: number) => Promise<{ success: boolean; sessions: unknown[]; message?: string }>;
-  getTotalPlaytime: () => Promise<{ success: boolean; totalMinutes: number; message?: string }>;
-  getAchievements: (game: string) => Promise<{ success: boolean; achievements: Achievement[]; message?: string }>;
-  getAchievementSummary: (game?: string) => Promise<{ success: boolean; summary: AchievementSummary[]; message?: string }>;
-  getRecentUnlocks: (limit?: number) => Promise<{ success: boolean; unlocks: unknown[]; message?: string }>;
-  getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string }>;
-  analyzeFiles: (gameName: string, files: Array<{ path: string; size: number; category: string }>) => Promise<{ success: boolean; analysis?: Record<string, unknown>; message?: string }>;
-  searchArt: (query: string) => Promise<{ success: boolean; results?: string[]; message?: string }>;
-  autoMatchAll: () => Promise<{ success: boolean; count: number; message?: string }>;
-  triggerLocalSync: () => Promise<{ success: boolean; count: number; games: string[]; message?: string }>;
-  getLocalSources: () => Promise<{ success: boolean; sources: Array<{ id: number; path: string }>; message?: string }>;
-  addLocalSource: (path: string) => Promise<{ success: boolean; source?: unknown; message?: string }>;
-  removeLocalSource: (id: number) => Promise<{ success: boolean; message?: string }>;
-  getRemoteServers: () => Promise<{ success: boolean; servers: Array<{ id: number; url: string }>; message?: string }>;
-  addRemoteServer: (url: string) => Promise<{ success: boolean; server?: unknown; message?: string }>;
-  removeRemoteServer: (id: number) => Promise<{ success: boolean; message?: string }>;
-  getApiKeys: () => Promise<{ success: boolean; keys: Array<{ id: string; description: string; createdAt: string; masked: string }>; message?: string }>;
-  addApiKey: (description?: string) => Promise<{ success: boolean; key?: string; message?: string }>;
-  removeApiKey: (id: string) => Promise<{ success: boolean; message?: string }>;
-  getOllamaModels: (endpoint: string) => Promise<{ success: boolean; models?: string[]; message?: string }>;
-  checkOllamaHealth: () => Promise<{ success: boolean; exists?: boolean; message?: string }>;
-  reportRendererError: (report: { message: string; stack?: string; url?: string }) => Promise<unknown>;
-  openErrorLog: () => Promise<unknown>;
-  getServerKey: () => Promise<{ success: boolean; key: string }>;
-  setServerKey: (key: string) => Promise<{ success: boolean }>;
-}
-
-interface Game {
-  id: number;
-  name: string;
-  winPath: string;
-  linPath: string;
-  lastSync: string;
-  status: string;
-  thumbnail: string;
-  analysis?: Record<string, FileAnalysis>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-// Use shared Settings type (includes server-side fields)
-// Local-only settings that differ from shared: runInBackground, autoSyncEnabled, etc.
-// We extend the shared type with client-only fields
-type Settings = SharedSettings & {
-  runInBackground?: boolean;
-  autoSyncEnabled?: boolean;
-  autoSyncFreq?: string;
-  steamGridDbKey?: string;
-  scanRoots?: string[];
-};
-
-interface Achievement {
-  id: number;
-  game: string;
-  apiName: string;
-  displayName: string;
-  description: string;
-  unlocked: boolean;
-  unlockTime: string | null;
-  rarity: number;
-  hidden: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
+// ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
+// preload.ts is the runtime truth for the bridge shape.
 
 declare global {
   interface Window {
