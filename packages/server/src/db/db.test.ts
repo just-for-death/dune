@@ -2,13 +2,15 @@ import { describe, it, expect, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 // Isolate ALL filesystem side effects (DB, secret) to a temp dir.
 // Must precede the dynamic import below (static imports hoist).
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-db-test-'));
 process.env.API_KEY_SECRET = 'db-test-secret-0123456789abcdef';
 
-const { database, writeDB, withDbLock, closeDbForTests } = await import('../db/index.js');
+const { database, writeDB, withDbLock, closeDbForTests, runBootMigrations } = await import('../db/index.js');
+const { hashApiKey } = await import('../utils/crypto.js');
 
 const TMP = process.env.DATA_DIR as string;
 
@@ -119,5 +121,43 @@ describe('corrupt database recovery', () => {
     expect(fs.readFileSync(path.join(TMP, backups[0]), 'utf-8')).toBe('{not valid sqlite{{{');
     // A fresh database file was created in its place
     expect(fs.existsSync(dbFile)).toBe(true);
+  });
+});
+
+describe('multi-user migration', () => {
+  it('adds ownerId, creates one admin, adopts legacy keys, and claims games', () => {
+    closeDbForTests();
+    const dbFile = path.join(TMP, 'dune.sqlite');
+    if (fs.existsSync(dbFile)) fs.unlinkSync(dbFile);
+
+    // Build a pre-multi-user database: games without ownerId, hashed key in kv.
+    const legacy = new DatabaseSync(dbFile);
+    legacy.exec(`
+      PRAGMA journal_mode = DELETE;
+      CREATE TABLE games (id REAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, status TEXT NOT NULL, lastSync TEXT NOT NULL, thumbnail TEXT NOT NULL DEFAULT '', analysis TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);
+      CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+    const ts = new Date().toISOString();
+    legacy
+      .prepare('INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(1, 'Legacy Game', 'In Sync', 'Never', '', null, ts, ts);
+    legacy
+      .prepare('INSERT INTO kv (key, value) VALUES (?, ?)')
+      .run('settings', JSON.stringify({ apiKeys: [hashApiKey('legacy-key')] }));
+    legacy.close();
+
+    runBootMigrations();
+
+    const games = database.getGames();
+    const admin = database.listUsers().find(u => u.role === 'admin');
+    expect(admin).toBeDefined();
+    // Ownerless rows are claimed by the admin.
+    expect(games.find(g => g.name === 'Legacy Game')?.ownerId).toBe(admin!.id);
+    // The pre-existing hashed key now resolves to that admin.
+    expect(database.resolveUserByKey('legacy-key')?.id).toBe(admin!.id);
+
+    // Idempotent: re-running adds no second admin and no duplicate keys.
+    runBootMigrations();
+    expect(database.listUsers().filter(u => u.role === 'admin')).toHaveLength(1);
   });
 });

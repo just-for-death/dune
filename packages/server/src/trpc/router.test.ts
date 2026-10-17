@@ -17,6 +17,7 @@ const { database } = await import('../db/index.js');
 const { appRouter } = await import('./router.js');
 
 const RAW_KEY = 'router-test-key-abc123';
+const ADMIN = database.listUsers()[0];
 
 function ctx(valid = true) {
   return {
@@ -24,6 +25,7 @@ function ctx(valid = true) {
     settings: database.getSettings(),
     apiKey: valid ? RAW_KEY : null,
     apiKeyValid: valid,
+    user: valid ? ADMIN : null,
   };
 }
 
@@ -96,7 +98,6 @@ describe('games contract', () => {
 describe('settings + apiKeys contract', () => {
   it('masks stored keys and persists updates', async () => {
     const c = appRouter.createCaller(ctx());
-    database.addApiKey(RAW_KEY);
     const got = await c.settings.get();
     expect(JSON.stringify(got.settings)).not.toContain(RAW_KEY);
 
@@ -104,10 +105,58 @@ describe('settings + apiKeys contract', () => {
     expect(database.getSettings().maxVersions).toBe(7);
     await expect(c.settings.update({ maxVersions: 0 })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
 
-    const keys = await c.apiKeys.list();
-    expect(keys.success).toBe(true);
-    await expect(c.apiKeys.add({ key: '' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
-    expect(database.removeApiKey(RAW_KEY)).toBe(true);
+    // apiKeys are now self-service: issue returns the plaintext once, then it
+    // can be listed (masked) and revoked by its short id.
+    const issued = await c.apiKeys.add({ description: 'contract' });
+    expect(issued.key).toMatch(/^dune_/);
+    const listed = await c.apiKeys.list();
+    expect(listed.success).toBe(true);
+    const target = listed.keys.find(k => k.description === 'contract');
+    expect(target).toBeDefined();
+    expect((await c.apiKeys.remove({ id: target!.id })).success).toBe(true);
+    expect((await c.apiKeys.list()).keys.some(k => k.description === 'contract')).toBe(false);
+  });
+});
+
+describe('admin gate', () => {
+  const memberCtx = () => ({
+    ...ctx(),
+    user: { id: 'usr_member', name: 'member', role: 'member' as const, createdAt: '', updatedAt: '' },
+  });
+
+  it('rejects admin-only procedures for members', async () => {
+    const c = appRouter.createCaller(memberCtx());
+    await expect(c.settings.update({ maxVersions: 5 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(c.users.list()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(c.sync.local()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(c.localSources.add({ path: process.env.DATA_DIR as string })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    // Read-only procedures stay available to members.
+    await expect(c.settings.get()).resolves.toMatchObject({ success: true });
+  });
+});
+
+describe('users contract', () => {
+  it('creates, lists, issues keys, and removes a member', async () => {
+    const c = appRouter.createCaller(ctx());
+    const created = await c.users.create({ name: 'Alice', role: 'member' });
+    expect(created.apiKey).toMatch(/^dune_/);
+
+    const list = await c.users.list();
+    expect(list.users.some(u => u.name === 'Alice')).toBe(true);
+    await expect(c.users.create({ name: 'Alice' })).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    const key = await c.users.addKey({ id: created.user.id, description: 'second' });
+    expect(key.apiKey).toMatch(/^dune_/);
+
+    await expect(c.users.setRole({ id: 'usr_nope', role: 'admin' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(c.users.remove({ id: created.user.id })).resolves.toMatchObject({ success: true });
+  });
+
+  it('refuses to remove the last admin', async () => {
+    const c = appRouter.createCaller(ctx());
+    const admin = database.listUsers().find(u => u.role === 'admin')!;
+    await expect(c.users.remove({ id: admin.id })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(c.users.setRole({ id: admin.id, role: 'member' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
   });
 });
 
@@ -247,5 +296,45 @@ describe('ai + art + hltb contract (offline)', () => {
 
     const miss = await c.hltb.get({ gameName: 'Definitely Not A Real Game 12345' });
     expect(miss.success).toBe(false);
+  });
+});
+
+describe('multi-user scoping', () => {
+  it('members see only their own games; admins see all; cross-user access is denied', async () => {
+    const admin = appRouter.createCaller(ctx());
+    await admin.games.add({ name: 'AdminOnly' });
+
+    const alice = await admin.users.create({ name: 'ScopeAlice', role: 'member' });
+    const aliceCaller = appRouter.createCaller({
+      ...ctx(),
+      user: { id: alice.user.id, name: 'ScopeAlice', role: 'member' as const, createdAt: '', updatedAt: '' },
+    });
+    await aliceCaller.games.add({ name: 'AliceGame' });
+
+    // Visibility: member sees only their own; admin sees everything.
+    expect((await aliceCaller.games.list()).games.map(g => g.name)).toEqual(['AliceGame']);
+    const adminNames = (await admin.games.list()).games.map(g => g.name);
+    expect(adminNames).toContain('AdminOnly');
+    expect(adminNames).toContain('AliceGame');
+
+    // File access: no cross-user reads.
+    await expect(aliceCaller.files.list({ game: 'AdminOnly' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(aliceCaller.files.list({ game: 'AliceGame' })).resolves.toMatchObject({ success: true });
+
+    // Delete is owner-scoped: a member cannot remove another user's game.
+    const adminGame = (await admin.games.list()).games.find(g => g.name === 'AdminOnly')!;
+    await expect(aliceCaller.games.remove({ id: adminGame.id })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    // Playtime recorded by a member is invisible to the admin collection view
+    // when scoped, but a member never sees the admin's.
+    const aliceSession = await aliceCaller.playtime.record({
+      game: 'AliceGame', platform: 'linux',
+      sessionStart: '2024-01-01T10:00:00.000Z', sessionEnd: '2024-01-01T11:00:00.000Z',
+    });
+    expect(aliceSession.success).toBe(true);
+    const aliceTotal = await aliceCaller.playtime.total();
+    expect(aliceTotal.totalMinutes).toBeGreaterThanOrEqual(60);
+
+    await admin.users.remove({ id: alice.user.id });
   });
 });

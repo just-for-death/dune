@@ -8,6 +8,8 @@ function playtimeDbPath(): string {
 
 export interface PlaytimeSession {
   id: number;
+  /** Owning user id; '' = legacy/unowned (visible only to admins). */
+  ownerId: string;
   game: string;
   platform: string;
   sessionStart: string;
@@ -32,11 +34,18 @@ function writePlaytimeDB(sessions: PlaytimeSession[]): void {
   writeJsonFileAtomic(playtimeDbPath(), sessions);
 }
 
+/** `ownerId` undefined = all (admin view); otherwise that owner's rows only. */
+function scopeByOwner(sessions: PlaytimeSession[], ownerId?: string): PlaytimeSession[] {
+  if (ownerId === undefined) return sessions;
+  return sessions.filter(s => (s.ownerId || '') === ownerId);
+}
+
 export function recordPlaytimeSession(
   game: string,
   platform: string,
   sessionStart: string,
-  sessionEnd: string
+  sessionEnd: string,
+  ownerId = ''
 ): { success: boolean; message?: string } {
   try {
     const start = new Date(sessionStart);
@@ -58,6 +67,7 @@ export function recordPlaytimeSession(
     const sessions = readPlaytimeDB();
     sessions.push({
       id: Date.now(),
+      ownerId,
       game,
       platform,
       sessionStart,
@@ -74,9 +84,9 @@ export function recordPlaytimeSession(
   }
 }
 
-export function getPlaytimeSummary(game?: string): PlaytimeSummary[] {
+export function getPlaytimeSummary(game?: string, ownerId?: string): PlaytimeSummary[] {
   try {
-    const sessions = readPlaytimeDB();
+    const sessions = scopeByOwner(readPlaytimeDB(), ownerId);
     const filtered = game ? sessions.filter(s => s.game === game) : sessions;
     
     const grouped = new Map<string, { game: string; platform: string; minutes: number; count: number; lastPlayed: string | null }>();
@@ -115,9 +125,9 @@ export function getPlaytimeSummary(game?: string): PlaytimeSummary[] {
   }
 }
 
-export function getRecentSessions(limit = 50): PlaytimeSession[] {
+export function getRecentSessions(limit = 50, ownerId?: string): PlaytimeSession[] {
   try {
-    const sessions = readPlaytimeDB();
+    const sessions = scopeByOwner(readPlaytimeDB(), ownerId);
     return sessions
       .sort((a, b) => new Date(b.sessionStart).getTime() - new Date(a.sessionStart).getTime())
       .slice(0, limit);
@@ -126,9 +136,9 @@ export function getRecentSessions(limit = 50): PlaytimeSession[] {
   }
 }
 
-export function getTotalPlaytime(): number {
+export function getTotalPlaytime(ownerId?: string): number {
   try {
-    const sessions = readPlaytimeDB();
+    const sessions = scopeByOwner(readPlaytimeDB(), ownerId);
     return sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
   } catch {
     return 0;

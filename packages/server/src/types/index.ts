@@ -7,8 +7,28 @@ export interface Game {
   lastSync: string; // ISO 8601
   thumbnail: string;
   analysis?: Record<string, FileAnalysis>;
+  /** Owning user id. Absent on pre-multi-user rows until migrated. */
+  ownerId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type UserRole = 'admin' | 'member';
+
+export interface User {
+  id: string;
+  name: string;
+  role: UserRole;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A hashed API key bound to a user. Plaintext keys are never stored. */
+export interface ApiKeyRecord {
+  hash: string;
+  userId: string;
+  description: string;
+  createdAt: string;
 }
 
 export interface FileAnalysis {

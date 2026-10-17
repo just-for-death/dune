@@ -128,13 +128,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeRemoteServer: (id: number) => 
     ipcRenderer.invoke('remote-servers:remove', id),
   
-  // API Keys
+  // API Keys (self-service: issues and revokes keys for the signed-in user)
   getApiKeys: () => 
     ipcRenderer.invoke('api-keys:get'),
-  addApiKey: (key: string, description?: string) => 
-    ipcRenderer.invoke('api-keys:add', { key, description }),
-  removeApiKey: (key: string) => 
-    ipcRenderer.invoke('api-keys:remove', key),
+  addApiKey: (description?: string) => 
+    ipcRenderer.invoke('api-keys:add', { description }),
+  removeApiKey: (id: string) => 
+    ipcRenderer.invoke('api-keys:remove', id),
   
   // Ollama
   getOllamaModels: (endpoint: string) => 

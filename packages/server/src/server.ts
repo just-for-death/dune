@@ -2,7 +2,7 @@ import express from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
-import { authMiddleware, optionalAuthMiddleware, AuthenticatedRequest } from './middleware/auth.js';
+import { authMiddleware, optionalAuthMiddleware, requireAdmin, AuthenticatedRequest } from './middleware/auth.js';
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
 import { dataDir, validateGamePath, getGameRoot, listFilesInDir } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
@@ -62,6 +62,10 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
       return res.status(400).json({ success: false, message: 'Game and path headers required' });
     }
 
+    // Ownership gate: rejects writes to another user's game (unknown games are
+    // claimable and get assigned to the uploader once the upload succeeds).
+    if (!ensureGameWrite(req, res, path.basename(game))) return;
+
     // Upfront content-length guard (streaming guard in sync.ts is authoritative)
     const contentLength = parseInt(req.headers['content-length'] || '0', 10);
     const maxUploadBytes =
@@ -74,6 +78,10 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
     if (!result.success && result.status) {
       return res.status(result.status).json(result);
     }
+    if (result.success && req.user) {
+      // Assign a new/unowned game to the uploader only after a good write.
+      database.claimGame(path.basename(game), req.user.id);
+    }
     res.json(result);
   } catch (e) {
     logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
@@ -81,7 +89,7 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
   }
 });
 
-app.post('/api/local-sync', authMiddleware, async (_req, res) => {
+app.post('/api/local-sync', authMiddleware, requireAdmin, async (_req, res) => {
   try {
     const result = await handleLocalSync();
     res.json(result);
@@ -95,6 +103,8 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
   try {
     const { game, path: filePath } = req.query;
     if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
+
+    if (!ensureGameRead(req as AuthenticatedRequest, res, path.basename(game.toString()))) return;
 
     let fullPath: string;
     try {
@@ -119,6 +129,7 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
     if (!/^\d+$/.test(versionId.toString())) {
       return res.status(400).json({ success: false, message: 'Invalid versionId' });
     }
+    if (!ensureGameRead(req as AuthenticatedRequest, res, path.basename(game.toString()))) return;
     let fullPath: string;
     try {
       fullPath = validateGamePath(game.toString(), path.join('.versions', versionId.toString(), filePath.toString()));
@@ -144,18 +155,42 @@ function restError(req: express.Request, res: express.Response, e: unknown, labe
   res.status(500).json({ success: false, message: 'Internal error' });
 }
 
-app.get('/api/saves', authMiddleware, (_req, res) => {
+/** `undefined` = all owners (admin view); otherwise scope to the caller. */
+function ownerScope(req: AuthenticatedRequest): string | undefined {
+  return req.user?.role === 'admin' ? undefined : req.user?.id;
+}
+
+/** Respond 403 and return false when the caller may not read `game`. */
+function ensureGameRead(req: AuthenticatedRequest, res: express.Response, game: string): boolean {
+  if (!req.user || !database.canAccessGame(req.user, game)) {
+    res.status(403).json({ success: false, message: 'No access to this game' });
+    return false;
+  }
+  return true;
+}
+
+/** Respond 403 and return false when the caller may not write `game`. */
+function ensureGameWrite(req: AuthenticatedRequest, res: express.Response, game: string): boolean {
+  if (!req.user || !database.canWriteGame(req.user, game)) {
+    res.status(403).json({ success: false, message: 'No access to this game' });
+    return false;
+  }
+  return true;
+}
+
+app.get('/api/saves', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    res.json({ success: true, games: database.getGames() });
+    res.json({ success: true, games: req.user ? database.getGamesForUser(req.user) : [] });
   } catch (e) {
-    restError(_req, res, e, 'API internal error');
+    restError(req, res, e, 'API internal error');
   }
 });
 
-app.get('/api/list-files', authMiddleware, (req, res) => {
+app.get('/api/list-files', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game } = req.query;
     if (!game) return res.status(400).json({ success: false, message: 'Game required' });
+    if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
     const gameDir = getGameRoot(game.toString());
     if (!fs.existsSync(gameDir)) return res.json({ success: true, files: [] });
     res.json({ success: true, files: listFilesInDir(gameDir) });
@@ -166,10 +201,11 @@ app.get('/api/list-files', authMiddleware, (req, res) => {
 
 // Delta sync: content-hash manifest for a game. Clients diff this against the
 // manifest they last pulled to transfer only changed files.
-app.get('/api/manifest', authMiddleware, (req, res) => {
+app.get('/api/manifest', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game } = req.query;
     if (!game) return res.status(400).json({ success: false, message: 'Game required' });
+    if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
     res.json({ success: true, files: manifestForGame(game.toString()) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -177,10 +213,11 @@ app.get('/api/manifest', authMiddleware, (req, res) => {
 });
 
 // Delta sync: remove a single file (client mirrors a local deletion).
-app.delete('/api/file', authMiddleware, (req, res) => {
+app.delete('/api/file', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game, path: filePath } = req.query;
     if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
+    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
     try {
       validateGamePath(game.toString(), filePath.toString());
     } catch {
@@ -194,65 +231,65 @@ app.delete('/api/file', authMiddleware, (req, res) => {
   }
 });
 
-app.post('/api/playtime', authMiddleware, (req, res) => {
+app.post('/api/playtime', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game, platform, sessionStart, sessionEnd } = req.body ?? {};
     if (!game || !platform || !sessionStart || !sessionEnd) {
       return res.status(400).json({ success: false, message: 'game, platform, sessionStart, sessionEnd required' });
     }
-    res.json(recordPlaytimeSession(game, platform, sessionStart, sessionEnd));
+    res.json(recordPlaytimeSession(game, platform, sessionStart, sessionEnd, req.user?.id ?? ''));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
 });
 
-app.get('/api/playtime', authMiddleware, (req, res) => {
+app.get('/api/playtime', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game } = req.query;
-    res.json({ success: true, summary: getPlaytimeSummary(game?.toString()) });
+    res.json({ success: true, summary: getPlaytimeSummary(game?.toString(), ownerScope(req)) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
 });
 
-app.get('/api/playtime/recent', authMiddleware, (req, res) => {
+app.get('/api/playtime/recent', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit?.toString() || '50', 10) || 50));
-    res.json({ success: true, sessions: getRecentSessions(limit) });
+    res.json({ success: true, sessions: getRecentSessions(limit, ownerScope(req)) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
 });
 
-app.get('/api/playtime/total', authMiddleware, (_req, res) => {
+app.get('/api/playtime/total', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    res.json({ success: true, totalMinutes: getTotalPlaytime() });
+    res.json({ success: true, totalMinutes: getTotalPlaytime(ownerScope(req)) });
   } catch (e) {
-    restError(_req, res, e, 'API internal error');
+    restError(req, res, e, 'API internal error');
   }
 });
 
-app.get('/api/achievements/recent', authMiddleware, (req, res) => {
+app.get('/api/achievements/recent', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit?.toString() || '20', 10) || 20));
-    res.json({ success: true, unlocks: getRecentUnlocks(limit) });
+    res.json({ success: true, unlocks: getRecentUnlocks(limit, ownerScope(req)) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
 });
 
-app.get('/api/achievements/:game', authMiddleware, (req, res) => {
+app.get('/api/achievements/:game', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    res.json({ success: true, achievements: getGameAchievements(req.params.game) });
+    res.json({ success: true, achievements: getGameAchievements(req.params.game, ownerScope(req)) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
 });
 
-app.get('/api/achievements', authMiddleware, (req, res) => {
+app.get('/api/achievements', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game } = req.query;
-    res.json({ success: true, summary: getAchievementSummary(game?.toString()) });
+    res.json({ success: true, summary: getAchievementSummary(game?.toString(), ownerScope(req)) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -266,7 +303,7 @@ app.get('/api/hltb/:game', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/analyze-files-ai', authMiddleware, async (req, res) => {
+app.post('/api/analyze-files-ai', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     const { gameName, files } = req.body ?? {};
     if (!gameName || !Array.isArray(files)) {
@@ -277,7 +314,7 @@ app.post('/api/analyze-files-ai', authMiddleware, async (req, res) => {
     const model = settings.ollamaModel || 'phi4-mini:latest';
     const result = await analyzeFilesAI(endpoint, model, gameName, files);
     if (result.success && result.analysis) {
-      const games = database.getGames();
+      const games = req.user ? database.getGamesForUser(req.user) : [];
       const idx = games.findIndex(g => g.name.toLowerCase() === gameName.toLowerCase());
       if (idx !== -1) {
         games[idx].analysis = result.analysis;
@@ -302,12 +339,12 @@ app.get('/api/search-art', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/api/auto-match-all', authMiddleware, async (_req, res) => {
+app.get('/api/auto-match-all', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     const apiKey = database.getSettings().steamGridApiKey;
     if (!apiKey) return res.status(400).json({ success: false, message: 'SteamGridDB API key not configured' });
-    const matched = await autoMatchAll(apiKey, database.getGames());
-    const games = database.getGames();
+    const games = req.user ? database.getGamesForUser(req.user) : [];
+    const matched = await autoMatchAll(apiKey, games);
     for (const m of matched) {
       const game = games.find(g => g.name === m.name);
       if (game && !game.thumbnail) {
@@ -317,7 +354,7 @@ app.get('/api/auto-match-all', authMiddleware, async (_req, res) => {
     }
     res.json({ success: true, count: matched.length });
   } catch (e) {
-    restError(_req, res, e, 'API internal error');
+    restError(req, res, e, 'API internal error');
   }
 });
 
@@ -329,7 +366,7 @@ app.get('/api/local-sources', authMiddleware, (_req, res) => {
   }
 });
 
-app.post('/api/local-sources', authMiddleware, (req, res) => {
+app.post('/api/local-sources', authMiddleware, requireAdmin, (req, res) => {
   try {
     const { path: sourcePath } = req.body ?? {};
     if (!sourcePath) return res.status(400).json({ success: false, message: 'path required' });
@@ -340,7 +377,7 @@ app.post('/api/local-sources', authMiddleware, (req, res) => {
   }
 });
 
-app.delete('/api/local-sources/:id', authMiddleware, (req, res) => {
+app.delete('/api/local-sources/:id', authMiddleware, requireAdmin, (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
@@ -359,7 +396,7 @@ app.get('/api/remote-servers', authMiddleware, (_req, res) => {
   }
 });
 
-app.post('/api/remote-servers', authMiddleware, (req, res) => {
+app.post('/api/remote-servers', authMiddleware, requireAdmin, (req, res) => {
   try {
     const { url } = req.body ?? {};
     if (!url) return res.status(400).json({ success: false, message: 'url required' });
@@ -374,7 +411,7 @@ app.post('/api/remote-servers', authMiddleware, (req, res) => {
   }
 });
 
-app.delete('/api/remote-servers/:id', authMiddleware, (req, res) => {
+app.delete('/api/remote-servers/:id', authMiddleware, requireAdmin, (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
@@ -385,30 +422,120 @@ app.delete('/api/remote-servers/:id', authMiddleware, (req, res) => {
   }
 });
 
-app.get('/api/api-keys', authMiddleware, (_req, res) => {
+// Self-service key management: a user sees/rotates only their own keys.
+app.get('/api/api-keys', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    res.json({ success: true, keys: database.getApiKeys().map(() => '****') });
+    if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+    const keys = database.listUserKeys(req.user.id).map(k => ({
+      id: k.hash.slice(0, 12),
+      description: k.description,
+      createdAt: k.createdAt,
+      masked: '****',
+    }));
+    res.json({ success: true, keys });
   } catch (e) {
-    restError(_req, res, e, 'API internal error');
+    restError(req, res, e, 'API internal error');
   }
 });
 
-app.post('/api/api-keys', authMiddleware, (req, res) => {
+app.post('/api/api-keys', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    const { key, description } = req.body ?? {};
-    if (!key) return res.status(400).json({ success: false, message: 'key required' });
-    database.addApiKey(key, description);
+    if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+    const { description } = req.body ?? {};
+    const key = database.issueUserKey(req.user.id, typeof description === 'string' ? description : '');
+    // Returned once; never retrievable again.
+    res.status(201).json({ success: true, key });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.delete('/api/api-keys/:id', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+    const match = database.listUserKeys(req.user.id).find(k => k.hash.slice(0, 12) === req.params.id);
+    if (!match || !database.removeUserKeyByHash(match.hash)) {
+      return res.status(404).json({ success: false, message: 'Key not found' });
+    }
     res.json({ success: true });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
 });
 
-app.delete('/api/api-keys/:key', authMiddleware, (req, res) => {
+// ── User administration (admin-only, except /api/users/me) ───────────────────
+app.get('/api/users/me', authMiddleware, (req: AuthenticatedRequest, res) => {
+  if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+  res.json({ success: true, user: { id: req.user.id, name: req.user.name, role: req.user.role } });
+});
+
+app.get('/api/users', authMiddleware, requireAdmin, (_req, res) => {
   try {
-    if (!database.removeApiKey(req.params.key)) {
+    res.json({
+      success: true,
+      users: database.listUsers().map(u => ({
+        id: u.id,
+        name: u.name,
+        role: u.role,
+        createdAt: u.createdAt,
+        keyCount: database.countUserKeys(u.id),
+      })),
+    });
+  } catch (e) {
+    restError(_req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/users', authMiddleware, requireAdmin, (req, res) => {
+  try {
+    const { name, role } = req.body ?? {};
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ success: false, message: 'name required' });
+    }
+    if (database.getUserByName(name)) {
+      return res.status(409).json({ success: false, message: 'User name already exists' });
+    }
+    const user = database.createUser(name, role === 'admin' ? 'admin' : 'member');
+    const apiKey = database.issueUserKey(user.id, 'Initial key');
+    res.status(201).json({ success: true, user, apiKey });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/users/:id/keys', authMiddleware, requireAdmin, (req, res) => {
+  try {
+    if (!database.getUserById(req.params.id)) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    const { description } = req.body ?? {};
+    const apiKey = database.issueUserKey(req.params.id, typeof description === 'string' ? description : '');
+    res.status(201).json({ success: true, apiKey });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.delete('/api/users/:id/keys/:keyId', authMiddleware, requireAdmin, (req, res) => {
+  try {
+    const match = database.listUserKeys(req.params.id).find(k => k.hash.slice(0, 12) === req.params.keyId);
+    if (!match || !database.removeUserKeyByHash(match.hash)) {
       return res.status(404).json({ success: false, message: 'Key not found' });
     }
+    res.json({ success: true });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.delete('/api/users/:id', authMiddleware, requireAdmin, (req, res) => {
+  try {
+    const target = database.getUserById(req.params.id);
+    if (!target) return res.status(404).json({ success: false, message: 'User not found' });
+    if (target.role === 'admin' && database.countAdmins() <= 1) {
+      return res.status(400).json({ success: false, message: 'Cannot remove the last admin' });
+    }
+    database.deleteUser(req.params.id);
     res.json({ success: true });
   } catch (e) {
     restError(req, res, e, 'API internal error');

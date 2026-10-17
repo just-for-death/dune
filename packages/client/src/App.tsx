@@ -47,9 +47,9 @@ interface ElectronAPI {
   getRemoteServers: () => Promise<{ success: boolean; servers: Array<{ id: number; url: string }>; message?: string }>;
   addRemoteServer: (url: string) => Promise<{ success: boolean; server?: unknown; message?: string }>;
   removeRemoteServer: (id: number) => Promise<{ success: boolean; message?: string }>;
-  getApiKeys: () => Promise<{ success: boolean; keys: string[]; message?: string }>;
-  addApiKey: (key: string, description?: string) => Promise<{ success: boolean; message?: string }>;
-  removeApiKey: (key: string) => Promise<{ success: boolean; message?: string }>;
+  getApiKeys: () => Promise<{ success: boolean; keys: Array<{ id: string; description: string; createdAt: string; masked: string }>; message?: string }>;
+  addApiKey: (description?: string) => Promise<{ success: boolean; key?: string; message?: string }>;
+  removeApiKey: (id: string) => Promise<{ success: boolean; message?: string }>;
   getOllamaModels: (endpoint: string) => Promise<{ success: boolean; models?: string[]; message?: string }>;
   checkOllamaHealth: () => Promise<{ success: boolean; exists?: boolean; message?: string }>;
   reportRendererError: (report: { message: string; stack?: string; url?: string }) => Promise<unknown>;

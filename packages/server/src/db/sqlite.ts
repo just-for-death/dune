@@ -57,6 +57,7 @@ function openSchema(file: string): DatabaseSync {
         lastSync TEXT NOT NULL,
         thumbnail TEXT NOT NULL DEFAULT '',
         analysis TEXT,
+        ownerId TEXT,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL
       );
@@ -64,12 +65,45 @@ function openSchema(file: string): DatabaseSync {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        role TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_keys (
+        hash TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        createdAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_keys_user ON user_keys(userId);
     `);
+    ensureOwnerColumn(handle);
+    // Safe only after ensureOwnerColumn: pre-multi-user DBs lack the column
+    // until the ALTER runs.
+    handle.exec('CREATE INDEX IF NOT EXISTS idx_games_owner ON games(ownerId);');
     return handle;
   } catch (err) {
     handle.close();
     throw err;
   }
+}
+
+/**
+ * Pre-multi-user databases have `games` without an `ownerId` column. Add it
+ * (nullable) so ownership can be backfilled. One-time: skipped once present.
+ *
+ * Game names stay globally unique on purpose — saves live at
+ * `data/saves/<name>` and are not namespaced per user, so two users cannot own
+ * a game with the same name.
+ */
+function ensureOwnerColumn(handle: DatabaseSync): void {
+  const cols = handle.prepare('PRAGMA table_info(games)').all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'ownerId')) return;
+  handle.exec('ALTER TABLE games ADD COLUMN ownerId TEXT;');
+  logger.info('Migrated games table: added ownerId column');
 }
 
 /** One-way import from the pre-SQLite dune.json. Never deletes the original. */

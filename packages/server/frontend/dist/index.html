@@ -33,6 +33,11 @@
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
   }
   input:focus { outline: none; border-color: var(--sand); }
+  select {
+    padding: 9px 12px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text);
+  }
+  select:focus { outline: none; border-color: var(--sand); }
   button {
     padding: 8px 14px; font-weight: 600; cursor: pointer;
     background: var(--sand); color: #1a1405; border: none;
@@ -82,6 +87,25 @@
     <table>
       <thead><tr><th>Game</th><th>Status</th><th>Last sync</th><th>Files</th><th>Versions</th></tr></thead>
       <tbody id="games"><tr><td colspan="5" class="muted">No data yet — save a key and refresh.</td></tr></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card" id="users-card" hidden>
+    <h2>Users</h2>
+    <p class="sub" style="margin:-4px 0 12px">Each user owns their own games. New keys are shown once — copy them immediately.</p>
+    <div class="row">
+      <div style="flex:1;min-width:180px"><input id="user-name" placeholder="New user name" autocomplete="off" style="margin:0" /></div>
+      <div>
+        <select id="user-role" aria-label="Role"><option value="member">member</option><option value="admin">admin</option></select>
+        <button id="user-create">Create user</button>
+      </div>
+    </div>
+    <div id="new-key" class="muted" style="word-break:break-all;margin:8px 0"></div>
+    <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Name</th><th>Role</th><th>Keys</th><th>Actions</th></tr></thead>
+      <tbody id="users"><tr><td colspan="4" class="muted">Admin only.</td></tr></tbody>
     </table>
     </div>
   </div>
@@ -146,10 +170,75 @@
       }
       document.getElementById('st-files').textContent = totalFiles;
       document.getElementById('games').innerHTML = rows || '<tr><td colspan="5" class="muted">No games tracked yet.</td></tr>';
+      try { await loadUsers(); } catch (e) { usersCard.hidden = true; }
     } catch (e) {
       fail(e.message || String(e));
     }
   }
+
+  // ── Users (admin-only; hidden automatically for members) ──────────────────
+  var usersCard = document.getElementById('users-card');
+  async function loadUsers() {
+    var me = await get('/api/users/me');
+    if (!me.user || me.user.role !== 'admin') { usersCard.hidden = true; return; }
+    usersCard.hidden = false;
+    var list = await get('/api/users');
+    var rows = (list.users || []).map(function (u) {
+      return '<tr><td>' + esc(u.name) + '</td><td>' + esc(u.role) + '</td><td>' + (u.keyCount | 0) + '</td>'
+        + '<td><button class="secondary" data-issue="' + esc(u.id) + '">New key</button> '
+        + '<button class="secondary" data-del="' + esc(u.id) + '">Delete</button></td></tr>';
+    }).join('');
+    document.getElementById('users').innerHTML = rows || '<tr><td colspan="4" class="muted">No users.</td></tr>';
+  }
+
+  function jsonHeaders() {
+    var h = headers();
+    h['Content-Type'] = 'application/json';
+    return h;
+  }
+
+  document.getElementById('user-create').addEventListener('click', async function () {
+    errBox.textContent = '';
+    try {
+      var name = document.getElementById('user-name').value.trim();
+      if (!name) { fail('Enter a user name first.'); return; }
+      var role = document.getElementById('user-role').value;
+      var res = await fetch('/api/users', {
+        method: 'POST', headers: jsonHeaders(),
+        body: JSON.stringify({ name: name, role: role }),
+      });
+      if (!res.ok) throw new Error('Create failed: ' + res.status);
+      var j = await res.json();
+      document.getElementById('user-name').value = '';
+      document.getElementById('new-key').textContent = 'Key for ' + j.user.name + ' (copy now): ' + j.apiKey;
+      loadUsers();
+    } catch (e) {
+      fail(e.message || String(e));
+    }
+  });
+
+  document.getElementById('users').addEventListener('click', async function (ev) {
+    var t = ev.target;
+    var issue = t.getAttribute && t.getAttribute('data-issue');
+    var del = t.getAttribute && t.getAttribute('data-del');
+    errBox.textContent = '';
+    try {
+      if (issue) {
+        var r = await fetch('/api/users/' + encodeURIComponent(issue) + '/keys', { method: 'POST', headers: headers() });
+        if (!r.ok) throw new Error('Issue failed: ' + r.status);
+        var j = await r.json();
+        document.getElementById('new-key').textContent = 'New key (copy now): ' + j.apiKey;
+        loadUsers();
+      } else if (del) {
+        if (!window.confirm('Delete this user and all their games?')) return;
+        var d = await fetch('/api/users/' + encodeURIComponent(del), { method: 'DELETE', headers: headers() });
+        if (!d.ok) throw new Error('Delete failed: ' + d.status);
+        loadUsers();
+      }
+    } catch (e) {
+      fail(e.message || String(e));
+    }
+  });
 
   document.getElementById('save').addEventListener('click', function () {
     localStorage.setItem('dune_api_key', keyInput.value.trim());

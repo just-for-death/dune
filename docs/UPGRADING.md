@@ -22,6 +22,7 @@ docker compose stop dune-server
 `restore` snapshots current data first, so a bad rollback is itself undoable (check `./backups`).
 
 ## Breaking-change notes by version
+- **Multi-user (unreleased, on `main`)**: auth is now per-user. On first boot the server creates a default `admin` user and adopts every existing hashed key (`settings.apiKeys`) as an admin key, so existing clients keep working unchanged; ownerless games are assigned to that admin. New users are created via `users.create` or the dashboard Users panel — each key is shown **once**. Games, playtime and achievements are scoped per user (admins see all); server-global settings, local sources and remote servers are admin-write-only. Game names remain globally unique because saves live at `data/saves/<name>` and are not namespaced per user. Migration is automatic and idempotent on boot.
 - **v0.1.0-beta.1** (first tagged release): tRPC requires API keys; keys stored hashed — pre-hardening plaintext keys auto-migrate on first boot of the new image. `API_KEY_SECRET` unset → random persisted secret; set it explicitly before first production boot or all keys invalidate on secret rotation.
 - Schema: `dune.json` merges unknown fields tolerantly on read. Downgrading across versions is untested — restore from backup instead of downgrading in place.
 

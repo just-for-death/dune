@@ -65,6 +65,16 @@ export interface RemoteServer {
   url: string;
 }
 
+// A masked API key belonging to the authenticated user. The plaintext key is
+// only ever returned once, at creation time.
+export interface ApiKeyInfo {
+  /** Short, non-reversible id used to revoke the key. */
+  id: string;
+  description: string;
+  createdAt: string;
+  masked: string;
+}
+
 // Cloud configuration
 export interface Cloud {
   url: string;
@@ -214,10 +224,10 @@ export interface ElectronAPI {
   addRemoteServer: (url: string) => Promise<{ success: boolean; server?: RemoteServer; message?: string }>;
   removeRemoteServer: (id: number) => Promise<{ success: boolean }>;
   
-  // API Keys
-  getApiKeys: () => Promise<{ success: boolean; keys: string[] }>;
-  addApiKey: (key: string, description?: string) => Promise<{ success: boolean }>;
-  removeApiKey: (key: string) => Promise<{ success: boolean }>;
+  // API Keys (self-service: keys belong to the authenticated user)
+  getApiKeys: () => Promise<{ success: boolean; keys: ApiKeyInfo[] }>;
+  addApiKey: (description?: string) => Promise<{ success: boolean; key?: string; message?: string }>;
+  removeApiKey: (id: string) => Promise<{ success: boolean; message?: string }>;
   
   // Ollama
   getOllamaModels: (endpoint: string) => Promise<{ success: boolean; models?: string[]; message?: string }>;

@@ -8,6 +8,8 @@ function achievementsDbPath(): string {
 
 export interface Achievement {
   id: number;
+  /** Owning user id; '' = legacy/unowned (visible only to admins). */
+  ownerId: string;
   game: string;
   apiName: string;
   displayName: string;
@@ -28,6 +30,12 @@ function writeAchievementsDB(achievements: Achievement[]): void {
   writeJsonFileAtomic(achievementsDbPath(), achievements);
 }
 
+/** `ownerId` undefined = all (admin view); otherwise that owner's rows only. */
+function scopeByOwner(achievements: Achievement[], ownerId?: string): Achievement[] {
+  if (ownerId === undefined) return achievements;
+  return achievements.filter(a => (a.ownerId || '') === ownerId);
+}
+
 export function upsertAchievements(
   game: string,
   achievements: Array<{
@@ -38,7 +46,8 @@ export function upsertAchievements(
     unlockTime?: string | null;
     rarity?: number;
     hidden?: boolean;
-  }>
+  }>,
+  ownerId = ''
 ): { success: boolean; count: number; message?: string } {
   try {
     const db = readAchievementsDB();
@@ -46,7 +55,9 @@ export function upsertAchievements(
     let count = 0;
 
     for (const a of achievements) {
-      const existingIdx = db.findIndex(ach => ach.game === game && ach.apiName === a.apiName);
+      const existingIdx = db.findIndex(
+        ach => ach.game === game && ach.apiName === a.apiName && (ach.ownerId || '') === ownerId,
+      );
       
       if (existingIdx >= 0) {
         db[existingIdx] = {
@@ -62,6 +73,7 @@ export function upsertAchievements(
       } else {
         db.push({
           id: Date.now() + Math.random(),
+          ownerId,
           game,
           apiName: a.apiName,
           displayName: a.displayName,
@@ -85,9 +97,9 @@ export function upsertAchievements(
   }
 }
 
-export function getGameAchievements(game: string): Achievement[] {
+export function getGameAchievements(game: string, ownerId?: string): Achievement[] {
   try {
-    const db = readAchievementsDB();
+    const db = scopeByOwner(readAchievementsDB(), ownerId);
     return db
       .filter(a => a.game === game)
       .sort((a, b) => (b.unlocked ? 1 : 0) - (a.unlocked ? 1 : 0) || a.displayName.localeCompare(b.displayName));
@@ -96,14 +108,14 @@ export function getGameAchievements(game: string): Achievement[] {
   }
 }
 
-export function getAchievementSummary(game?: string): Array<{
+export function getAchievementSummary(game?: string, ownerId?: string): Array<{
   game: string;
   total: number;
   unlocked: number;
   percentage: number;
 }> {
   try {
-    const db = readAchievementsDB();
+    const db = scopeByOwner(readAchievementsDB(), ownerId);
     const filtered = game ? db.filter(a => a.game === game) : db;
     
     const grouped = new Map<string, { total: number; unlocked: number }>();
@@ -128,9 +140,9 @@ export function getAchievementSummary(game?: string): Array<{
   }
 }
 
-export function getRecentUnlocks(limit = 20): Achievement[] {
+export function getRecentUnlocks(limit = 20, ownerId?: string): Achievement[] {
   try {
-    const db = readAchievementsDB();
+    const db = scopeByOwner(readAchievementsDB(), ownerId);
     return db
       .filter(a => a.unlocked && a.unlockTime)
       .sort((a, b) => new Date(b.unlockTime!).getTime() - new Date(a.unlockTime!).getTime())
@@ -150,7 +162,8 @@ export function handleSentinelWebhook(
     unlockTime?: string | null;
     rarity?: number;
     hidden?: boolean;
-  }>
+  }>,
+  ownerId = ''
 ): { success: boolean; count: number; message?: string } {
-  return upsertAchievements(game, achievements);
+  return upsertAchievements(game, achievements, ownerId);
 }

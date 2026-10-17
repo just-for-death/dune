@@ -1,16 +1,17 @@
 import type { CreateHTTPContextOptions } from '@trpc/server/adapters/standalone';
 import { database } from '../db/index.js';
 import { extractApiKey } from '../utils/authKey.js';
-import type { Settings } from '../types/index.js';
+import type { Game, Settings, User } from '../types/index.js';
 
 export interface TRPCContext {
-  db: ReturnType<typeof database.getGames>;
+  db: Game[];
   settings: Settings;
   /** Raw key as presented (never logged). */
   apiKey: string | null;
-  /** True when the presented key validates against stored hashes. */
+  /** True when the presented key resolves to a user. */
   apiKeyValid: boolean;
-  userId?: string;
+  /** The authenticated user, or null for anonymous/health requests. */
+  user: User | null;
 }
 
 function extractKey(req: CreateHTTPContextOptions['req']): string | null {
@@ -22,10 +23,12 @@ function extractKey(req: CreateHTTPContextOptions['req']): string | null {
 
 export async function createContext({ req }: CreateHTTPContextOptions): Promise<TRPCContext> {
   const apiKey = extractKey(req);
+  const user = database.resolveUserByKey(apiKey);
   return {
-    db: database.getGames(),
+    db: user ? database.getGamesForUser(user) : [],
     settings: database.getSettings(),
     apiKey,
-    apiKeyValid: database.isValidApiKey(apiKey),
+    apiKeyValid: user !== null,
+    user,
   };
 }

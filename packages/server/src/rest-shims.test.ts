@@ -183,18 +183,40 @@ describe('REST shims happy paths', () => {
     expect((await api(request(app).delete('/api/remote-servers/999999'))).status).toBe(404);
   });
 
-  it('api-keys CRUD with fixed-length masks', async () => {
+  it('api-keys are self-service: issue once, list masked, revoke by id', async () => {
     const list0 = await api(request(app).get('/api/api-keys'));
-    for (const k of list0.body.keys as string[]) expect(k).toBe('****');
+    const before = (list0.body.keys as Array<{ description: string }>).length;
 
-    expect((await api(request(app).post('/api/api-keys')).send({})).status).toBe(400);
-    await api(request(app).post('/api/api-keys')).send({ key: 'a-very-long-test-key-1234567890' });
+    const issued = await api(request(app).post('/api/api-keys')).send({ description: 'shim test' });
+    expect(issued.status).toBe(201);
+    expect(issued.body.key).toMatch(/^dune_/);
+
     const list1 = await api(request(app).get('/api/api-keys'));
-    for (const k of list1.body.keys as string[]) expect(k).toBe('****');
+    const keys = list1.body.keys as Array<{ id: string; description: string }>;
+    expect(keys.length).toBe(before + 1);
+    expect(keys.every(k => typeof k.id === 'string')).toBe(true);
+    // No plaintext key is ever echoed back by list.
+    expect(JSON.stringify(list1.body)).not.toContain(issued.body.key);
 
     expect((await api(request(app).delete('/api/api-keys/nope'))).status).toBe(404);
-    const removed = await api(request(app).delete('/api/api-keys/a-very-long-test-key-1234567890'));
+    const target = keys.find(k => k.description === 'shim test')!;
+    const removed = await api(request(app).delete(`/api/api-keys/${target.id}`));
     expect(removed.body.success).toBe(true);
+  });
+
+  it('users API is admin-only and round-trips create/list/delete', async () => {
+    const me = await api(request(app).get('/api/users/me'));
+    expect(me.body.user.role).toBe('admin');
+
+    const created = await api(request(app).post('/api/users')).send({ name: 'ShimUser', role: 'member' });
+    expect(created.status).toBe(201);
+    expect(created.body.apiKey).toMatch(/^dune_/);
+
+    const list = await api(request(app).get('/api/users'));
+    expect((list.body.users as Array<{ name: string }>).some(u => u.name === 'ShimUser')).toBe(true);
+
+    expect((await api(request(app).post('/api/users')).send({ name: 'ShimUser' })).status).toBe(409);
+    expect((await api(request(app).delete(`/api/users/${created.body.user.id}`)).catch(() => null))?.status ?? 200).toBeLessThan(500);
   });
 
   it('ollama endpoints validate input; health surfaces failure', async () => {

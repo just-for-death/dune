@@ -50,9 +50,24 @@ function safeEqualHex(a: string, b: string): boolean {
   return timingSafeEqual(ba, bb);
 }
 
+/**
+ * Return the stored hash matching `candidate`, or null. Iterates every entry
+ * without early exit so the comparison count can't leak which key matched.
+ */
+export function matchStoredHash(
+  candidate: string | undefined | null,
+  storedHashes: string[],
+): string | null {
+  if (!candidate || storedHashes.length === 0) return null;
+  const candidateHash = hashApiKey(candidate);
+  let match: string | null = null;
+  for (const h of storedHashes) {
+    if (safeEqualHex(candidateHash, h)) match = h;
+  }
+  return match;
+}
+
 /** Compare a raw candidate key against stored hashes in constant time. */
 export function isValidApiKey(candidate: string | undefined | null, storedHashes: string[]): boolean {
-  if (!candidate || storedHashes.length === 0) return false;
-  const candidateHash = hashApiKey(candidate);
-  return storedHashes.some(h => safeEqualHex(candidateHash, h));
+  return matchStoredHash(candidate, storedHashes) !== null;
 }

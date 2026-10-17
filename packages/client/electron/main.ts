@@ -1258,13 +1258,14 @@ ipcMain.handle('api-keys:get', async () => {
   }
 })
 
-ipcMain.handle('api-keys:add', async (_event, { key, description }) => {
+ipcMain.handle('api-keys:add', async (_event, { description }) => {
   const cloud = store.get('cloud')
   if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.post(`${cleanUrl}/api/api-keys`, { key, description }, {
+    // Server issues a fresh high-entropy key; the plaintext is returned once.
+    const res = await axios.post(`${cleanUrl}/api/api-keys`, { description }, {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
@@ -1273,13 +1274,13 @@ ipcMain.handle('api-keys:add', async (_event, { key, description }) => {
   }
 })
 
-ipcMain.handle('api-keys:remove', async (_event, key) => {
+ipcMain.handle('api-keys:remove', async (_event, id) => {
   const cloud = store.get('cloud')
   if (!cloud?.url) return { success: false }
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.delete(`${cleanUrl}/api/api-keys/${encodeURIComponent(key)}`, { headers: serverHeaders() })
+    const res = await axios.delete(`${cleanUrl}/api/api-keys/${encodeURIComponent(id)}`, { headers: serverHeaders() })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
