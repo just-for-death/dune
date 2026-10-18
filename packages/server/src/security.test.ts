@@ -185,4 +185,17 @@ describe('Security: CORS origin allow-list', () => {
     // Denial is expressed by the absence of the ACAO header (not a 500).
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
+
+  it('honors the ALLOWED_ORIGINS env allow-list (whitespace-trimmed)', async () => {
+    process.env.ALLOWED_ORIGINS = 'https://app.example.com, https://ops.example.com';
+    try {
+      const res = await request(app).get('/health').set('Origin', 'https://ops.example.com');
+      expect(res.headers['access-control-allow-origin']).toBe('https://ops.example.com');
+
+      const denied = await request(app).get('/health').set('Origin', 'https://nope.example.com');
+      expect(denied.headers['access-control-allow-origin']).toBeUndefined();
+    } finally {
+      delete process.env.ALLOWED_ORIGINS;
+    }
+  });
 });

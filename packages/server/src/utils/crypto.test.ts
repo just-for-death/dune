@@ -1,11 +1,17 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { hashApiKey, looksHashed, isValidApiKey } from './crypto.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { hashApiKey, looksHashed, isValidApiKey, getServerSecret } from './crypto.js';
 
 const FIXED_SECRET = 'test-secret-0123456789abcdef-test-secret';
+const ORIGINAL_DATA_DIR = process.env.DATA_DIR;
 
 afterEach(() => {
   delete process.env.API_KEY_SECRET;
   delete process.env.API_KEY_SALT;
+  if (ORIGINAL_DATA_DIR === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = ORIGINAL_DATA_DIR;
 });
 
 describe('hashApiKey', () => {
@@ -26,6 +32,41 @@ describe('hashApiKey', () => {
     process.env.API_KEY_SECRET = 'env-secret-0123456789abcdef-gh';
     const { getServerSecret } = await import('./crypto.js');
     expect(getServerSecret()).toBe('env-secret-0123456789abcdef-gh');
+  });
+});
+
+describe('getServerSecret persistence', () => {
+  it('generates a 0600 secret file when none is configured, then reuses it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-secret-test-'));
+    process.env.DATA_DIR = dir;
+    try {
+      const first = getServerSecret();
+      expect(first).toMatch(/^[0-9a-f]{64}$/);
+
+      const file = path.join(dir, '.api-secret');
+      expect(fs.readFileSync(file, 'utf-8').trim()).toBe(first);
+      if (process.platform !== 'win32') {
+        expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+      }
+
+      // A second call reads the persisted value back instead of regenerating.
+      expect(getServerSecret()).toBe(first);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to an ephemeral secret when the data dir cannot be created', () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-secret-bad-'));
+    const blocker = path.join(parent, 'not-a-dir');
+    fs.writeFileSync(blocker, 'x'); // a regular file where a directory is expected
+    process.env.DATA_DIR = path.join(blocker, 'data');
+    try {
+      // Must not throw during boot; returns a usable (if ephemeral) secret.
+      expect(getServerSecret()).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
   });
 });
 
