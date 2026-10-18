@@ -114,7 +114,9 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
     }
     if (!fs.existsSync(fullPath)) return res.status(404).json({ success: false, message: 'File not found' });
 
-    res.download(fullPath);
+    // Serve dotfiles too: the manifest/list endpoints include them, and express
+    // 5's `send` would otherwise 404 a listed save (path is traversal-checked).
+    res.download(fullPath, path.basename(fullPath), { dotfiles: 'allow' });
   } catch (e) {
     logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
     res.status(500).json({ success: false, message: 'Internal error' });
@@ -138,7 +140,9 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
     }
     if (!fs.existsSync(fullPath)) return res.status(404).json({ success: false, message: 'File not found' });
 
-    res.download(fullPath);
+    // Version snapshots live under a dot-directory (`.versions`); express 5's
+    // `send` defaults to `dotfiles: 'ignore'` and would 404 them.
+    res.download(fullPath, path.basename(fullPath), { dotfiles: 'allow' });
   } catch (e) {
     logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
     res.status(500).json({ success: false, message: 'Internal error' });
@@ -280,7 +284,7 @@ app.get('/api/achievements/recent', authMiddleware, (req: AuthenticatedRequest, 
 
 app.get('/api/achievements/:game', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    res.json({ success: true, achievements: getGameAchievements(req.params.game, ownerScope(req)) });
+    res.json({ success: true, achievements: getGameAchievements(req.params.game.toString(), ownerScope(req)) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -297,7 +301,7 @@ app.get('/api/achievements', authMiddleware, (req: AuthenticatedRequest, res) =>
 
 app.get('/api/hltb/:game', authMiddleware, async (req, res) => {
   try {
-    res.json(await getHLTBTimes(req.params.game));
+    res.json(await getHLTBTimes(req.params.game.toString()));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -505,11 +509,11 @@ app.post('/api/users', authMiddleware, requireAdmin, (req, res) => {
 
 app.post('/api/users/:id/keys', authMiddleware, requireAdmin, (req, res) => {
   try {
-    if (!database.getUserById(req.params.id)) {
+    if (!database.getUserById(req.params.id.toString())) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     const { description } = req.body ?? {};
-    const apiKey = database.issueUserKey(req.params.id, typeof description === 'string' ? description : '');
+    const apiKey = database.issueUserKey(req.params.id.toString(), typeof description === 'string' ? description : '');
     res.status(201).json({ success: true, apiKey });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -518,7 +522,7 @@ app.post('/api/users/:id/keys', authMiddleware, requireAdmin, (req, res) => {
 
 app.delete('/api/users/:id/keys/:keyId', authMiddleware, requireAdmin, (req, res) => {
   try {
-    const match = database.listUserKeys(req.params.id).find(k => k.hash.slice(0, 12) === req.params.keyId);
+    const match = database.listUserKeys(req.params.id.toString()).find(k => k.hash.slice(0, 12) === req.params.keyId.toString());
     if (!match || !database.removeUserKeyByHash(match.hash)) {
       return res.status(404).json({ success: false, message: 'Key not found' });
     }
@@ -530,12 +534,12 @@ app.delete('/api/users/:id/keys/:keyId', authMiddleware, requireAdmin, (req, res
 
 app.delete('/api/users/:id', authMiddleware, requireAdmin, (req, res) => {
   try {
-    const target = database.getUserById(req.params.id);
+    const target = database.getUserById(req.params.id.toString());
     if (!target) return res.status(404).json({ success: false, message: 'User not found' });
     if (target.role === 'admin' && database.countAdmins() <= 1) {
       return res.status(400).json({ success: false, message: 'Cannot remove the last admin' });
     }
-    database.deleteUser(req.params.id);
+    database.deleteUser(req.params.id.toString());
     res.json({ success: true });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -643,7 +647,9 @@ app.use('/api', (_req, res) => {
 });
 
 if (fs.existsSync(FRONTEND_DIR)) {
-  app.get('*', (_req, res) => {
+  // Express 5 / path-to-regexp 8: a bare '*' is invalid. `/{*splat}` is the
+  // optional named wildcard that still matches "/" and every client route.
+  app.get('/{*splat}', (_req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
   });
 }
