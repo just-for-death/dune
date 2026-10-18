@@ -1,7 +1,7 @@
 {
   "name": "dune-monorepo",
   "version": "1.0.0",
-  "description": "Dune \u2014 game save sync ecosystem (Electron client + Express/tRPC server + shared types)",
+  "description": "Dune — game save sync ecosystem (Electron client + Express/tRPC server + shared types)",
   "author": "Yashwin",
   "license": "MIT",
   "private": true,
@@ -36,7 +36,6 @@
     "url": "https://github.com/just-for-death/dune.git"
   },
   "allowScripts": {
-    "electron@44.8.0": true,
     "esbuild@0.28.2": true
   }
 }
