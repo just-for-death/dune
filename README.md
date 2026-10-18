@@ -56,6 +56,8 @@ dune/
 - **AI file analysis** — Ollama (`phi4-mini` default) classifies Save/Config/Cache/Other
 - **Security** — API-key auth, 100 req/15min + 20 uploads/min rate limits, helmet CSP, CORS allowlist, path-traversal guards, atomic writes
 - **278 unit tests** — path utils, scanner, playtime, achievements, HLTB, SQLite DB, security, tRPC + REST shims (Vitest, 80% coverage gate), plus 5 Playwright smoke tests for the dashboard renderer and ESLint over both workspaces
+- **Server dashboard** — dependency-free single-file admin UI at `/`: sticky tab rail (Overview / Games / Users / API keys / Settings) with hash routing, Lucide-derived inline SVG icons, status tiles with semantic tones, empty states with next-step hints, per-card errors surfaced as toasts, and parallelised per-game fetches (was serial N+1)
+- **Desktop UI** — Lucide-derived inline icon set (no new runtime dep), sidebar library stats, search icon, toast icons, empty states with CTAs, and the previously-unstyled sync-progress / stat-card classes filled in
 - **Docker** — multi-stage build (Node 22), non-root user, tini, healthcheck; Ollama is expected on the host (or point `ollamaEndpoint` at any reachable instance)
 
 ## Development
@@ -80,6 +82,16 @@ npm run dev --workspace=@dune/client   # vite dev
 ```
 
 Data persists in `./data` (mounted to `/app/backend/data`). Configure SteamGridDB key + Ollama endpoint in server Settings or via API.
+
+## UI & design skills
+
+The repo ships a curated set of agent skills under `.cursor/skills/` (project-local, gitignored) covering UI/UX, accessibility, color theory, responsive design, and Dune-specific architecture. The frontend skills used for this rehaul were also installed from `hueyexe/frontend-agent-skills` via `npx skills@latest add …` into `.agents/skills/` (gitignored, pinned by `skills-lock.json`):
+
+```bash
+npx skills@latest add hueyexe/frontend-agent-skills --all --copy   # 9 frontend UX/UI skills
+```
+
+Icons are inline SVG derived from [Lucide](https://lucide.dev) (ISC licence) — no icon runtime dependency is added to either bundle; the geometry lives in `packages/client/src/Icon.tsx` and the dashboard's inline sprite.
 
 ## Migration Notes
 

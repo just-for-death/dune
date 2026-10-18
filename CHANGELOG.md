@@ -3,6 +3,17 @@
 All notable changes, newest first. Format: Keep a Changelog (Added/Fixed/Changed).
 
 ## [Unreleased]
+### Added
+- Server dashboard rebuild: tab rail (Overview/Games/Users/API keys/Settings) with hash routing, Lucide-derived inline icon sprite, status tiles with semantic tones, empty states with next-step hints, toasts for every action, formatted timestamps, and parallelised per-game fetches (was serial N+1).
+- Desktop app icon set (Lucide-derived inline SVG) across the sidebar, stat cards, section headers, buttons, toasts and empty states; filled in the previously unstyled sync-progress and stat-card classes.
+- `.gitignore` entries for installed agent skill directories (`.agents/`, `skills-lock.json`).
+
+### Changed
+- Server dashboard destructive row actions are now quiet (muted → red on hover) and no longer dominate the tables.
+- Server dashboard connection card no longer duplicates the topbar Refresh / Run-local-sync buttons.
+
+### Fixed
+- Horizontal page scroll on narrow viewports caused by `white-space: nowrap` table cells leaking past the scroller (`contain: paint` on `.table-wrap`).
 
 ## [0.2.0-beta.2] — 2026-10-18
 ### Added
