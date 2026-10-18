@@ -42,8 +42,8 @@ dune/
 
 | Package | Stack | Purpose |
 |---------|-------|---------|
-| `@dune/client` | Electron 44, React 18, Vite 5, TS | Desktop app: save mapping (Win/Linux paths), auto-detect via ludusavi manifest + Wine prefixes, cloud sync/restore with progress, Playtime + Achievements + HLTB tabs, SteamGridDB art, toasts, tray/background mode |
-| `@dune/server` | Express 4, tRPC 11, Zod, TS strict | Save sync API (streaming upload, versioning, SQLite DB via `node:sqlite`), playtime/achievements/HLTB services, Ollama AI analysis, SteamGridDB proxy, local dual-boot sync, remote replication, API-key auth, rate-limit, helmet, CORS |
+| `@dune/client` | Electron 44, React 19, Vite 8, TS 6 | Desktop app: save mapping (Win/Linux paths), auto-detect via ludusavi manifest + Wine prefixes, cloud sync/restore with progress, Playtime + Achievements + HLTB tabs, SteamGridDB art, toasts, tray/background mode |
+| `@dune/server` | Express 5, tRPC 11, Zod 4, TS strict | Save sync API (streaming upload, versioning, SQLite DB via `node:sqlite`), playtime/achievements/HLTB services, Ollama AI analysis, SteamGridDB proxy, local dual-boot sync, remote replication, API-key auth, rate-limit, helmet, CORS |
 | `@dune/shared` | TypeScript only | Single source of truth: `Game`, `Settings`, `ElectronAPI` (full IPC contract), `PlaytimeSession/Summary`, `Achievement/Summary`, `HLTBTimes`, `APIResponse`, `SyncProgress` |
 
 ## Features
@@ -55,7 +55,7 @@ dune/
 - **HLTB** — completion times with 7-day file cache + bulk fetch
 - **AI file analysis** — Ollama (`phi4-mini` default) classifies Save/Config/Cache/Other
 - **Security** — API-key auth, 100 req/15min + 20 uploads/min rate limits, helmet CSP, CORS allowlist, path-traversal guards, atomic writes
-- **237 unit tests** — path utils, scanner, playtime, achievements, HLTB, SQLite DB, security, tRPC + REST shims (Vitest, 80% coverage gate)
+- **278 unit tests** — path utils, scanner, playtime, achievements, HLTB, SQLite DB, security, tRPC + REST shims (Vitest, 80% coverage gate), plus 5 Playwright smoke tests for the dashboard renderer and ESLint over both workspaces
 - **Docker** — multi-stage build (Node 22), non-root user, tini, healthcheck; Ollama is expected on the host (or point `ollamaEndpoint` at any reachable instance)
 
 ## Development
@@ -63,7 +63,9 @@ dune/
 ```bash
 npm install                  # all workspaces
 npm run build --workspaces   # shared → server → client
+npm run lint                 # ESLint (flat config) over server + client
 npm run test --workspace=@dune/server
+npm run test:e2e --workspace=@dune/client   # Playwright smoke tests (build client first)
 npm run dev --workspace=@dune/server   # :3030
 npm run dev --workspace=@dune/client   # vite dev
 ```
