@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { nextId } from '@dune/shared';
 import type {
   Game,
   Settings,
@@ -152,7 +153,7 @@ function upsertGame(
     ...game,
     thumbnail: game.thumbnail ?? '',
     ownerId: ownerId ?? undefined,
-    id: Date.now() + Math.random(),
+    id: nextId(),
     createdAt: now,
     updatedAt: now,
   };
@@ -194,7 +195,7 @@ function createOwnedGame(name: string, ownerId: string): void {
     .prepare(
       'INSERT OR IGNORE INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    .run(Date.now() + Math.random(), name, 'Pending Upload', 'Never', '', null, ownerId, now, now);
+    .run(nextId(), name, 'Pending Upload', 'Never', '', null, ownerId, now, now);
 }
 
 /**
@@ -380,9 +381,9 @@ function getLocalSources(): LocalSource[] {
 function addLocalSource(sourcePath: string): LocalSource {
   const settings = readSettingsRow();
   if (!settings.localSources) settings.localSources = [];
-  // Date.now() alone collides for two adds in the same millisecond, which
-  // would make removeLocalSource(id) delete both rows.
-  const source = { id: Date.now() + Math.random(), path: sourcePath };
+  // nextId (not Date.now()) so two adds in the same millisecond don't share an
+  // id, which would make removeLocalSource(id) delete both rows.
+  const source = { id: nextId(), path: sourcePath };
   settings.localSources.push(source);
   saveSettings(settings);
   return source;
@@ -406,8 +407,8 @@ function getRemoteServers(): RemoteServer[] {
 function addRemoteServer(url: string): RemoteServer {
   const settings = readSettingsRow();
   if (!settings.remoteServers) settings.remoteServers = [];
-  // See addLocalSource: avoid same-millisecond id collisions.
-  const server = { id: Date.now() + Math.random(), url };
+  // See addLocalSource: nextId avoids same-millisecond id collisions.
+  const server = { id: nextId(), url };
   settings.remoteServers.push(server);
   saveSettings(settings);
   return server;

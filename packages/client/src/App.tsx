@@ -11,6 +11,7 @@ import type {
   Achievement,
   ElectronAPI,
 } from '@dune/shared';
+import { nextId } from '@dune/shared';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
@@ -99,7 +100,7 @@ export default function App() {
   const [hltbLoading, setHltbLoading] = useState<Record<string, boolean>>({});
 
   const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
-    const id = Date.now() + Math.random();
+    const id = nextId();
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   }, []);

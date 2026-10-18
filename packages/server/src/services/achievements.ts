@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { dataDir } from '../utils/path.js';
 import { readJsonFile, writeJsonFileAtomic } from '../db/jsonStore.js';
+import { nextId } from '@dune/shared';
 
 function achievementsDbPath(): string {
   return path.join(dataDir(), 'achievements.json');
@@ -72,7 +73,7 @@ export function upsertAchievements(
         };
       } else {
         db.push({
-          id: Date.now() + Math.random(),
+          id: nextId(),
           ownerId,
           game,
           apiName: a.apiName,

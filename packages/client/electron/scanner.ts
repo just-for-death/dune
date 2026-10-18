@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { app } from 'electron';
+import { nextId } from '@dune/shared';
 
 const MANIFEST_URL = 'https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml';
 
@@ -147,7 +148,7 @@ export async function autoDetectGames(customRoots: string[] = []) {
 
       if (validPath) {
         discovered.push({
-          id: Date.now() + Math.random(),
+          id: nextId(),
           name: gameName,
           winPath: process.platform === 'win32' ? validPath : '',
           linPath: process.platform !== 'win32' ? validPath : '',

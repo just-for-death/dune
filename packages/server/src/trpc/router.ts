@@ -2,6 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, publicProcedure, authedProcedure, adminProcedure } from './trpc.js';
 import { database } from '../db/index.js';
+import { nextId } from '@dune/shared';
 import { handleLocalSync } from '../services/sync.js';
 import { manifestForGame, removeGameFile } from '../services/manifest.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from '../services/ollama.js';
@@ -65,7 +66,7 @@ export const appRouter = router({
         const games = await database.upsertGame({
           ...input,
           ownerId: ctx.user.id,
-          id: Date.now() + Math.random(),
+          id: nextId(),
           status: input.status || 'Pending Upload',
           lastSync: input.lastSync || 'Never',
           // undefined preserves an existing game's cover art on re-add;

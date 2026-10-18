@@ -3,6 +3,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { database, writeDB, withDbLock } from '../db/index.js';
+import { nextId } from '@dune/shared';
 import { getGameRoot, validateGamePath, savesDir } from '../utils/path.js';
 import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
@@ -177,7 +178,7 @@ export async function handleUploadFile(
         games[gameIdx].updatedAt = timestamp;
       } else {
         games.push({
-          id: Date.now() + Math.random(),
+          id: nextId(),
           name: gameName,
           ownerId,
           status: 'In Sync',
@@ -249,7 +250,7 @@ export async function handleLocalSync(ownerId?: string): Promise<{ success: bool
           // Omit thumbnail/analysis: omit means "preserve", so re-syncing a
           // game never wipes its cover art or AI analysis.
           database.upsertGame({
-            id: Date.now() + Math.random(),
+            id: nextId(),
             name: gameName,
             ownerId: ownerIdResolved,
             status: 'In Sync',

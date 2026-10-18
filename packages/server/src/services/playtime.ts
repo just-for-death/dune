@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { dataDir } from '../utils/path.js';
 import { readJsonFile, writeJsonFileAtomic } from '../db/jsonStore.js';
+import { nextId } from '@dune/shared';
 
 function playtimeDbPath(): string {
   return path.join(dataDir(), 'playtime.json');
@@ -66,7 +67,7 @@ export function recordPlaytimeSession(
 
     const sessions = readPlaytimeDB();
     sessions.push({
-      id: Date.now(),
+      id: nextId(),
       ownerId,
       game,
       platform,

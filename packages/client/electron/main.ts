@@ -5,7 +5,7 @@ import * as fs from 'fs'
 import Store from 'electron-store'
 import AdmZip from 'adm-zip'
 import axios from 'axios'
-import { diffFingerprints, changedPaths } from '@dune/shared'
+import { diffFingerprints, changedPaths, nextId } from '@dune/shared'
 import type { FileManifest, HashManifest } from '@dune/shared'
 import { autoDetectGames } from './scanner'
 import { autoUpdater } from 'electron-updater'
@@ -719,7 +719,7 @@ ipcMain.handle('config:save', (_event, config) => {
         const id = Number(raw.id);
         clean.push({
           ...sanitizeGame(g),
-          id: Number.isFinite(id) ? id : Date.now() + clean.length,
+          id: Number.isFinite(id) ? id : nextId(),
         });
       } catch { /* drop malformed entries rather than persisting them */ }
     }
@@ -737,7 +737,7 @@ ipcMain.handle('config:save', (_event, config) => {
 
 ipcMain.handle('game:add', (_event, game) => {
   const games: any = store.get('games') || [];
-  games.push({ ...sanitizeGame(game), id: Date.now() });
+  games.push({ ...sanitizeGame(game), id: nextId() });
   store.set('games', games);
   return games;
 });

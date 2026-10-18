@@ -1,6 +1,7 @@
 // Shared types for Dune Client ↔ Server communication
 
 export * from './delta.js';
+export * from './id.js';
 
 // Game entity
 export interface Game {

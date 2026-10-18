@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { nextId } from '@dune/shared';
 
 // Isolate ALL filesystem side effects (DB, secret) to a temp dir.
 // Must precede the dynamic import below (static imports hoist).
@@ -17,7 +18,7 @@ const TMP = process.env.DATA_DIR as string;
 function mkGame(name: string) {
   const ts = new Date().toISOString();
   return {
-    id: Date.now() + Math.random(),
+    id: nextId(),
     name,
     winPath: '',
     linPath: '',
@@ -159,5 +160,17 @@ describe('multi-user migration', () => {
     // Idempotent: re-running adds no second admin and no duplicate keys.
     runBootMigrations();
     expect(database.listUsers().filter(u => u.role === 'admin')).toHaveLength(1);
+  });
+});
+
+describe('nextId', () => {
+  it('mints integer ids that stay unique inside a single millisecond', () => {
+    // Regression guard: `Date.now() + Math.random()` has only ~4096 distinct
+    // values per millisecond (double ULP ≈ 2.4e-4 at that magnitude), so a
+    // burst of ids collided and tripped `UNIQUE constraint failed: games.id`.
+    const ids = Array.from({ length: 10000 }, () => nextId());
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.every(Number.isInteger)).toBe(true);
+    expect(ids.every((v, i) => i === 0 || v > ids[i - 1])).toBe(true);
   });
 });
