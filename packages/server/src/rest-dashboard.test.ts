@@ -132,3 +132,17 @@ describe('admin user-key management', () => {
     expect((await api(request(app).delete(`/api/users/${admin.id}`))).status).toBe(400);
   });
 });
+
+describe('dashboard assets', () => {
+  it('references the app icon from the dashboard HTML', async () => {
+    const res = await request(app).get('/');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<link rel="icon" type="image/png" href="/icon.png"');
+  });
+
+  it('serves the app icon at /icon.png (no auth required)', async () => {
+    const res = await request(app).get('/icon.png');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/^image\/png/);
+  });
+});

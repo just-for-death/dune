@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="packages/client/build/icon.png" alt="Dune" width="112" height="112" />
+</p>
+
 # Dune 🏜️ — Game Save Sync Ecosystem (Monorepo)
 
 **Dune** is a complete game-save management ecosystem: an Electron desktop client, an Express + tRPC server, and shared TypeScript contracts — all in one monorepo with npm workspaces.

@@ -1326,23 +1326,14 @@ ipcMain.handle('server-key:set', (_event, key: string) => {
 });
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 960,
-    height: 720,
-    minWidth: 760,
-    minHeight: 520,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  })
-
-  const win = mainWindow
-
+  // Resolve the app/tray icon once. In dev it lives in `public/`; Vite copies
+  // `public/` into `dist/`, which is what electron-builder ships, so a packaged
+  // app must look under `dist/` (the old `public/`-only candidates missed there).
   const iconCandidates = [
     path.join(__dirname, '../public/tray-icon.ico'),
     path.join(__dirname, '../public/tray-icon.png'),
+    path.join(__dirname, '../dist/tray-icon.ico'),
+    path.join(__dirname, '../dist/tray-icon.png'),
     path.join(process.resourcesPath || '', 'tray-icon.ico'),
     path.join(process.resourcesPath || '', 'tray-icon.png'),
   ]
@@ -1351,6 +1342,21 @@ function createWindow() {
     if (fs.existsSync(c)) { iconPath = c; break }
   }
   const icon = iconPath ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
+
+  mainWindow = new BrowserWindow({
+    width: 960,
+    height: 720,
+    minWidth: 760,
+    minHeight: 520,
+    icon: icon.isEmpty() ? undefined : icon,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  })
+
+  const win = mainWindow
 
   // Only create tray once (guard against re-entrancy on macOS activate)
   if (!tray) {
