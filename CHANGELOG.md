@@ -3,6 +3,18 @@
 All notable changes, newest first. Format: Keep a Changelog (Added/Fixed/Changed).
 
 ## [Unreleased]
+### Added
+- Desktop app icon (`packages/client/build/icon.png`) wired into electron-builder.
+- REST contract tests for `/api/settings`, `DELETE /api/saves`, and admin user-key management, plus persisted-secret and CORS-allowlist unit tests.
+### Changed
+- Toolchain: Vite 7→8 (Rolldown) + `@vitejs/plugin-react` 6; vitest 3→5; ESLint 8→10 (flat config). `vite.config.ts` → `vite.config.mts`.
+- Server runtime: Express 4→5, helmet 7→8, express-rate-limit 7→8, pino 9→10 (+ pino-pretty 13), zod 3→4.
+- UI: React 18→19 (client + server TUI) and ink 4→8; `@types/node` 20/22→26; electron 44.8.0→44.9.0.
+- GHCR `:latest` now tracks stable releases only; prerelease tags (e.g. `v0.2.0-beta.1`) push only their version tag.
+### Fixed
+- `/api/settings` (GET/POST) and `DELETE /api/saves` were registered *after* the `/api` 404 catch-all, so Express shadowed them and the dashboard's Settings save and delete-by-id always returned 404.
+- Express 5's `res.download` defaults to `dotfiles: 'ignore'`, which 404'd version snapshots under `.versions/` (and any listed dotfile save); both download endpoints now pass `dotfiles: 'allow'` after the traversal check.
+- Stayed on TypeScript 5: TS 7 (native port) is not yet supported by `@typescript-eslint` v8.
 
 ## [0.2.0-beta.1] — 2026-10-18
 ### Added

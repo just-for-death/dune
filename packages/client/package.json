@@ -50,6 +50,7 @@
     "directories": {
       "output": "release"
     },
+    "icon": "build/icon.png",
     "linux": {
       "target": [
         "AppImage",

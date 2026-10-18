@@ -2,7 +2,8 @@ name: release
 
 # Release flow: git tag v1.0.0 && git push origin v1.0.0
 # Produces: GHCR server image + Linux client artifacts on the GitHub Release.
-# Tags with a hyphen (e.g. v0.2.0-beta.1) publish as GitHub prereleases.
+# Tags with a hyphen (e.g. v0.2.0-beta.1) publish as GitHub prereleases and do
+# not move the `:latest` GHCR tag (that tracks stable releases only).
 # Windows/mac installers are out of scope for v1 (see README).
 
 on:
@@ -25,14 +26,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute image tags (:latest only for stable releases)
+        id: image-tags
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "ghcr.io/just-for-death/dune-server:${GITHUB_REF_NAME}"
+            # A hyphen in the tag (v0.2.0-beta.1) marks a prerelease: publish the
+            # version tag but never move `:latest` off the last stable release.
+            if [[ "${GITHUB_REF_NAME}" != *-* ]]; then
+              echo "ghcr.io/just-for-death/dune-server:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/server/Dockerfile
           push: true
-          tags: |
-            ghcr.io/just-for-death/dune-server:${{ github.ref_name }}
-            ghcr.io/just-for-death/dune-server:latest
+          tags: ${{ steps.image-tags.outputs.tags }}
 
   client-linux:
     runs-on: ubuntu-latest
