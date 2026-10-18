@@ -10,7 +10,8 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  if (req.path === '/health' || req.path === '/api/health') {
+  // Public endpoints that don't require authentication
+  if (req.path === '/health' || req.path === '/icon.png') {
     return next();
   }
 

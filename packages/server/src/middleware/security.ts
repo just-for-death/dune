@@ -41,6 +41,11 @@ export const corsConfig = cors({
     // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
 
+    // Allow Electron packaged app (file:// protocol) and local dev
+    if (origin === 'null' || origin.startsWith('file://')) {
+      return callback(null, true);
+    }
+
     const allowedOrigins = [
       'http://localhost:3023',
       'http://localhost:5173',

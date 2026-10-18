@@ -157,7 +157,13 @@ export function listFilesInDir(dirPath: string): Array<{ path: string; name: str
   const files: Array<{ path: string; name: string; size: number; modified: string; category: 'Save' | 'Config' | 'Cache' | 'Other' }> = [];
   
   const walk = (dir: string, base: string): void => {
-    const items = fs.readdirSync(dir, { withFileTypes: true });
+    let items;
+    try {
+      items = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      // Skip inaccessible directories
+      return;
+    }
     for (const item of items) {
       if (item.name === '.versions') continue;
       if (item.isSymbolicLink()) continue;

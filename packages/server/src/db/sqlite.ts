@@ -143,12 +143,13 @@ function migrateLegacyJson(): void {
     };
     const database = getDb();
     const insertGame = database.prepare(
-      'INSERT OR IGNORE INTO games (id, name, status, lastSync, thumbnail, analysis, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
     for (const g of raw.games || []) {
       insertGame.run(
         g.id, g.name, g.status, g.lastSync, g.thumbnail || '',
         g.analysis ? JSON.stringify(g.analysis) : null,
+        null, // legacy games have no owner
         g.createdAt, g.updatedAt,
       );
     }

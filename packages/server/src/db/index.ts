@@ -189,16 +189,6 @@ function canAccessGame(user: User, gameName: string): boolean {
   return getGames(user.id).some((g) => g.name === gameName);
 }
 
-/** Insert a minimal game row owned by `ownerId` (no-op if the name exists). */
-function createOwnedGame(name: string, ownerId: string): void {
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      'INSERT OR IGNORE INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(nextId(), name, 'Pending Upload', 'Never', '', null, ownerId, now, now);
-}
-
 /**
  * Non-mutating check: may `user` write files for `gameName`? An unknown name
  * is writable — the uploader claims it on success via `claimGame`. Admins may
@@ -215,14 +205,34 @@ function canWriteGame(user: User, gameName: string): boolean {
  * upload so a failed transfer doesn't leave a phantom game row. No-op when
  * another user already owns the name.
  */
-function claimGame(gameName: string, ownerId: string): void {
-  const existing = getGameByName(gameName);
-  if (!existing) {
+function claimGame(gameName: string, ownerId: string): boolean {
+  // First check if this owner already has a game with this name
+  const existingForOwner = getGameByName(gameName, ownerId);
+  if (existingForOwner) return true; // already ours
+
+  // Check if any other owner has this game
+  const existingAny = getGameByName(gameName);
+  if (!existingAny) {
     createOwnedGame(gameName, ownerId);
-  } else if (!existing.ownerId) {
-    getDb().prepare('UPDATE games SET ownerId = ?, updatedAt = ? WHERE name = ?')
-      .run(ownerId, new Date().toISOString(), gameName);
+    return true;
   }
+  if (!existingAny.ownerId) {
+    getDb().prepare('UPDATE games SET ownerId = ?, updatedAt = ? WHERE name = ? AND ownerId IS NULL')
+      .run(ownerId, new Date().toISOString(), gameName);
+    return true;
+  }
+  return false; // owned by another user
+}
+
+/** Insert a minimal game row owned by `ownerId`. Returns false if name exists. */
+function createOwnedGame(name: string, ownerId: string): boolean {
+  const now = new Date().toISOString();
+  const result = getDb()
+    .prepare(
+      'INSERT OR IGNORE INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(nextId(), name, 'Pending Upload', 'Never', '', null, ownerId, now, now);
+  return (result.changes as number) > 0;
 }
 
 // ── Users & API keys ─────────────────────────────────────────────────────────
@@ -319,14 +329,22 @@ function generateApiKey(): string {
   return 'dune_' + randomBytes(24).toString('hex');
 }
 
-function insertKeyHash(hash: string, userId: string, description: string): void {
-  getDb()
+function insertKeyHash(hash: string, userId: string, description: string): boolean {
+  const result = getDb()
     .prepare('INSERT OR IGNORE INTO user_keys (hash, userId, description, createdAt) VALUES (?, ?, ?, ?)')
     .run(hash, userId, description, new Date().toISOString());
+  return (result.changes as number) > 0;
 }
 
-function addUserKey(userId: string, rawKey: string, description = ''): void {
-  insertKeyHash(hashApiKey(rawKey), userId, description);
+function addUserKey(userId: string, rawKey: string, description = ''): boolean {
+  return insertKeyHash(hashApiKey(rawKey), userId, description);
+}
+
+/** Test-only helper: creates an admin user if needed and issues a key for them. */
+function addApiKey(rawKey: string, description = ''): void {
+  const admin = listUsers().find((u) => u.role === 'admin') ?? listUsers()[0];
+  if (!admin) return;
+  addUserKey(admin.id, rawKey, description);
 }
 
 /** Create a fresh key for a user; returns the plaintext key (shown once). */
@@ -372,14 +390,6 @@ function isValidApiKey(candidate: string | undefined | null): boolean {
 /** Every stored key hash (all users). */
 function getApiKeys(): string[] {
   return listKeyHashes();
-}
-
-/** Issue an additional key for the first admin (bootstrapping/tests). */
-function addApiKey(key: string, description = ''): boolean {
-  const owner = listUsers().find((u) => u.role === 'admin') ?? listUsers()[0];
-  if (!owner) return false;
-  addUserKey(owner.id, key, description);
-  return true;
 }
 
 /** Revoke a key across all users, by its plaintext value. */
@@ -555,7 +565,6 @@ export const database = {
   saveSettings,
   getGames,
   getGamesForUser,
-  getGameById,
   getGameByName,
   canAccessGame,
   canWriteGame,
@@ -578,13 +587,9 @@ export const database = {
   countUserKeys,
   generateApiKey,
   issueUserKey,
-  addUserKey,
+  addApiKey,
   listUserKeys,
   listKeyHashes,
   removeUserKeyByHash,
   resolveUserByKey,
-  isValidApiKey,
-  getApiKeys,
-  addApiKey,
-  removeApiKey
 } as const;

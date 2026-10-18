@@ -14,7 +14,12 @@ function secretPath(): string {
  */
 export function getServerSecret(): string {
   const fromEnv = process.env.API_KEY_SECRET || process.env.API_KEY_SALT;
-  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  if (fromEnv) {
+    if (fromEnv.length >= 16) return fromEnv;
+    // Env secret too short — log a warning and fall through to persisted/ephemeral
+    // so we don't silently accept a weak secret.
+    try { console.warn('[crypto] API_KEY_SECRET too short (<16 chars), ignoring'); } catch { /* ignore */ }
+  }
 
   try {
     const secretFile = secretPath();

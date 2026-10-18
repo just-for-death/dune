@@ -33,18 +33,22 @@ export interface SyncProgress {
 
 export type ProgressCallback = (progress: SyncProgress) => void;
 
+// NOTE: Server-side sync/restore are not implemented; the client implements
+// its own push/restore logic via REST. These are kept for tRPC completeness
+// and throw if accidentally invoked.
+
 export async function performCloudSyncWithProgress(
   _credentials: { url: string },
   _progress: ProgressCallback
 ): Promise<{ success: boolean; message: string }> {
-  return { success: true, message: 'Server-side sync not implemented - client pushes to server' };
+  throw new Error('Server-side sync not implemented — client pushes to server');
 }
 
 export async function performCloudRestoreWithProgress(
   _credentials: { url: string },
   _progress: ProgressCallback
 ): Promise<{ success: boolean; message: string }> {
-  return { success: false, message: 'Restore not applicable on server' };
+  throw new Error('Server-side restore not implemented — client pulls from server');
 }
 
 export async function handleUploadFile(
