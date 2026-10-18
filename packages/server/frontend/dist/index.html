@@ -104,8 +104,8 @@
     </div>
     <div style="overflow-x:auto;margin-top:8px">
     <table>
-      <thead><tr><th>Game</th><th>Status</th><th>Last sync</th><th>Files</th><th>Versions</th><th></th></tr></thead>
-      <tbody id="games"><tr><td colspan="6" class="muted">No data yet — save a key and refresh.</td></tr></tbody>
+      <thead><tr><th>Game</th><th>Status</th><th>Last sync</th><th>Files</th><th>Versions</th><th>Owner</th><th></th></tr></thead>
+      <tbody id="games"><tr><td colspan="7" class="muted">No data yet — save a key and refresh.</td></tr></tbody>
     </table>
     </div>
   </div>
@@ -232,6 +232,17 @@
   async function refresh() {
     errBox.textContent = '';
     try {
+      // Resolve game owners to names for admins; members only ever see their own.
+      var ownerNames = {};
+      var isAdmin = false;
+      try {
+        var me = await get('/api/users/me');
+        isAdmin = !!(me.user && me.user.role === 'admin');
+        if (isAdmin) {
+          var ul = await get('/api/users');
+          (ul.users || []).forEach(function (u) { ownerNames[u.id] = u.name; });
+        }
+      } catch (e) { /* no /api/users access: fall back to no owner names */ }
       var health = await get('/health').catch(function () { return null; });
       document.getElementById('st-health').textContent = health && health.status === 'ok' ? 'ok' : 'down';
       var ready = await get('/ready').catch(function () { return null; });
@@ -253,15 +264,17 @@
         } catch (e) { /* per-game failure must not break the table */ }
         totalFiles += files.length;
         var synced = g.status === 'In Sync';
+        var ownerLabel = isAdmin ? (ownerNames[g.ownerId] || ('#' + g.ownerId)) : 'you';
         rows += '<tr><td>' + esc(g.name) + '</td>'
           + '<td><span class="dot ' + (synced ? 'ok' : 'warn') + '"></span>' + esc(g.status) + '</td>'
           + '<td>' + esc(g.lastSync || 'Never') + '</td>'
           + '<td>' + files.length + '</td>'
           + '<td>' + vers.length + '</td>'
+          + '<td class="muted">' + esc(ownerLabel) + '</td>'
           + '<td><button class="secondary" data-delgameid="' + esc(String(g.id)) + '" data-delgamename="' + esc(g.name) + '">Delete</button></td></tr>';
       }
       document.getElementById('st-files').textContent = totalFiles;
-      document.getElementById('games').innerHTML = rows || '<tr><td colspan="6" class="muted">No games tracked yet.</td></tr>';
+      document.getElementById('games').innerHTML = rows || '<tr><td colspan="7" class="muted">No games tracked yet.</td></tr>';
       try { await loadUsers(); } catch (e) { usersCard.hidden = true; }
     } catch (e) {
       fail(e.message || String(e));
