@@ -327,7 +327,7 @@ async function uploadFile(baseUrl: string, gameName: string, localPath: string, 
   const cleanUrl = normalizeUrl(baseUrl);
   const stream = fs.createReadStream(localPath);
   try {
-    await axios.post(`${cleanUrl}/api/upload-file`, stream, {
+    const res = await axios.post(`${cleanUrl}/api/upload-file`, stream, {
       headers: serverHeaders({
         'x-game': gameName,
         'x-path': relativePath,
@@ -335,6 +335,9 @@ async function uploadFile(baseUrl: string, gameName: string, localPath: string, 
         'Content-Type': 'application/octet-stream'
       })
     });
+    if (!(res.data && res.data.success)) {
+      throw new Error((res.data && res.data.message) || 'Upload rejected by server');
+    }
   } finally {
     // A failed POST aborts without draining the stream, which leaks the file
     // descriptor. Always release it.

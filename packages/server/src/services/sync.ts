@@ -54,15 +54,15 @@ export async function handleUploadFile(
   syncId: string,
   ownerId?: string,
 ): Promise<{ success: boolean; message: string; status?: number }> {
+  const finalPath = validateGamePath(gameName, filePath, ownerId);
+  const finalDir = path.dirname(finalPath);
+
+  const maxUploadBytes =
+    Math.max(1, parseInt(process.env.MAX_UPLOAD_MB || '500', 10)) * 1024 * 1024;
+  const maxFilesPerGame =
+    Math.max(1, parseInt(process.env.MAX_FILES_PER_GAME || '5000', 10));
+
   try {
-    const finalPath = validateGamePath(gameName, filePath, ownerId);
-    const finalDir = path.dirname(finalPath);
-
-    const maxUploadBytes =
-      Math.max(1, parseInt(process.env.MAX_UPLOAD_MB || '500', 10)) * 1024 * 1024;
-    const maxFilesPerGame =
-      Math.max(1, parseInt(process.env.MAX_FILES_PER_GAME || '5000', 10));
-
     // Per-game file-count cap (cheap guard against zip-bombs / runaway syncs)
     try {
       let count = 0;
@@ -92,39 +92,49 @@ export async function handleUploadFile(
     if (fs.existsSync(finalPath)) {
       const versionDir = path.join(getGameRoot(gameName, ownerId), '.versions', safeVersionId(syncId));
       const archivePath = path.join(versionDir, filePath);
-      
-      if (!fs.existsSync(path.dirname(archivePath))) {
-        fs.mkdirSync(path.dirname(archivePath), { recursive: true });
-      }
-      fs.copyFileSync(finalPath, archivePath);
 
-      const settings = database.getSettings();
-      const maxVersions = settings.maxVersions || 10;
-      const versionsRoot = path.join(getGameRoot(gameName, ownerId), '.versions');
-      
-      if (fs.existsSync(versionsRoot)) {
-        const versions = fs.readdirSync(versionsRoot)
-          .filter(v => !isNaN(Number(v)))
-          .sort((a, b) => Number(b) - Number(a));
+      // Guard against path traversal in the version snapshot.
+      const resolvedArchive = path.resolve(archivePath);
+      const resolvedVersionDir = path.resolve(versionDir);
+      if (resolvedArchive !== resolvedVersionDir && !resolvedArchive.startsWith(resolvedVersionDir + path.sep)) {
+        logger.warn({ gameName, filePath }, 'Rejected version snapshot outside game root');
+      } else {
+        if (!fs.existsSync(path.dirname(archivePath))) {
+          fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+        }
+        fs.copyFileSync(finalPath, archivePath);
 
-        if (versions.length > maxVersions) {
-          versions.slice(maxVersions).forEach(v => {
-            fs.rmSync(path.join(versionsRoot, v), { recursive: true, force: true });
-          });
+        const settings = database.getSettings();
+        const maxVersions = settings.maxVersions || 10;
+        const versionsRoot = path.join(getGameRoot(gameName, ownerId), '.versions');
+
+        if (fs.existsSync(versionsRoot)) {
+          const versions = fs.readdirSync(versionsRoot)
+            .filter(v => !isNaN(Number(v)))
+            .sort((a, b) => Number(b) - Number(a));
+
+          if (versions.length > maxVersions) {
+            versions.slice(maxVersions).forEach(v => {
+              fs.rmSync(path.join(versionsRoot, v), { recursive: true, force: true });
+            });
+          }
         }
       }
     }
+
+    // Stream to a temp file first, then atomically rename onto the target.
+    // Writing directly to `finalPath` (truncating) would destroy a previously
+    // valid save if the upload fails partway through.
+    const tmpPath = finalPath + '.uploading';
+    try { fs.unlinkSync(tmpPath); } catch { /* no prior temp */ }
 
     await new Promise<void>((resolve, reject) => {
       const destroyStream = (s: unknown) => {
         const d = (s as { destroy?: () => void }).destroy;
         if (typeof d === 'function') d.call(s);
       };
-      // Open synchronously: createWriteStream opens lazily/async, and an
-      // unlink issued before that open completes would be undone when the
-      // pending open recreates the file (flaky leftover partial uploads).
-      const fd = fs.openSync(finalPath, 'w');
-      const writer = fs.createWriteStream(finalPath, { fd, autoClose: true });
+      const fd = fs.openSync(tmpPath, 'w');
+      const writer = fs.createWriteStream(tmpPath, { fd, autoClose: true });
       let bytes = 0;
       let rejected = false;
       fileStream.on('data', (chunk: Buffer) => {
@@ -135,7 +145,7 @@ export async function handleUploadFile(
           fileStream.unpipe(writer);
           destroyStream(fileStream);
           writer.destroy();
-          try { fs.unlinkSync(finalPath); } catch { /* partial file cleanup */ }
+          try { fs.unlinkSync(tmpPath); } catch { /* partial temp cleanup */ }
           reject(new Error(`File exceeds ${Math.round(maxUploadBytes / 1024 / 1024)} MB limit`));
         }
       });
@@ -145,19 +155,67 @@ export async function handleUploadFile(
       writer.on('error', reject);
     });
 
+    // Atomic publish: only replace the live file once the full upload succeeded.
+    fs.renameSync(tmpPath, finalPath);
+
     if (path.basename(filePath) === 'saves.zip') {
+      const gameRoot = getGameRoot(gameName, ownerId);
+      const tempExtractDir = path.join(gameRoot, '_extract_tmp');
       try {
-        const tempExtractDir = path.join(getGameRoot(gameName, ownerId), '_extract_tmp');
-        if (fs.existsSync(tempExtractDir)) fs.rmSync(tempExtractDir, { recursive: true });
+        if (fs.existsSync(tempExtractDir)) fs.rmSync(tempExtractDir, { recursive: true, force: true });
         fs.mkdirSync(tempExtractDir, { recursive: true });
 
         await execFileAsync('unzip', ['-o', finalPath, '-d', tempExtractDir]);
-        await fs.promises.cp(tempExtractDir, getGameRoot(gameName, ownerId), { recursive: true });
 
-        fs.rmSync(tempExtractDir, { recursive: true });
+        // Validate every extracted entry stays inside tempExtractDir (zip-slip guard).
+        const extractedFiles: string[] = [];
+        const walk = (dir: string) => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (entry.isSymbolicLink()) throw new Error('symlink in archive');
+            const full = path.join(dir, entry.name);
+            const rel = path.relative(tempExtractDir, full);
+            if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('path traversal in archive');
+            if (entry.isDirectory()) walk(full);
+            else extractedFiles.push(full);
+          }
+        };
+        walk(tempExtractDir);
+
+        // Enforce per-game file cap post-extraction.
+        let existing = 0;
+        if (fs.existsSync(gameRoot)) {
+          const stack: string[] = [gameRoot];
+          while (stack.length) {
+            const d = stack.pop() as string;
+            for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+              if (e.name === '.versions' || e.name === '_extract_tmp') continue;
+              if (e.isSymbolicLink()) continue;
+              if (e.isDirectory()) stack.push(path.join(d, e.name));
+              else existing++;
+            }
+          }
+        }
+        if (existing + extractedFiles.length > maxFilesPerGame) {
+          throw new Error(`Game would exceed ${maxFilesPerGame} files`);
+        }
+
+        // Copy only validated files, preserving relative paths.
+        for (const src of extractedFiles) {
+          const rel = path.relative(tempExtractDir, src);
+          const dest = path.join(gameRoot, rel);
+          const resolvedDest = path.resolve(dest);
+          if (resolvedDest !== path.resolve(gameRoot) && !resolvedDest.startsWith(path.resolve(gameRoot) + path.sep)) {
+            throw new Error('path traversal in archive');
+          }
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          fs.copyFileSync(src, dest);
+        }
+
+        fs.rmSync(tempExtractDir, { recursive: true, force: true });
         fs.unlinkSync(finalPath);
       } catch (err) {
         logger.error({ err }, 'Failed to extract saves.zip');
+        try { fs.rmSync(tempExtractDir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
 
@@ -199,6 +257,7 @@ export async function handleUploadFile(
 
     return { success: true, message: `Uploaded ${gameName} saves` };
   } catch (error: unknown) {
+    try { fs.unlinkSync(finalPath + '.uploading'); } catch { /* no temp */ }
     const message = error instanceof Error ? error.message : String(error);
     const status = message.includes('exceeds') || message.includes('already has') ? 413 : undefined;
     return status ? { success: false, message, status } : { success: false, message };
@@ -269,6 +328,9 @@ export async function handleLocalSync(ownerId?: string): Promise<{ success: bool
       });
     }
 
+    if (totalFilesSynced === 0 && errors.length > 0) {
+      return { success: false, count: 0, games: syncedGames, errors };
+    }
     return { success: true, count: totalFilesSynced, games: syncedGames, errors };
   });
 }

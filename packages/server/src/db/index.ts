@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { nextId } from '@dune/shared';
+import { dataDir, savesDir } from '../utils/path.js';
 import type {
   Game,
   Settings,
@@ -131,7 +132,7 @@ function upsertGame(
   const now = new Date().toISOString();
   const ownerId = game.ownerId ?? null;
   const existing = getDb()
-    .prepare('SELECT id, createdAt, thumbnail, analysis FROM games WHERE name = ? AND ownerId IS ?')
+    .prepare('SELECT id, createdAt, thumbnail, analysis FROM games WHERE name = ? AND ownerId IS ? LIMIT 1')
     .get(game.name, ownerId) as
     | { id: number; createdAt: string; thumbnail: string; analysis: string | null }
     | undefined;
@@ -143,9 +144,9 @@ function upsertGame(
     const analysis = game.analysis !== undefined ? JSON.stringify(game.analysis) : existing.analysis;
     getDb()
       .prepare(
-        'UPDATE games SET status = ?, lastSync = ?, thumbnail = ?, analysis = ?, updatedAt = ? WHERE name = ? AND ownerId IS ?',
+        'UPDATE games SET status = ?, lastSync = ?, thumbnail = ?, analysis = ?, updatedAt = ? WHERE id = ?',
       )
-      .run(game.status, game.lastSync, thumbnail, analysis, now, game.name, ownerId);
+      .run(game.status, game.lastSync, thumbnail, analysis, now, existing.id);
     return { ...game, thumbnail, ownerId: ownerId ?? undefined, id: existing.id, createdAt: existing.createdAt, updatedAt: now };
   }
 
@@ -284,6 +285,18 @@ function deleteUser(id: string): boolean {
     db.prepare('DELETE FROM user_keys WHERE userId = ?').run(id);
     db.prepare('DELETE FROM games WHERE ownerId = ?').run(id);
     db.exec('COMMIT');
+    
+    // Remove the user's save files from disk after DB commit
+    try {
+      const userSaveDir = path.join(savesDir(), id);
+      if (fs.existsSync(userSaveDir)) {
+        fs.rmSync(userSaveDir, { recursive: true, force: true });
+        logger.info({ userId: id }, 'Removed user save directory');
+      }
+    } catch (err) {
+      logger.warn({ err, userId: id }, 'Failed to remove user save directory');
+    }
+    
     return (res.changes as number) > 0;
   } catch (err) {
     db.exec('ROLLBACK');
@@ -474,18 +487,24 @@ function migrateSavesLayout(): void {
 }
 
 function ensureMultiUser(): void {
+  // Create an admin if none exists (covers fresh DBs and DBs that lost
+  // their admin rows).
   let admins = listUsers().filter((u) => u.role === 'admin');
-  if (listUsers().length === 0) {
+  if (admins.length === 0) {
     const admin = createUser('admin', 'admin');
     admins = [admin];
-    const settings = readSettingsRow();
-    const legacy = settings.apiKeys || [];
-    for (const hash of legacy) insertKeyHash(hash, admin.id, 'Migrated key');
-    if (legacy.length) {
-      settings.apiKeys = [];
-      saveSettings(settings);
-    }
     logger.info({ user: admin.name }, 'Created default admin user');
+  }
+
+  // Idempotent legacy-key adoption: run whenever there are unadopted hashed
+  // keys in settings.apiKeys, regardless of whether users pre-existed.
+  const settings = readSettingsRow();
+  const legacy = settings.apiKeys || [];
+  if (legacy.length > 0 && admins[0]) {
+    for (const hash of legacy) insertKeyHash(hash, admins[0].id, 'Migrated key');
+    settings.apiKeys = [];
+    saveSettings(settings);
+    logger.info('Migrated plaintext API keys to hashes');
   }
 
   const owner = admins[0] ?? listUsers()[0];
@@ -512,12 +531,20 @@ export function runBootMigrations(): void {
 
   if (listKeyHashes().length === 0) {
     const admin = listUsers()[0];
-    const defaultKey = 'dune-dev-key-' + Date.now();
+    const defaultKey = randomBytes(24).toString('hex');
     addUserKey(admin.id, defaultKey, 'Default development key');
-    logger.warn('Generated default API key — replace it via users.addKey and delete this one');
-    // Full key shown once on purpose: a fresh install has no other way to
-    // obtain a key (adding one requires auth). Rotate it immediately.
-    logger.info({ apiKey: defaultKey }, 'Default API key (shown once)');
+    // Write the full key to a one-time file (mode 0600) instead of logging
+    // it: logs may persist, the file is read once and then deleted by the
+    // operator. The key itself is high-entropy (192 bits).
+    try {
+      const keyFile = path.join(dataDir(), '.bootstrap-key');
+      if (!fs.existsSync(keyFile)) {
+        fs.writeFileSync(keyFile, defaultKey, { mode: 0o600 });
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Could not write bootstrap key file');
+    }
+    logger.warn('Generated default API key — read it from data/.bootstrap-key, then delete that file and rotate the key');
   }
 }
 

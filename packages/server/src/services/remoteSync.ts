@@ -33,11 +33,26 @@ export async function triggerRemoteSync(syncedGames: string[], ownerId?: string)
       await execFileAsync('zip', ['-r', zipPath, '.', '-x', '.versions/*'], { cwd: gameDir });
 
       for (const server of remoteServers) {
+        // Basic SSRF check for remote server URLs
+        let serverUrl: string;
+        try {
+          const u = new URL(server.url);
+          const hostname = u.hostname.toLowerCase();
+          if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal' || hostname === '100.100.100.200' || hostname === '169.254.169.253' || hostname === 'instance-data' || /^169\.254\.\d{1,3}\.\d{1,3}$/.test(hostname) || hostname.startsWith('fe80:') || hostname.startsWith('fd00:') || hostname.startsWith('[fe80:') || hostname.startsWith('[fd00:')) {
+            logger.warn({ server: server.url }, 'Blocked remote server with unsafe address');
+            continue;
+          }
+          serverUrl = u.toString();
+        } catch {
+          logger.warn({ server: server.url }, 'Invalid remote server URL');
+          continue;
+        }
+
         try {
           const stream = fs.createReadStream(zipPath);
           // Destroy the stream on failure so a rejected post never leaves
           // an open fd behind (vitest tmp cleanup noise + fd leak).
-          await axios.post(`${server.url}/api/upload-file`, stream, {
+          await axios.post(new URL('/api/upload-file', serverUrl).href, stream, {
             headers: {
               'Content-Type': 'application/octet-stream',
               'x-game': gameName,

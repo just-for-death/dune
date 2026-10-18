@@ -50,22 +50,8 @@ function openSchema(file: string): DatabaseSync {
   try {
     handle.exec(`
       PRAGMA journal_mode = DELETE;
-      CREATE TABLE IF NOT EXISTS games (
-        id REAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        status TEXT NOT NULL,
-        lastSync TEXT NOT NULL,
-        thumbnail TEXT NOT NULL DEFAULT '',
-        analysis TEXT,
-        ownerId TEXT,
-        createdAt TEXT NOT NULL,
-        updatedAt TEXT NOT NULL,
-        UNIQUE(ownerId, name)
-      );
-      CREATE TABLE IF NOT EXISTS kv (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
+      PRAGMA foreign_keys = ON;
+      PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         name TEXT UNIQUE NOT NULL,
@@ -75,9 +61,25 @@ function openSchema(file: string): DatabaseSync {
       );
       CREATE TABLE IF NOT EXISTS user_keys (
         hash TEXT PRIMARY KEY,
-        userId TEXT NOT NULL,
+        userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         description TEXT NOT NULL DEFAULT '',
         createdAt TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS games (
+        id REAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        lastSync TEXT NOT NULL,
+        thumbnail TEXT NOT NULL DEFAULT '',
+        analysis TEXT,
+        ownerId TEXT REFERENCES users(id) ON DELETE SET NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        UNIQUE(ownerId, name)
+      );
+      CREATE TABLE IF NOT EXISTS kv (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_user_keys_user ON user_keys(userId);
     `);
@@ -117,7 +119,7 @@ function ensureOwnerColumn(handle: DatabaseSync): void {
       lastSync TEXT NOT NULL,
       thumbnail TEXT NOT NULL DEFAULT '',
       analysis TEXT,
-      ownerId TEXT,
+      ownerId TEXT REFERENCES users(id) ON DELETE SET NULL,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL,
       UNIQUE(ownerId, name)
@@ -127,7 +129,7 @@ function ensureOwnerColumn(handle: DatabaseSync): void {
     DROP TABLE games_legacy;
     COMMIT;
   `);
-  logger.info('Migrated games table: ownerId + per-owner unique name');
+  logger.info('Migrated games table: ownerId + per-owner unique name + FK');
 }
 
 /** One-way import from the pre-SQLite dune.json. Never deletes the original. */

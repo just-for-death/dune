@@ -4,13 +4,23 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { authMiddleware, optionalAuthMiddleware, requireAdmin, AuthenticatedRequest } from './middleware/auth.js';
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
-import { dataDir, validateGamePath, getGameRoot, listFilesInDir } from './utils/path.js';
+import { dataDir, validateGamePath, getGameRoot, listFilesInDir, validateServerUrl } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
 import { manifestForGame, removeGameFile } from './services/manifest.js';
 import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
 import { checkReadiness } from './services/health.js';
 import { database } from './db/index.js';
+
+// Runtime Node version gate: node:sqlite requires Node ≥22.
+if (process.versions.node) {
+  const major = Number(process.versions.node.split('.')[0]);
+  if (major < 22) {
+    console.error(`Dune server requires Node.js ≥22 (found ${major}).`);
+    process.exit(1);
+  }
+}
+
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from './services/playtime.js';
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks } from './services/achievements.js';
 import { getHLTBTimes } from './services/hltb.js';
@@ -62,6 +72,11 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
       return res.status(400).json({ success: false, message: 'Game and path headers required' });
     }
 
+    // Resolve the target owner up front: an admin uploading to an existing
+    // member's game must write into that member's save root, not the admin's.
+    const existingGame = database.getGameByName(path.basename(game));
+    const ownerId = existingGame?.ownerId ?? (req as AuthenticatedRequest).user?.id;
+
     // Ownership gate: rejects writes to another user's game (unknown games are
     // claimable and get assigned to the uploader once the upload succeeds).
     if (!ensureGameWrite(req, res, path.basename(game))) return;
@@ -74,13 +89,13 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: Auth
       return res.status(413).json({ success: false, message: 'File exceeds upload size limit' });
     }
 
-    const result = await handleUploadFile(game, filePath, req, syncId, (req as AuthenticatedRequest).user?.id);
+    const result = await handleUploadFile(game, filePath, req, syncId, ownerId);
     if (!result.success && result.status) {
       return res.status(result.status).json(result);
     }
     if (result.success && req.user) {
       // Assign a new/unowned game to the uploader only after a good write.
-      database.claimGame(path.basename(game), req.user.id);
+      database.claimGame(path.basename(game), ownerId ?? req.user.id);
     }
     res.json(result);
   } catch (e) {
@@ -106,9 +121,10 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
 
     if (!ensureGameRead(req as AuthenticatedRequest, res, path.basename(game.toString()))) return;
 
+    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
     let fullPath: string;
     try {
-      fullPath = validateGamePath(game.toString(), filePath.toString(), (req as AuthenticatedRequest).user?.id);
+      fullPath = validateGamePath(game.toString(), filePath.toString(), ownerId);
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid path' });
     }
@@ -132,9 +148,10 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid versionId' });
     }
     if (!ensureGameRead(req as AuthenticatedRequest, res, path.basename(game.toString()))) return;
+    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
     let fullPath: string;
     try {
-      fullPath = validateGamePath(game.toString(), path.join('.versions', versionId.toString(), filePath.toString()), (req as AuthenticatedRequest).user?.id);
+      fullPath = validateGamePath(game.toString(), path.join('.versions', versionId.toString(), filePath.toString()), ownerId);
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid path' });
     }
@@ -195,7 +212,8 @@ app.get('/api/list-files', authMiddleware, (req: AuthenticatedRequest, res) => {
     const { game } = req.query;
     if (!game) return res.status(400).json({ success: false, message: 'Game required' });
     if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
-    const gameDir = getGameRoot(game.toString(), (req as AuthenticatedRequest).user?.id);
+    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
+    const gameDir = getGameRoot(game.toString(), ownerId);
     if (!fs.existsSync(gameDir)) return res.json({ success: true, files: [] });
     res.json({ success: true, files: listFilesInDir(gameDir) });
   } catch (e) {
@@ -210,7 +228,8 @@ app.get('/api/manifest', authMiddleware, (req: AuthenticatedRequest, res) => {
     const { game } = req.query;
     if (!game) return res.status(400).json({ success: false, message: 'Game required' });
     if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
-    res.json({ success: true, files: manifestForGame(game.toString(), (req as AuthenticatedRequest).user?.id) });
+    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
+    res.json({ success: true, files: manifestForGame(game.toString(), ownerId) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -222,12 +241,13 @@ app.delete('/api/file', authMiddleware, (req: AuthenticatedRequest, res) => {
     const { game, path: filePath } = req.query;
     if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
     if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
+    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
     try {
-      validateGamePath(game.toString(), filePath.toString(), (req as AuthenticatedRequest).user?.id);
+      validateGamePath(game.toString(), filePath.toString(), ownerId);
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid path' });
     }
-    const removed = removeGameFile(game.toString(), filePath.toString(), (req as AuthenticatedRequest).user?.id);
+    const removed = removeGameFile(game.toString(), filePath.toString(), ownerId);
     if (!removed) return res.status(404).json({ success: false, message: 'File not found' });
     res.json({ success: true });
   } catch (e) {
@@ -316,7 +336,9 @@ app.post('/api/analyze-files-ai', authMiddleware, async (req: AuthenticatedReque
     const settings = database.getSettings();
     const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
     const model = settings.ollamaModel || 'phi4-mini:latest';
-    const result = await analyzeFilesAI(endpoint, model, gameName, files);
+    const check = validateServerUrl(endpoint);
+    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+    const result = await analyzeFilesAI(check.url, model, gameName, files);
     if (result.success && result.analysis) {
       const games = req.user ? database.getGamesForUser(req.user) : [];
       const idx = games.findIndex(g => g.name.toLowerCase() === gameName.toLowerCase());
@@ -404,12 +426,9 @@ app.post('/api/remote-servers', authMiddleware, requireAdmin, (req, res) => {
   try {
     const { url } = req.body ?? {};
     if (!url) return res.status(400).json({ success: false, message: 'url required' });
-    try {
-      new URL(url);
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid url' });
-    }
-    res.json({ success: true, server: database.addRemoteServer(url) });
+    const check = validateServerUrl(url);
+    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+    res.json({ success: true, server: database.addRemoteServer(check.url) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -550,12 +569,14 @@ app.get('/api/ollama-models', authMiddleware, async (req, res) => {
   try {
     const { endpoint } = req.query;
     if (!endpoint) return res.status(400).json({ success: false, message: 'endpoint required' });
+    const check = validateServerUrl(endpoint.toString());
+    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
     try {
-      new URL(endpoint.toString());
+      new URL(check.url);
     } catch {
       return res.status(400).json({ success: false, message: 'Invalid endpoint' });
     }
-    res.json(await fetchModels(endpoint.toString()));
+    res.json(await fetchModels(check.url));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -564,8 +585,11 @@ app.get('/api/ollama-models', authMiddleware, async (req, res) => {
 app.get('/api/ollama-health', authMiddleware, async (_req, res) => {
   try {
     const settings = database.getSettings();
+    const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
+    const check = validateServerUrl(endpoint);
+    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
     res.json(await checkModelStatus(
-      settings.ollamaEndpoint || 'http://ollama:11434',
+      check.url,
       settings.ollamaModel || 'phi4-mini:latest',
     ));
   } catch (e) {
@@ -605,7 +629,11 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
     const merged = { ...current };
     if (typeof input.maxVersions === 'number' && input.maxVersions > 0) merged.maxVersions = input.maxVersions;
     if (typeof input.steamGridApiKey === 'string') merged.steamGridApiKey = input.steamGridApiKey;
-    if (typeof input.ollamaEndpoint === 'string') merged.ollamaEndpoint = input.ollamaEndpoint;
+    if (typeof input.ollamaEndpoint === 'string') {
+      const check = validateServerUrl(input.ollamaEndpoint);
+      if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+      merged.ollamaEndpoint = check.url;
+    }
     if (typeof input.ollamaModel === 'string') merged.ollamaModel = input.ollamaModel;
     database.saveSettings(merged);
     res.json({ success: true });

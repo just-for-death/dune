@@ -48,7 +48,10 @@ export function findSaveFolders(rootPath: string, depth = 3): string[] {
     // Skip inaccessible folders
   }
   
-  return [...new Set(results)];
+  // Drop any candidate that is an ancestor of another candidate: syncing both
+  // would duplicate work and churn versions.
+  const deduped = results.filter(r => !results.some(other => other !== r && other.startsWith(r + path.sep)));
+  return [...new Set(deduped)];
 }
 
 export interface SyncResult {
@@ -110,7 +113,7 @@ export function syncLocalFolder(sourcePath: string, gameName: string, savesDir: 
   if (fs.existsSync(versionsDir)) {
     const versions = fs.readdirSync(versionsDir)
       .filter(v => {
-        // A stray file inside .versions must not abort pruning.
+        if (isNaN(Number(v))) return false;
         try {
           return fs.statSync(path.join(versionsDir, v)).isDirectory();
         } catch {
