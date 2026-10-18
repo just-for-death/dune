@@ -2,6 +2,7 @@ name: release
 
 # Release flow: git tag v1.0.0 && git push origin v1.0.0
 # Produces: GHCR server image + Linux client artifacts on the GitHub Release.
+# Tags with a hyphen (e.g. v0.2.0-beta.1) publish as GitHub prereleases.
 # Windows/mac installers are out of scope for v1 (see README).
 
 on:
@@ -16,15 +17,15 @@ jobs:
   server-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/server/Dockerfile
@@ -36,9 +37,9 @@ jobs:
   client-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -46,10 +47,10 @@ jobs:
       - run: npm ci
 
       - name: Cache Electron binary
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/electron
-          key: electron-25-${{ runner.os }}
+          key: electron-44-${{ runner.os }}
 
       - name: System deps for deb packaging
         run: sudo apt-get update && sudo apt-get install -y fakeroot
@@ -61,7 +62,9 @@ jobs:
         working-directory: packages/client
         run: npx electron-builder --linux AppImage deb --publish never
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: packages/client/release/*
           generate_release_notes: true
+          # A hyphen in the tag (v0.2.0-beta.1) means a prerelease; plain v1.0.0 is stable.
+          prerelease: ${{ contains(github.ref_name, '-') }}
