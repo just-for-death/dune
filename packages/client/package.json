@@ -31,11 +31,11 @@
     "@types/node": "^20.19.37",
     "@types/react": "^18.2.15",
     "@types/react-dom": "^18.2.7",
-    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react": "^6.1.2",
     "electron": "44.8.0",
     "electron-builder": "^26.15.3",
     "typescript": "^5.0.2",
-    "vite": "^7.3.7",
+    "vite": "^8.3.4",
     "vite-plugin-electron": "^1.1.2",
     "vite-plugin-electron-renderer": "^1.0.0"
   },
@@ -68,6 +68,6 @@
     ],
     "executableName": "Dune"
   },
-  "description": "Dune \u2014 game save sync desktop client (Electron)",
+  "description": "Dune — game save sync desktop client (Electron)",
   "homepage": "https://github.com/just-for-death/dune#readme"
 }
