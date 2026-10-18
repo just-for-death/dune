@@ -71,6 +71,10 @@ opencode.json
 CLAUDE.local.md
 AGENTS.local.md
 
+# Downloaded agent skills (local-only; skills-lock.json pins them)
+.agents/
+skills-lock.json
+
 # Local task / plan / audit working notes (never commit; kept on disk only)
 docs/AI_HANDOFF.md
 docs/PROD_BASELINE.md
