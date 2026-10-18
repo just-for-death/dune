@@ -43,7 +43,7 @@ const store = new Store({
 
 // Auth header for Dune Server calls. The server requires x-api-key on every
 // route except /health; without it the whole client↔server integration 401s.
-function serverHeaders(extra: Record<string, string> = {}): Record<string, string> {
+export function serverHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const key = loadServerKey();
   return key ? { ...extra, 'x-api-key': key } : { ...extra };
 }
@@ -55,7 +55,7 @@ const LEGACY_KEY = 'serverApiKey';
 const ENC_KEY = 'serverApiKeyEnc';
 let sessionServerKey = '';
 
-function loadServerKey(): string {
+export function loadServerKey(): string {
   if (sessionServerKey) return sessionServerKey;
   const enc = store.get(ENC_KEY, '') as string;
   if (enc) {
@@ -87,7 +87,7 @@ function loadServerKey(): string {
   return '';
 }
 
-function saveServerKey(key: string): void {
+export function saveServerKey(key: string): void {
   const clean = (key || '').trim();
   if (!clean) {
     sessionServerKey = '';
@@ -180,7 +180,7 @@ export function validateServerUrl(rawUrl: string): { valid: boolean; url: string
   return { valid: true, url: normalized };
 }
 
-function normalizeUrl(url: string): string {
+export function normalizeUrl(url: string): string {
   const check = validateServerUrl(url);
   if (!check.valid) {
     throw new Error(check.error || 'Invalid server URL');
@@ -188,7 +188,7 @@ function normalizeUrl(url: string): string {
   return check.url;
 }
 
-function expandPath(p: string) {
+export function expandPath(p: string): string {
   if (!p) return '';
   if (process.platform === 'win32') {
     return p.replace(/%USERPROFILE%/g, process.env.USERPROFILE || '');
@@ -238,22 +238,22 @@ interface GameSyncState {
 }
 type SyncState = Record<string, GameSyncState>;
 
-function toPosix(rel: string): string {
+export function toPosix(rel: string): string {
   return rel.split(path.sep).join('/');
 }
 
-function getSyncState(): SyncState {
+export function getSyncState(): SyncState {
   return (store.get('syncState') as SyncState) || {};
 }
 
-function saveGameState(game: string, patch: Partial<GameSyncState>): void {
+export function saveGameState(game: string, patch: Partial<GameSyncState>): void {
   const state = getSyncState();
   state[game] = { ...(state[game] || {}), ...patch };
   store.set('syncState', state);
 }
 
 /** size+mtime fingerprint for every readable local file, keyed by POSIX rel. */
-function buildLocalManifest(files: { local: string; rel: string }[]): FileManifest {
+export function buildLocalManifest(files: { local: string; rel: string }[]): FileManifest {
   const manifest: FileManifest = {};
   for (const f of files) {
     try {
@@ -278,7 +278,7 @@ interface PlannedUpload {
  * empty when the local tree is empty, so an unmounted/empty save dir can never
  * wipe the server copy.
  */
-function planUpload(
+export function planUpload(
   game: string,
   files: { local: string; rel: string }[],
 ): { plan: PlannedUpload[]; localManifest: FileManifest; deleted: string[] } {
@@ -293,7 +293,7 @@ function planUpload(
 }
 
 /** Persist what actually landed: unchanged + succeeded, minus failures. */
-function commitUploaded(game: string, localManifest: FileManifest, failedRels: string[]): void {
+export function commitUploaded(game: string, localManifest: FileManifest, failedRels: string[]): void {
   const uploaded = { ...localManifest };
   for (const rel of failedRels) delete uploaded[rel];
   saveGameState(game, { uploaded });
@@ -670,11 +670,11 @@ const GAME_STATUSES = ['Pending Upload', 'In Sync', 'Error'];
 const AUTO_SYNC_FREQS = ['never', '1h', '6h', '24h'];
 const ART_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'];
 
-function asString(v: unknown, max = 2000): string {
+export function asString(v: unknown, max = 2000): string {
   return typeof v === 'string' ? v.slice(0, max) : '';
 }
 
-function sanitizeGame(input: unknown): { name: string; winPath: string; linPath: string; lastSync: string; status: string; thumbnail: string } {
+export function sanitizeGame(input: unknown): { name: string; winPath: string; linPath: string; lastSync: string; status: string; thumbnail: string } {
   const g = (input ?? {}) as Record<string, unknown>;
   const name = asString(g.name, 200).trim();
   if (!name) throw new Error('Game title is required');
@@ -689,7 +689,7 @@ function sanitizeGame(input: unknown): { name: string; winPath: string; linPath:
   };
 }
 
-function sanitizeSettings(input: unknown, fallback: any): any {
+export function sanitizeSettings(input: unknown, fallback: any): any {
   const s = (input ?? {}) as Record<string, unknown>;
   const scanRoots = Array.isArray(s.scanRoots)
     ? s.scanRoots.filter((r): r is string => typeof r === 'string').slice(0, 50).map(r => r.slice(0, 2000))
@@ -853,11 +853,11 @@ const thumbDir = path.join(app.getPath('userData'), 'thumbnails');
 // ── Error log (crash reporting) ────────────────────────────────────────────
 // Renderer + main-process failures land here; inspected via "Open Error Log"
 // or by opening the file directly. Rotated at ~1 MB to bound disk use.
-function errorLogPath(): string {
+export function errorLogPath(): string {
   return path.join(app.getPath('userData'), 'dune-errors.log');
 }
 
-function appendErrorLog(source: string, payload: Record<string, unknown>): void {
+export function appendErrorLog(source: string, payload: Record<string, unknown>): void {
   try {
     const file = errorLogPath();
     const line = JSON.stringify({ ts: new Date().toISOString(), source, ...payload }) + '\n';
