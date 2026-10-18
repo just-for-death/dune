@@ -16,6 +16,9 @@ All notable changes, newest first. Format: Keep a Changelog (Added/Fixed/Changed
 - Express 5's `res.download` defaults to `dotfiles: 'ignore'`, which 404'd version snapshots under `.versions/` (and any listed dotfile save); both download endpoints now pass `dotfiles: 'allow'` after the traversal check.
 - Stayed on TypeScript 5: TS 7 (native port) is not yet supported by `@typescript-eslint` v8.
 
+### Known issues
+- `sprintf-js` (moderate, **dev-only**) remains via `electron-builder` → `app-builder-lib` → `@electron/get` → `global-agent` → `roarr`. The package is unmaintained and no patched release exists; it is a build-time dependency and never ships in the app. `npm audit --omit=dev` is clean.
+
 ## [0.2.0-beta.1] — 2026-10-18
 ### Added
 - Multi-user support: `users` + per-user API keys with `admin`/`member` roles. Games, playtime, achievements and saves are owner-scoped (`data/saves/<ownerId>/<game>`); admins see everything. Boot migration creates a default admin and adopts legacy `apiKeys`.
