@@ -12,6 +12,7 @@ import type {
   ElectronAPI,
 } from '@dune/shared';
 import { nextId } from '@dune/shared';
+import { Icon } from './Icon';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
@@ -433,23 +434,40 @@ export default function App() {
       <div className="sidebar">
         <div className="sidebar-title">Dune</div>
         <button className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
-          Dashboard
+          <Icon name="dashboard" />
+          <span>Dashboard</span>
         </button>
         <button className={`nav-item ${activeTab === 'mapping' ? 'active' : ''}`} onClick={() => setActiveTab('mapping')}>
-          Game Paths
+          <Icon name="paths" />
+          <span>Game Paths</span>
         </button>
         <button className={`nav-item ${activeTab === 'sync' ? 'active' : ''}`} onClick={() => setActiveTab('sync')}>
-          Cloud Sync
+          <Icon name="sync" />
+          <span>Cloud Sync</span>
         </button>
         <button className={`nav-item ${activeTab === 'playtime' ? 'active' : ''}`} onClick={() => { setActiveTab('playtime'); loadPlaytime(); }}>
-          Playtime
+          <Icon name="playtime" />
+          <span>Playtime</span>
         </button>
         <button className={`nav-item ${activeTab === 'achievements' ? 'active' : ''}`} onClick={() => { setActiveTab('achievements'); loadAchievements(); }}>
-          Achievements
+          <Icon name="achievements" />
+          <span>Achievements</span>
         </button>
         <button className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
-          Settings
+          <Icon name="settings" />
+          <span>Settings</span>
         </button>
+
+        <div className="sidebar-foot">
+          <div className="sidebar-stat">
+            <Icon name="game" size={14} />
+            <span>{games.length} game{games.length === 1 ? '' : 's'}</span>
+          </div>
+          <div className={`sidebar-stat ${inSyncCount === games.length && games.length > 0 ? 'sidebar-stat-ok' : ''}`}>
+            <Icon name={games.length > 0 && inSyncCount === games.length ? 'check' : 'warning'} size={14} />
+            <span>{games.length === 0 ? 'Nothing tracked' : `${inSyncCount}/${games.length} in sync`}</span>
+          </div>
+        </div>
       </div>
 
       <div className="main-content">
@@ -461,10 +479,12 @@ export default function App() {
                 <p className="text-muted">Overview of your local and synchronized game saves.</p>
               </div>
               <div className="search-wrapper">
+                <Icon name="search" className="search-icon" />
                 <input
                   type="text"
                   className="search-input"
                   placeholder="Search games..."
+                  aria-label="Search games"
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)}
                 />
@@ -473,16 +493,25 @@ export default function App() {
 
             <div className="stats-row">
               <div className="card stat-card stat-accent">
-                <div className="stat-value">{games.length}</div>
-                <div className="stat-label">Tracked Games</div>
+                <span className="stat-icon"><Icon name="game" /></span>
+                <div>
+                  <div className="stat-value">{games.length}</div>
+                  <div className="stat-label">Tracked Games</div>
+                </div>
               </div>
               <div className="card stat-card stat-success">
-                <div className="stat-value">{inSyncCount}</div>
-                <div className="stat-label">In Sync</div>
+                <span className="stat-icon"><Icon name="check" /></span>
+                <div>
+                  <div className="stat-value">{inSyncCount}</div>
+                  <div className="stat-label">In Sync</div>
+                </div>
               </div>
               <div className="card stat-card stat-danger">
-                <div className="stat-value">{games.length - inSyncCount}</div>
-                <div className="stat-label">Pending Sync</div>
+                <span className="stat-icon"><Icon name="warning" /></span>
+                <div>
+                  <div className="stat-value">{games.length - inSyncCount}</div>
+                  <div className="stat-label">Pending Sync</div>
+                </div>
               </div>
             </div>
 
@@ -528,11 +557,16 @@ export default function App() {
             {filteredGames.length === 0 && (
               <div className="empty-state">
                 {searchTerm ? (
-                  <p>No games match &quot;{searchTerm}&quot;. <button className="link-btn" onClick={() => setSearchTerm('')}>Clear search</button></p>
+                  <>
+                    <Icon name="search" size={28} />
+                    <p>No games match &quot;{searchTerm}&quot;.</p>
+                    <button className="btn btn-secondary" onClick={() => setSearchTerm('')}>Clear search</button>
+                  </>
                 ) : (
                   <>
+                    <Icon name="game" size={32} />
                     <p>No games tracked yet.</p>
-                    <button className="btn btn-primary" onClick={() => setActiveTab('mapping')}>Add games in Game Paths</button>
+                    <button className="btn btn-primary" onClick={() => setActiveTab('mapping')}><Icon name="add" />Add games in Game Paths</button>
                   </>
                 )}
               </div>
@@ -549,12 +583,13 @@ export default function App() {
                 disabled={isScanning}
                 onClick={handleAutoScan}
               >
+                <Icon name="scan" />
                 {isScanning ? 'Scanning...' : 'Auto-Detect Games'}
               </button>
             </div>
 
             <div className="card">
-              <h3 className="card-title">Add New Custom Mapping</h3>
+              <h3 className="card-title"><Icon name="add" />Add New Custom Mapping</h3>
               <div className="form-group">
                 <label htmlFor="new-game-title">Game title</label>
                 <input id="new-game-title" type="text" value={newGameName} onChange={e => setNewGameName(e.target.value)} placeholder="e.g. Hades" />
@@ -567,11 +602,11 @@ export default function App() {
                 <label htmlFor="new-game-lin">Linux origin path</label>
                 <input id="new-game-lin" type="text" value={newGameLin} onChange={e => setNewGameLin(e.target.value)} placeholder="~/.local/share/Hades/Saves" />
               </div>
-              <button className="btn btn-primary" onClick={handleAddGame}>Save Mapping</button>
+              <button className="btn btn-primary" onClick={handleAddGame}><Icon name="check" />Save Mapping</button>
             </div>
 
             <div className="card">
-              <h3 className="card-title">Tracked Games ({games.length})</h3>
+              <h3 className="card-title"><Icon name="game" />Tracked Games ({games.length})</h3>
               {games.length === 0 ? (
                 <p className="text-muted">No games yet. Add one above or run auto-detect.</p>
               ) : (
@@ -598,7 +633,7 @@ export default function App() {
 
         {activeTab === 'sync' && (
           <div>
-            <h2>Cloud Sync &amp; Local Backup</h2>
+            <h2 className="section-title"><Icon name="sync" size={20} />Cloud Sync &amp; Local Backup</h2>
 
             {syncProgress && (
               <div className={`card sync-progress-card ${syncProgress.done ? (syncProgress.success ? 'sync-done' : 'sync-error') : 'sync-active'}`}>
@@ -626,13 +661,13 @@ export default function App() {
             )}
 
             <div className="card">
-              <h3 className="card-title">Manual Local Export</h3>
+              <h3 className="card-title"><Icon name="export" />Manual Local Export</h3>
               <p className="text-muted card-desc">Export all mapped saves into a single .zip file.</p>
-              <button className="btn btn-primary" onClick={handleExport}>Compile &amp; Export All Saves (.zip)</button>
+              <button className="btn btn-primary" onClick={handleExport}><Icon name="export" />Compile &amp; Export All Saves (.zip)</button>
             </div>
 
             <div className="card">
-              <h3 className="card-title">Dune Server Synchronization &amp; Restore</h3>
+              <h3 className="card-title"><Icon name="push" />Dune Server Synchronization &amp; Restore</h3>
               <p className="text-muted card-desc">Backup games individually to your central <strong>Dune Server</strong>.</p>
 
               <div className="sync-btn-row">
@@ -641,6 +676,7 @@ export default function App() {
                   onClick={handleCloudSync}
                   disabled={isSyncing}
                 >
+                  {isSyncing ? <span className="spinner-inline" /> : <Icon name="push" />}
                   {isSyncing ? 'Working...' : 'Push Saves to Server'}
                 </button>
                 <button
@@ -648,6 +684,7 @@ export default function App() {
                   onClick={handleRestoreCloud}
                   disabled={isSyncing}
                 >
+                  <Icon name="restore" />
                   {isSyncing ? 'Working...' : pendingRestore ? 'Click again to overwrite local saves' : 'Restore from Server'}
                 </button>
               </div>
@@ -666,6 +703,7 @@ export default function App() {
             <div className="section-header">
               <h2>Playtime Tracking</h2>
               <button className="btn btn-secondary" onClick={loadPlaytime} disabled={isLoadingPlaytime}>
+                <Icon name="refresh" />
                 {isLoadingPlaytime ? 'Loading...' : 'Refresh'}
               </button>
             </div>
@@ -681,7 +719,11 @@ export default function App() {
             </div>
             <div className="card">
               {playtimeSummary.length === 0 ? (
-                <p className="text-muted">No playtime data. Record sessions via the server API or playtime.sh scripts.</p>
+                <div className="empty-state">
+                  <Icon name="playtime" size={28} />
+                  <p>No playtime data yet.</p>
+                  <p className="text-muted text-sm">Record sessions via the server API or playtime.sh scripts.</p>
+                </div>
               ) : (
                 <div className="table-wrapper">
                   <table className="data-table">
@@ -711,12 +753,17 @@ export default function App() {
             <div className="section-header">
               <h2>Achievements</h2>
               <button className="btn btn-secondary" onClick={loadAchievements} disabled={isLoadingAch}>
+                <Icon name="refresh" />
                 {isLoadingAch ? 'Loading...' : 'Refresh'}
               </button>
             </div>
             <div className="card">
               {achievementSummary.length === 0 ? (
-                <p className="text-muted">No achievement data. Connect Sentinel via webhook or import from Steam.</p>
+                <div className="empty-state">
+                  <Icon name="achievements" size={28} />
+                  <p>No achievement data yet.</p>
+                  <p className="text-muted text-sm">Connect Sentinel via webhook or import from Steam.</p>
+                </div>
               ) : (
                 <div className="table-wrapper">
                   <table className="data-table">
@@ -762,10 +809,10 @@ export default function App() {
 
         {activeTab === 'settings' && (
           <div>
-            <h2>Application Settings</h2>
+            <h2 className="section-title"><Icon name="settings" size={20} />Application Settings</h2>
 
             <div className="card">
-              <h3 className="card-title">General Settings</h3>
+              <h3 className="card-title"><Icon name="settings" />General Settings</h3>
               <label className="checkbox-label">
                 <input
                   type="checkbox"
@@ -790,8 +837,8 @@ export default function App() {
 
             <div className="card">
               <h3 className="card-title card-title-row">
-                Custom Scan Locations
-                <button className="btn btn-secondary btn-sm" onClick={handleAddRoot}>+ Add Root</button>
+                <span className="card-title-label"><Icon name="paths" />Custom Scan Locations</span>
+                <button className="btn btn-secondary btn-sm" onClick={handleAddRoot}><Icon name="add" size={14} />Add Root</button>
               </h3>
               {(settings.scanRoots ?? []).length > 0 ? (
                 <ul className="scan-list">
@@ -805,7 +852,7 @@ export default function App() {
             </div>
 
             <div className="card">
-              <h3 className="card-title">Dune Server Integration</h3>
+              <h3 className="card-title"><Icon name="sync" />Dune Server Integration</h3>
 
               <div className="form-group">
                 <label htmlFor="server-url">Dune server address (with port)</label>
@@ -837,7 +884,7 @@ export default function App() {
               </div>
 
               <div className="btn-row">
-                <button className="btn btn-primary" onClick={handleTestCloud}>Test Server Connection</button>
+                <button className="btn btn-primary" onClick={handleTestCloud}><Icon name="plug" />Test Server Connection</button>
               </div>
 
               <h4 className="section-subtitle section-divider">Auto-Sync Status</h4>
@@ -876,9 +923,10 @@ export default function App() {
       <div className="toast-container">
         {toasts.map(t => (
           <div key={t.id} className={`toast toast-${t.type}`}>
-            {t.type === 'success' && '✓ '}
-            {t.type === 'error' && '! '}
-            {t.message}
+            {t.type === 'success' && <Icon name="check" size={16} />}
+            {t.type === 'error' && <Icon name="alert" size={16} />}
+            {t.type === 'info' && <Icon name="info" size={16} />}
+            <span>{t.message}</span>
           </div>
         ))}
       </div>

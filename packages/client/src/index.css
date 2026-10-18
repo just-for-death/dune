@@ -542,6 +542,104 @@ label {
   to { transform: translateY(0); opacity: 1; }
 }
 
+/* ── Sidebar footer stats ── */
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sidebar-stat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 4px 12px;
+}
+.sidebar-stat .icon { flex-shrink: 0; }
+.sidebar-stat-ok { color: var(--green); }
+.sidebar-stat-ok .icon { color: var(--green); }
+
+/* ── Search input with leading icon ── */
+.search-wrapper { position: relative; min-width: 220px; }
+.search-icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: var(--muted); pointer-events: none;
+}
+.search-input { padding-left: 36px; margin-bottom: 0; }
+
+/* ── Card title with icon ── */
+.card-title { display: flex; align-items: center; gap: 8px; }
+.card-title .icon { color: var(--muted); flex-shrink: 0; }
+.card-title-label { display: flex; align-items: center; gap: 8px; }
+.section-title { display: flex; align-items: center; gap: 10px; }
+
+/* ── Stat cards (the previously unstyled accents) ── */
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.stat-icon {
+  display: grid; place-items: center;
+  width: 36px; height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--panel-2);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.stat-accent .stat-icon { background: rgba(232, 180, 74, .13); color: var(--sand); }
+.stat-success .stat-icon { background: rgba(63, 185, 80, .13); color: var(--green); }
+.stat-danger .stat-icon { background: rgba(240, 85, 72, .13); color: var(--red); }
+
+/* ── Sync progress (previously unstyled) ── */
+.sync-progress-card { border-left: 3px solid var(--sand); }
+.sync-progress-card.sync-done { border-left-color: var(--green); }
+.sync-progress-card.sync-error { border-left-color: var(--red); }
+.sync-progress-card.sync-active { border-left-color: var(--sand); }
+.sync-progress-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px; gap: 12px;
+}
+.sync-progress-title { font-weight: 600; font-size: 14px; }
+.sync-progress-percent { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+.progress-track {
+  width: 100%; height: 6px; background: var(--bg); border-radius: 99px;
+  overflow: hidden; margin: 12px 0;
+}
+.progress-fill {
+  height: 100%; border-radius: 99px; background: var(--sand);
+  transition: width 0.4s ease;
+  position: relative; overflow: hidden;
+}
+.progress-fill::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s linear infinite;
+}
+.progress-fill.progress-done { background: var(--green); }
+.progress-fill.progress-done::after { display: none; }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.sync-progress-message {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--muted); font-size: 13px;
+}
+.progress-sm { height: 4px; margin: 6px 0; }
+
+/* ── Empty state icon spacing ── */
+.empty-state .icon { color: var(--muted); }
+
+/* ── Spinner for inline button use ── */
+.spinner-inline {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid var(--line); border-top-color: var(--sand);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 /* Responsive */
 @media (max-width: 900px) {
   .main-content { padding: 24px 16px; }
