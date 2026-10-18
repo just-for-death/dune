@@ -569,14 +569,10 @@ app.get('/api/ollama-health', authMiddleware, async (_req, res) => {
   }
 });
 
-// Unmatched /api/* requests are API errors, not frontend routes — answer with
-// JSON 404 instead of letting the SPA catch-all serve index.html with a 200.
-app.use('/api', (_req, res) => {
-  res.status(404).json({ success: false, message: 'Not found' });
-});
-
-if (fs.existsSync(FRONTEND_DIR)) {
-  // ── Settings (REST shim) ─────────────────────────────────────────────────────
+// ── Settings (REST shim) ─────────────────────────────────────────────────────
+// The Electron client and the dashboard both depend on these, so they are
+// registered with the other /api shims (above the /api 404 catch-all) and are
+// available whether or not a frontend bundle is present.
 app.get('/api/settings', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const s = database.getSettings();
@@ -639,7 +635,15 @@ app.delete('/api/saves', authMiddleware, requireAdmin, (req: AuthenticatedReques
   }
 });
 
-app.get('*', (_req, res) => {
+// Unmatched /api/* requests are API errors, not frontend routes — answer with
+// JSON 404 instead of letting the SPA catch-all serve index.html with a 200.
+// Registered *after* every /api route so it can never shadow a real handler.
+app.use('/api', (_req, res) => {
+  res.status(404).json({ success: false, message: 'Not found' });
+});
+
+if (fs.existsSync(FRONTEND_DIR)) {
+  app.get('*', (_req, res) => {
     res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
   });
 }

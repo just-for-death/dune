@@ -1,0 +1,134 @@
+import { describe, it, expect, afterAll } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import request from 'supertest';
+
+// Isolate ALL side effects BEFORE importing the app module. Each test file gets
+// its own module instance, so the in-memory rate limiter budget is fresh here —
+// this file deliberately covers the dashboard/admin REST contract that the
+// shared rest-shims file has no budget left for.
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-restdash-test-'));
+process.env.DATA_DIR = TMP;
+process.env.API_KEY_SECRET = 'restdash-secret-0123456789abcdef';
+
+const { app } = await import('./server.js');
+const { database } = await import('./db/index.js');
+
+const AUTH_KEY = 'restdash-admin-key-0123456789';
+database.addApiKey(AUTH_KEY);
+
+const api = (req: request.Test) => req.set('x-api-key', AUTH_KEY);
+
+const createMember = async (name: string) =>
+  (await api(request(app).post('/api/users')).send({ name, role: 'member' })).body.apiKey as string;
+
+const upload = (game: string, file = 's.sav', body = 'x') =>
+  api(
+    request(app)
+      .post('/api/upload-file')
+      .set('Content-Type', 'application/octet-stream')
+      .set('x-game', game)
+      .set('x-path', file)
+      .set('x-sync-id', String(Date.now())),
+  ).send(Buffer.from(body));
+
+afterAll(() => {
+  delete process.env.DATA_DIR;
+  delete process.env.API_KEY_SECRET;
+  fs.rmSync(TMP, { recursive: true, force: true });
+});
+
+describe('GET /api/settings', () => {
+  it('returns the full config to admins', async () => {
+    await api(request(app).post('/api/settings')).send({ steamGridApiKey: 'sgdb-admin-secret', maxVersions: 4 });
+    const res = await api(request(app).get('/api/settings'));
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.settings.steamGridApiKey).toBe('sgdb-admin-secret');
+    expect(res.body.settings.maxVersions).toBe(4);
+    // API keys are never echoed in plaintext, even to admins.
+    expect(res.body.settings.apiKeys.every((k: string) => k === '****')).toBe(true);
+  });
+
+  it('masks the SteamGridDB key for members', async () => {
+    await api(request(app).post('/api/settings')).send({ steamGridApiKey: 'sgdb-hidden-secret' });
+    const memberKey = await createMember('SettingsMember');
+
+    const seen = await request(app).get('/api/settings').set('x-api-key', memberKey);
+    expect(seen.status).toBe(200);
+    expect(seen.body.settings.steamGridApiKey).toBe('****');
+    expect(JSON.stringify(seen.body)).not.toContain('sgdb-hidden-secret');
+  });
+});
+
+describe('POST /api/settings', () => {
+  it('is admin-only', async () => {
+    const memberKey = await createMember('SettingsWriter');
+    const forbidden = await request(app)
+      .post('/api/settings')
+      .set('x-api-key', memberKey)
+      .send({ maxVersions: 9 });
+    expect(forbidden.status).toBe(403);
+  });
+
+  it('ignores invalid values, persists valid ones, and clears the key', async () => {
+    const res = await api(request(app).post('/api/settings')).send({
+      maxVersions: -5,
+      ollamaModel: 'llama3:8b',
+      steamGridApiKey: '',
+    });
+    expect(res.body.success).toBe(true);
+
+    const settings = (await api(request(app).get('/api/settings'))).body.settings;
+    expect(settings.ollamaModel).toBe('llama3:8b');
+    expect(settings.maxVersions).toBeGreaterThan(0); // negative ignored
+    expect(settings.steamGridApiKey).toBe('');
+  });
+});
+
+describe('DELETE /api/saves', () => {
+  it('removes by id and by name, and validates input', async () => {
+    await upload('DelById');
+    await upload('DelByName');
+    const games = (await api(request(app).get('/api/saves'))).body.games as Array<{ id: number; name: string }>;
+    const target = games.find(g => g.name === 'DelById')!;
+
+    expect((await api(request(app).delete('/api/saves'))).status).toBe(400);
+    expect((await api(request(app).delete('/api/saves?id=notanumber'))).status).toBe(400);
+    expect((await api(request(app).delete('/api/saves?id=999999'))).status).toBe(404);
+    expect((await api(request(app).delete('/api/saves?game=GhostGame'))).status).toBe(404);
+
+    expect((await api(request(app).delete(`/api/saves?id=${target.id}`))).body.success).toBe(true);
+    expect((await api(request(app).delete('/api/saves?game=DelByName'))).body.success).toBe(true);
+  });
+
+  it('is admin-only', async () => {
+    const memberKey = await createMember('SavesMember');
+    const res = await request(app).delete('/api/saves?game=Whatever').set('x-api-key', memberKey);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('admin user-key management', () => {
+  it("issues and revokes another user's keys", async () => {
+    const created = await api(request(app).post('/api/users')).send({ name: 'KeyTarget' });
+    const uid = created.body.user.id as string;
+
+    expect((await api(request(app).post('/api/users/nope/keys')).send({})).status).toBe(404);
+    const issued = await api(request(app).post(`/api/users/${uid}/keys`)).send({ description: 'ops' });
+    expect(issued.status).toBe(201);
+    expect(issued.body.apiKey).toMatch(/^dune_/);
+
+    const keyHash = database.listUserKeys(uid)[0].hash as string;
+    expect((await api(request(app).delete(`/api/users/${uid}/keys/nope`))).status).toBe(404);
+    expect(
+      (await api(request(app).delete(`/api/users/${uid}/keys/${keyHash.slice(0, 12)}`))).body.success,
+    ).toBe(true);
+  });
+
+  it('refuses to delete the last admin', async () => {
+    const admin = database.listUsers().find(u => u.role === 'admin')!;
+    expect((await api(request(app).delete(`/api/users/${admin.id}`))).status).toBe(400);
+  });
+});
