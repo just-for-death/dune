@@ -5,8 +5,11 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
+// Flat config (ESLint 10), mirroring packages/server. The renderer gets the
+// React rules; the Electron main/preload/scanner and the build/test scripts
+// run under Node, so they get node globals instead of browser ones.
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'dist-electron', 'release', 'coverage', 'test-results']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -16,8 +19,18 @@ export default defineConfig([
       reactRefresh.configs.vite,
     ],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 2022,
       globals: globals.browser,
+    },
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    files: ['electron/**/*.ts', 'e2e/**/*.ts', 'playwright.config.ts', 'vite.config.mts'],
+    languageOptions: {
+      globals: { ...globals.node },
     },
   },
 ])

@@ -105,12 +105,33 @@ export default function App() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   }, []);
 
+  const loadConfig = useCallback(async () => {
+    try {
+      const config = await window.electronAPI.loadConfig();
+      if (config) {
+        if (config.games) setGames(config.games);
+        if (config.cloud) setCloud(config.cloud);
+        if (config.settings) {
+          setSettings(prev => ({
+            ...prev,
+            ...config.settings,
+            scanRoots: config.settings.scanRoots ?? prev.scanRoots ?? []
+          }));
+        }
+      }
+    } catch {
+      showToast('Failed to load config', 'error');
+    }
+  }, [showToast]);
+
   useEffect(() => {
-    loadConfig();
-    window.electronAPI.getServerKey()
-      .then(res => { if (res?.success && res.key) setServerApiKey(res.key); })
-      .catch(() => { /* key stays empty — server calls will 401 with a clear error */ });
-  }, []);
+    const initialize = async () => {
+      await loadConfig();
+      const res = await window.electronAPI.getServerKey();
+      if (res?.success && res.key) setServerApiKey(res.key);
+    };
+    initialize().catch(() => { /* key stays empty — server calls will 401 with a clear error */ });
+  }, [loadConfig]);
 
   useEffect(() => {
     const cleanup = window.electronAPI.onSyncProgress((data: { percent: number; message: string }) => {
@@ -130,25 +151,6 @@ export default function App() {
     });
     return cleanup;
   }, []);
-
-  const loadConfig = async () => {
-    try {
-      const config = await window.electronAPI.loadConfig();
-      if (config) {
-        if (config.games) setGames(config.games);
-        if (config.cloud) setCloud(config.cloud);
-        if (config.settings) {
-          setSettings(prev => ({
-            ...prev,
-            ...config.settings,
-            scanRoots: config.settings.scanRoots ?? prev.scanRoots ?? []
-          }));
-        }
-      }
-    } catch (e) {
-      showToast('Failed to load config', 'error');
-    }
-  };
 
   const saveSettings = async (newSettings: Partial<Settings>) => {
     const s = { ...settings, ...newSettings };

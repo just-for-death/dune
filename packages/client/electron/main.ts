@@ -442,7 +442,7 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
     const cleanUrl = normalizeUrl(credentials.url)
     const games: any = store.get('games') || []
 
-    let filesToUpload: { game: string, local: string, rel: string }[] = [];
+    const filesToUpload: { game: string, local: string, rel: string }[] = [];
 
     progress(15, 'Scanning local files...')
     for (const game of games) {

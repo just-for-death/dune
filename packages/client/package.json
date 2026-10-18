@@ -13,6 +13,7 @@
     "build:electron": "electron-builder",
     "build:all": "tsc && vite build && electron-builder",
     "preview": "vite preview --port 4173 --strictPort",
+    "lint": "eslint .",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -27,6 +28,7 @@
     "yaml": "^2.8.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.0",
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
@@ -34,7 +36,12 @@
     "@vitejs/plugin-react": "^6.1.2",
     "electron": "44.9.0",
     "electron-builder": "^26.15.3",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.13.0",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
     "vite-plugin-electron": "^1.1.2",
     "vite-plugin-electron-renderer": "^1.0.0"
