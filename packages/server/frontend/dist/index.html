@@ -3,188 +3,568 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="theme-color" content="#2b2a2f" />
+<meta name="theme-color" content="#0e0f13" />
 <link rel="icon" type="image/png" href="/icon.png" />
 <title>Dune — Server Dashboard</title>
 <style>
   :root {
     color-scheme: dark;
-    --bg: #0e0f13; --panel: #15171d; --line: #262b36;
+    /* surfaces + lines */
+    --bg: #0e0f13; --panel: #15171d; --panel-2: #1b1e26; --panel-3: #20242e;
+    --line: #262b36; --line-strong: #343b49;
+    /* text */
     --text: #e9ebf1; --muted: #98a1b3;
-    --sand: #e8b44a; --green: #3fb950; --red: #f05548;
+    /* accent + semantic */
+    --sand: #e8b44a; --sand-ink: #1a1405; --sand-soft: rgba(232, 180, 74, .13);
+    --green: #3fb950; --green-soft: rgba(63, 185, 80, .13);
+    --red: #f05548; --red-soft: rgba(240, 85, 72, .13);
+    /* scales */
+    --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+    --r-sm: 6px; --r-md: 8px; --r-lg: 12px;
+    --fs-xs: 11.5px; --fs-sm: 12.5px; --fs-md: 13.5px; --fs-lg: 15px; --fs-xl: 20px; --fs-2xl: 26px;
+    --ease: cubic-bezier(.2, .7, .3, 1);
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
-    font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.5;
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size: var(--fs-md); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
   }
-  .login-overlay {
-    position: fixed; inset: 0; background: var(--bg); z-index: 100;
-    display: flex; align-items: center; justify-content: center; padding: 24px;
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
-  .login-card { width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 12px; padding: 28px; }
-  .login-card h1 { font-size: 20px; margin: 0 0 6px; }
-  .login-card p { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
-  .login-card input { margin-bottom: 12px; }
-  .login-card .err { color: var(--red); min-height: 1.2em; font-size: 13px; margin-bottom: 8px; }
-  main { max-width: 960px; margin: 0 auto; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  h1 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--sand); margin-right: 8px; }
-  .sub { color: var(--muted); margin: 0 0 20px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-  .card h2 { font-size: 15px; margin: 0 0 12px; }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-  .stat { flex: 1; min-width: 140px; }
-  .stat b { font-size: 22px; font-variant-numeric: tabular-nums; }
-  .stat span { display: block; color: var(--muted); font-size: 12.5px; }
-  .ok { color: var(--green); } .bad { color: var(--red); } .muted { color: var(--muted); }
-  input, select, button { font: inherit; border-radius: 8px; }
-  input {
-    width: 100%; padding: 9px 12px; margin-bottom: 10px;
-    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  /* Icons: geometry from Lucide (https://lucide.dev, ISC). Stroke props live on
+     .icon so <use> inherits them into the symbol shadow tree; currentColor then
+     resolves against whatever context the icon is placed in. */
+  .sprite { display: none; }
+  .icon {
+    width: 16px; height: 16px; flex: none;
+    fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
   }
-  input:focus { outline: none; border-color: var(--sand); }
-  select {
-    padding: 9px 12px; border: 1px solid var(--line);
-    background: var(--bg); color: var(--text);
+  .icon-lg { width: 20px; height: 20px; }
+  :focus-visible { outline: 2px solid var(--sand); outline-offset: 2px; border-radius: var(--r-sm); }
+
+  /* ── Login gate ─────────────────────────────────────────────────────────── */
+  .login {
+    position: fixed; inset: 0; z-index: 100; display: none;
+    align-items: center; justify-content: center; padding: var(--sp-5);
+    background: radial-gradient(120% 90% at 50% 0%, #171a21 0%, var(--bg) 65%);
   }
-  select:focus { outline: none; border-color: var(--sand); }
-  button {
-    padding: 8px 14px; font-weight: 600; cursor: pointer;
-    background: var(--sand); color: #1a1405; border: none;
+  .login-card {
+    width: 100%; max-width: 420px; padding: var(--sp-5);
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
   }
-  button.secondary { background: #1b1e26; color: var(--text); border: 1px solid var(--line); }
-  button:disabled { opacity: .5; cursor: default; }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-size: 11.5px; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .dot.ok { background: var(--green); } .dot.warn { background: var(--sand); }
-  details { margin-top: 8px; }
-  summary { cursor: pointer; color: var(--muted); }
-  #err { color: var(--red); min-height: 1.2em; }
-  :focus-visible { outline: 2px solid var(--sand); outline-offset: 2px; }
+  .login-card h1 { display: flex; align-items: center; gap: var(--sp-2); margin: 0 0 6px; font-size: var(--fs-xl); }
+  .login-card p { margin: 0 0 var(--sp-4); color: var(--muted); font-size: var(--fs-sm); }
+  .login-card input { margin-bottom: var(--sp-3); }
+  .err { min-height: 1.2em; color: var(--red); font-size: var(--fs-sm); }
+
+  /* ── Shell: topbar + tab rail ───────────────────────────────────────────── */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap;
+    padding: var(--sp-3) var(--sp-5);
+    background: rgba(14, 15, 19, .88); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-lg); font-weight: 700; letter-spacing: .02em; }
+  .brand-mark { width: 10px; height: 10px; border-radius: 3px; background: var(--sand); }
+  .brand-tag {
+    padding: 1px 8px; border: 1px solid var(--line); border-radius: 99px;
+    color: var(--muted); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em;
+  }
+  .tabs { display: flex; flex: 1; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    display: inline-flex; align-items: center; gap: var(--sp-2);
+    padding: 7px 12px; border: 1px solid transparent; border-radius: var(--r-md);
+    background: transparent; color: var(--muted);
+    font: inherit; font-size: var(--fs-sm); font-weight: 600; white-space: nowrap;
+    cursor: pointer; transition: background-color .15s var(--ease), color .15s var(--ease);
+  }
+  .tab:hover { background: var(--panel-2); color: var(--text); }
+  .tab[aria-selected="true"] { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+  .tab[aria-selected="true"] .icon { color: var(--sand); }
+  .topbar-actions { display: flex; gap: var(--sp-2); }
+
+  .content { max-width: 1080px; margin: 0 auto; padding: var(--sp-5); }
+  .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+  .section-head h1 { margin: 0; font-size: var(--fs-2xl); line-height: 1.2; letter-spacing: -.02em; }
+  .section-head p { max-width: 62ch; margin: 4px 0 0; color: var(--muted); font-size: var(--fs-sm); }
+
+  /* ── Cards ─────────────────────────────────────────────────────────────── */
+  .card { margin-bottom: var(--sp-4); padding: var(--sp-5); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); }
+  .card:last-child { margin-bottom: 0; }
+  .card-head { display: flex; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-3); }
+  .card-head h2 { margin: 0; font-size: var(--fs-lg); }
+  .card-head .icon { color: var(--muted); }
+  .card-head .push { margin-left: auto; }
+  .card-desc { margin: -4px 0 var(--sp-3); color: var(--muted); font-size: var(--fs-sm); }
+
+  /* ── Status tiles ──────────────────────────────────────────────────────── */
+  .tile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-4); }
+  .tile { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-4); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); }
+  .tile-icon { display: grid; flex: none; place-items: center; width: 36px; height: 36px; border-radius: var(--r-md); background: var(--panel-3); color: var(--muted); }
+  .tile-value { display: block; font-size: var(--fs-xl); font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .tile-label { display: block; color: var(--muted); font-size: var(--fs-xs); }
+  .tone-ok .tile-icon { background: var(--green-soft); color: var(--green); }
+  .tone-warn .tile-icon { background: var(--sand-soft); color: var(--sand); }
+  .tone-bad .tile-icon { background: var(--red-soft); color: var(--red); }
+  .tone-ok .tile-value { color: var(--green); }
+  .tone-warn .tile-value { color: var(--sand); }
+  .tone-bad .tile-value { color: var(--red); }
+
+  /* ── Controls ──────────────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: var(--sp-2);
+    padding: 8px 14px; border: 1px solid transparent; border-radius: var(--r-md);
+    background: var(--sand); color: var(--sand-ink);
+    font: inherit; font-size: var(--fs-md); font-weight: 600; cursor: pointer;
+    transition: filter .15s var(--ease), background-color .15s var(--ease), border-color .15s var(--ease);
+  }
+  .btn:hover { filter: brightness(1.07); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: .5; cursor: default; transform: none; filter: none; }
+  .btn-ghost { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+  .btn-ghost:hover { background: var(--panel-3); border-color: var(--line-strong); }
+  /* Destructive row actions stay quiet until you aim at them: a table of red
+     buttons would out-shout the data. */
+  .btn-quiet { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn-quiet:hover { background: var(--red-soft); border-color: rgba(240, 85, 72, .35); color: var(--red); }
+  .btn-danger { background: var(--red-soft); border-color: rgba(240, 85, 72, .35); color: var(--red); }
+  .btn-danger:hover { background: rgba(240, 85, 72, .22); }
+  .btn-sm { padding: 5px 10px; font-size: var(--fs-sm); }
+  .btn.is-busy .icon { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  input, select {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r-md);
+    background: var(--bg); color: var(--text); font: inherit; font-size: var(--fs-md);
+    transition: border-color .15s var(--ease);
+  }
+  input::placeholder { color: var(--muted); opacity: .75; }
+  input:focus, select:focus { border-color: var(--sand); }
+  label { display: block; margin-bottom: 5px; color: var(--muted); font-size: var(--fs-sm); font-weight: 600; }
+  .row { display: flex; gap: var(--sp-3); flex-wrap: wrap; align-items: flex-end; }
+  .row > .grow { flex: 1 1 220px; min-width: 0; }
+  .row input { margin: 0; }
+
+  /* ── Tables ────────────────────────────────────────────────────────────── */
+  /* `contain: paint` keeps a wide table's overflow inside the scroller; without
+     it `white-space: nowrap` cells leak to the document and the whole page
+     gains a horizontal scrollbar. */
+  .table-wrap { overflow: auto; contain: paint; margin-top: var(--sp-2); }
+  table { width: 100%; border-collapse: collapse; font-size: var(--fs-md); font-variant-numeric: tabular-nums; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em; }
+  tbody tr:hover { background: var(--panel-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  .num { text-align: right; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border-radius: 99px; font-size: var(--fs-sm); font-weight: 600; }
+  .pill .icon { width: 13px; height: 13px; }
+  .pill-ok { background: var(--green-soft); color: var(--green); }
+  .pill-warn { background: var(--sand-soft); color: var(--sand); }
+  .table-empty { padding: var(--sp-6) var(--sp-4); color: var(--muted); text-align: center; white-space: normal; }
+  .table-empty .icon { display: block; width: 24px; height: 24px; margin: 0 auto var(--sp-2); opacity: .6; }
+
+  /* ── Empty / hint blocks ───────────────────────────────────────────────── */
+  .empty {
+    display: flex; flex-direction: column; align-items: center; gap: var(--sp-3);
+    padding: var(--sp-6) var(--sp-4); border: 1px dashed var(--line); border-radius: var(--r-lg);
+    color: var(--muted); text-align: center;
+  }
+  .empty .icon { width: 24px; height: 24px; opacity: .6; }
+  .key-line { margin: var(--sp-2) 0 0; font-size: var(--fs-sm); word-break: break-all; }
+  .key-line code { padding: 2px 6px; border-radius: var(--r-sm); background: var(--bg); border: 1px solid var(--line); color: var(--sand); }
+
+  /* ── Toasts ────────────────────────────────────────────────────────────── */
+  .toaster { position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 200; display: flex; flex-direction: column; gap: var(--sp-2); max-width: min(420px, 90vw); }
+  .toast {
+    display: flex; align-items: flex-start; gap: var(--sp-2);
+    padding: 11px 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md);
+    font-size: var(--fs-sm); animation: toast-in .2s var(--ease);
+  }
+  .toast .icon { margin-top: 2px; }
+  .toast-ok { border-left: 3px solid var(--green); }
+  .toast-ok .icon { color: var(--green); }
+  .toast-bad { border-left: 3px solid var(--red); }
+  .toast-bad .icon { color: var(--red); }
+  .toast-info { border-left: 3px solid var(--sand); }
+  .toast-info .icon { color: var(--sand); }
+  @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+  @media (max-width: 720px) {
+    .topbar { padding: var(--sp-3); }
+    .tabs { order: 3; flex-basis: 100%; }
+    .topbar-actions { margin-left: auto; }
+    .content { padding: var(--sp-4); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
 </style>
 </head>
 <body>
-  <div class="login-overlay" id="login">
-    <div class="login-card">
-      <h1>Dune</h1>
-      <p>Game save sync server. Paste a server API key to continue.</p>
-      <input id="login-key" type="password" placeholder="Server API key (x-api-key)" autocomplete="off" />
-      <div class="err" id="login-err"></div>
-      <button id="login-connect" style="width:100%">Connect</button>
-    </div>
-  </div>
-<main>
-  <h1><span class="dot" aria-hidden="true"></span>Dune</h1>
-  <p class="sub">Game save sync server — status dashboard. All calls stay on this origin; the key lives only in this browser's local storage.</p>
+<!-- Icon sprite: geometry from Lucide (https://lucide.dev, ISC licence). -->
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+  <symbol id="i-gamepad-2" viewBox="0 0 24 24"><line x1="6" x2="10" y1="11" y2="11"/><line x1="8" x2="8" y1="9" y2="13"/><line x1="15" x2="15.01" y1="12" y2="12"/><line x1="18" x2="18.01" y1="10" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
+  <symbol id="i-key-round" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-heart-pulse" viewBox="0 0 24 24"><path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/><path d="M3.22 13H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/></symbol>
+  <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 9-5.5 5.5L8 12"/></symbol>
+  <symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-file-chart-column" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M8 18v-1"/><path d="M12 18v-6"/><path d="M16 18v-3"/></symbol>
+  <symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-list-tree" viewBox="0 0 24 24"><path d="M8 5h13"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="M3 10a2 2 0 0 0 2 2h3"/><path d="M3 5v12a2 2 0 0 0 2 2h3"/></symbol>
+  <symbol id="i-log-out" viewBox="0 0 24 24"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></symbol>
+</svg>
 
-  <div class="card">
-    <h2>Connection</h2>
-    <div class="row">
-      <div style="flex:2;min-width:220px">
-        <input id="key" type="password" placeholder="Server API key (x-api-key)" autocomplete="off" />
-      </div>
-      <div><button id="save">Save key</button>
-      <button id="refresh" class="secondary">Refresh</button></div>
-    </div>
-    <div id="err" role="alert"></div>
-    <div class="row">
-      <div class="stat"><b id="st-health">–</b><span>liveness</span></div>
-      <div class="stat"><b id="st-ready">–</b><span>readiness</span></div>
-      <div class="stat"><b id="st-games">–</b><span>games</span></div>
-      <div class="stat"><b id="st-files">–</b><span>files</span></div>
-    </div>
+<div class="login" id="login">
+  <div class="login-card">
+    <h1><svg class="icon icon-lg" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg>Dune</h1>
+    <p>Game save sync server. Paste a server API key to continue.</p>
+    <label for="login-key">Server API key</label>
+    <input id="login-key" type="password" placeholder="x-api-key" autocomplete="off" />
+    <div class="err" id="login-err" role="alert"></div>
+    <button class="btn" id="login-connect" type="button" style="width:100%">Connect</button>
   </div>
+</div>
 
-  <div class="card">
-    <div class="row" style="justify-content:space-between">
-      <h2 style="margin:0">Games</h2>
-      <button id="sync" class="secondary">Run local sync</button>
-    </div>
-    <div style="overflow-x:auto;margin-top:8px">
-    <table>
-      <thead><tr><th>Game</th><th>Status</th><th>Last sync</th><th>Files</th><th>Versions</th><th>Owner</th><th></th></tr></thead>
-      <tbody id="games"><tr><td colspan="7" class="muted">No data yet — save a key and refresh.</td></tr></tbody>
-    </table>
-    </div>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span>Dune</span>
+    <span class="brand-tag">server</span>
   </div>
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button class="tab" id="tab-overview" role="tab" type="button" data-tab="overview" aria-controls="panel-overview" aria-selected="true"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-activity"></use></svg><span>Overview</span></button>
+    <button class="tab" id="tab-games" role="tab" type="button" data-tab="games" aria-controls="panel-games" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-gamepad-2"></use></svg><span>Games</span></button>
+    <button class="tab" id="tab-users" role="tab" type="button" data-tab="users" aria-controls="panel-users" aria-selected="false" tabindex="-1" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-users"></use></svg><span>Users</span></button>
+    <button class="tab" id="tab-keys" role="tab" type="button" data-tab="keys" aria-controls="panel-keys" aria-selected="false" tabindex="-1"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg><span>API keys</span></button>
+    <button class="tab" id="tab-settings" role="tab" type="button" data-tab="settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1" hidden><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings"></use></svg><span>Settings</span></button>
+  </nav>
+  <div class="topbar-actions">
+    <button class="btn btn-ghost" id="refresh" type="button" title="Refresh all data"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh-cw"></use></svg><span>Refresh</span></button>
+    <button class="btn btn-ghost" id="signout" type="button" title="Forget the stored API key"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-log-out"></use></svg><span class="sr-only">Sign out</span></button>
+  </div>
+</header>
 
-  <div class="card" id="users-card" hidden>
-    <h2>Users</h2>
-    <p class="sub" style="margin:-4px 0 12px">Each user owns their own games. New keys are shown once — copy them immediately.</p>
-    <div class="row">
-      <div style="flex:1;min-width:180px"><input id="user-name" placeholder="New user name" autocomplete="off" style="margin:0" /></div>
+<main class="content">
+  <!-- ── Overview ─────────────────────────────────────────────────────────── -->
+  <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+    <div class="section-head">
       <div>
-        <select id="user-role" aria-label="Role"><option value="member">member</option><option value="admin">admin</option></select>
-        <button id="user-create">Create user</button>
+        <h1>Overview</h1>
+        <p>Server health and the API key this browser uses. Everything stays on this origin; the key never leaves your browser except as an <code>x-api-key</code> header.</p>
       </div>
     </div>
-    <div id="new-key" class="muted" style="word-break:break-all;margin:8px 0"></div>
-    <div style="overflow-x:auto">
-    <table>
-      <thead><tr><th>Name</th><th>Role</th><th>Keys</th><th>Actions</th></tr></thead>
-      <tbody id="users"><tr><td colspan="4" class="muted">Admin only.</td></tr></tbody>
-    </table>
-    </div>
-  </div>
 
-  <div class="card" id="settings-card" hidden>
-    <h2>Settings</h2>
-    <p class="sub" style="margin:-4px 0 12px">Server-wide configuration. Admin only.</p>
-    <div class="row">
-      <div style="flex:1;min-width:220px"><label>SteamGridDB API key</label><input id="st-steamgrid" type="password" autocomplete="off" placeholder="(unchanged)" /></div>
-      <div style="flex:1;min-width:220px"><label>Ollama endpoint</label><input id="st-ollama-endpoint" placeholder="http://ollama:11434" /></div>
+    <div class="tile-grid">
+      <div class="tile" id="tile-health">
+        <span class="tile-icon" aria-hidden="true"><svg class="icon icon-lg" focusable="false"><use href="#i-heart-pulse"></use></svg></span>
+        <span><b class="tile-value" id="st-health">–</b><span class="tile-label">Liveness</span></span>
+      </div>
+      <div class="tile" id="tile-ready">
+        <span class="tile-icon" aria-hidden="true"><svg class="icon icon-lg" focusable="false"><use href="#i-circle-check"></use></svg></span>
+        <span><b class="tile-value" id="st-ready">–</b><span class="tile-label">Readiness</span></span>
+      </div>
+      <div class="tile" id="tile-games">
+        <span class="tile-icon" aria-hidden="true"><svg class="icon icon-lg" focusable="false"><use href="#i-gamepad-2"></use></svg></span>
+        <span><b class="tile-value" id="st-games">–</b><span class="tile-label">Games</span></span>
+      </div>
+      <div class="tile" id="tile-files">
+        <span class="tile-icon" aria-hidden="true"><svg class="icon icon-lg" focusable="false"><use href="#i-file-chart-column"></use></svg></span>
+        <span><b class="tile-value" id="st-files">–</b><span class="tile-label">Save files</span></span>
+      </div>
     </div>
-    <div class="row">
-      <div style="flex:1;min-width:220px"><label>Ollama model</label><input id="st-ollama-model" placeholder="phi4-mini:latest" /></div>
-      <div style="width:140px"><label>Max versions</label><input id="st-maxversions" type="number" min="1" max="100" /></div>
-    </div>
-    <div class="row">
-      <button id="settings-save">Save settings</button>
-      <span id="settings-status" class="muted"></span>
-    </div>
-  </div>
 
-  <div class="card" id="keys-card">
-    <h2>My API keys</h2>
-    <p class="sub" style="margin:-4px 0 12px">Issue a new key for your own account. Shown once.</p>
-    <div class="row">
-      <div style="flex:1;min-width:180px"><input id="key-desc" placeholder="Description (optional)" autocomplete="off" /></div>
-      <button id="key-issue">Issue new key</button>
+    <div class="card">
+      <h2 class="card-head"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg>Connection</h2>
+      <p class="card-desc">Issue a key under <strong>API keys</strong>, then paste it here to load live data. <strong>Refresh</strong> re-reads everything.</p>
+      <div class="row">
+        <div class="grow">
+          <label for="key">Server API key</label>
+          <input id="key" type="password" placeholder="x-api-key" autocomplete="off" />
+        </div>
+        <button class="btn" id="save" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-circle-check"></use></svg>Save key</button>
+      </div>
+      <div class="err" id="err" role="alert"></div>
     </div>
-    <div id="key-new" class="muted" style="word-break:break-all;margin:6px 0"></div>
-    <div style="overflow-x:auto">
-    <table>
-      <thead><tr><th>Id</th><th>Description</th><th>Created</th><th></th></tr></thead>
-      <tbody id="keys"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
-    </table>
+  </section>
+
+  <!-- ── Games ────────────────────────────────────────────────────────────── -->
+  <section id="panel-games" role="tabpanel" aria-labelledby="tab-games" tabindex="0" hidden>
+    <div class="section-head">
+      <div>
+        <h1>Games</h1>
+        <p id="games-summary">Every game this account can see, with its file and version counts.</p>
+      </div>
     </div>
-  </div>
+    <div class="card">
+      <h2 class="card-head">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-gamepad-2"></use></svg>Tracked games
+        <button class="btn btn-ghost btn-sm push" id="sync" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh-cw"></use></svg>Run local sync</button>
+      </h2>
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Tracked games with status, last sync, file and version counts</caption>
+          <thead>
+            <tr>
+              <th scope="col">Game</th>
+              <th scope="col">Status</th>
+              <th scope="col">Last sync</th>
+              <th scope="col" class="num">Files</th>
+              <th scope="col" class="num">Versions</th>
+              <th scope="col">Owner</th>
+              <th scope="col"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="games"><tr><td colspan="7" class="table-empty">No data yet — save a key and refresh.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Users (admin only) ───────────────────────────────────────────────── -->
+  <section id="panel-users" role="tabpanel" aria-labelledby="tab-users" tabindex="0" hidden>
+    <div class="section-head">
+      <div>
+        <h1>Users</h1>
+        <p>Each user owns their own games. New keys are shown once — copy them immediately.</p>
+      </div>
+    </div>
+    <div class="card" id="users-card">
+      <h2 class="card-head"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-users"></use></svg>Create a user</h2>
+      <div class="row">
+        <div class="grow">
+          <label for="user-name">Name</label>
+          <input id="user-name" placeholder="New user name" autocomplete="off" />
+        </div>
+        <div>
+          <label for="user-role">Role</label>
+          <select id="user-role"><option value="member">member</option><option value="admin">admin</option></select>
+        </div>
+        <button class="btn" id="user-create" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"></use></svg><span>Create user</span></button>
+      </div>
+      <p class="key-line" id="new-key"></p>
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Users with role and key count</caption>
+          <thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col" class="num">Keys</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody id="users"><tr><td colspan="4" class="table-empty">Admin only.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── API keys ─────────────────────────────────────────────────────────── -->
+  <section id="panel-keys" role="tabpanel" aria-labelledby="tab-keys" tabindex="0" hidden>
+    <div class="section-head">
+      <div>
+        <h1>API keys</h1>
+        <p>Issue a new key for your own account. Each key is shown once.</p>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="card-head"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg>Your keys</h2>
+      <div class="row">
+        <div class="grow">
+          <label for="key-desc">Description</label>
+          <input id="key-desc" placeholder="e.g. desktop app, laptop" autocomplete="off" />
+        </div>
+        <button class="btn" id="key-issue" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"></use></svg><span>Issue new key</span></button>
+      </div>
+      <p class="key-line" id="key-new"></p>
+      <div class="table-wrap">
+        <table>
+          <caption class="sr-only">Your API keys</caption>
+          <thead><tr><th scope="col">Id</th><th scope="col">Description</th><th scope="col">Created</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody id="keys"><tr><td colspan="4" class="table-empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Settings (admin only) ────────────────────────────────────────────── -->
+  <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+    <div class="section-head">
+      <div>
+        <h1>Settings</h1>
+        <p>Server-wide configuration. Admin only.</p>
+      </div>
+    </div>
+    <div class="card" id="settings-card">
+      <h2 class="card-head"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings"></use></svg>Server configuration</h2>
+      <div class="row">
+        <div class="grow">
+          <label for="st-steamgrid">SteamGridDB API key</label>
+          <input id="st-steamgrid" type="password" autocomplete="off" placeholder="(unchanged)" />
+        </div>
+        <div class="grow">
+          <label for="st-ollama-endpoint">Ollama endpoint</label>
+          <input id="st-ollama-endpoint" placeholder="http://ollama:11434" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:var(--sp-3)">
+        <div class="grow">
+          <label for="st-ollama-model">Ollama model</label>
+          <input id="st-ollama-model" placeholder="phi4-mini:latest" />
+        </div>
+        <div style="width:140px">
+          <label for="st-maxversions">Max versions</label>
+          <input id="st-maxversions" type="number" min="1" max="100" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:var(--sp-4);align-items:center">
+        <button class="btn" id="settings-save" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-circle-check"></use></svg><span>Save settings</span></button>
+      </div>
+    </div>
+  </section>
 </main>
+
+<div class="toaster" id="toaster" role="status" aria-live="polite"></div>
+
 <script>
 (function () {
   'use strict';
+
   var keyInput = document.getElementById('key');
   var errBox = document.getElementById('err');
   var loginOverlay = document.getElementById('login');
   var loginKey = document.getElementById('login-key');
   var loginErr = document.getElementById('login-err');
+  var toaster = document.getElementById('toaster');
+  var refreshBtn = document.getElementById('refresh');
+
   keyInput.value = localStorage.getItem('dune_api_key') || '';
   loginKey.value = localStorage.getItem('dune_api_key') || '';
 
+  // ── Small helpers ─────────────────────────────────────────────────────────
   function headers() {
     var h = {};
     var k = keyInput.value.trim();
     if (k) h['x-api-key'] = k;
     return h;
   }
+  function jsonHeaders() {
+    var h = headers();
+    h['Content-Type'] = 'application/json';
+    return h;
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function icon(name, cls) {
+    return '<svg class="icon ' + (cls || '') + '" aria-hidden="true" focusable="false"><use href="#i-' + name + '"></use></svg>';
+  }
+  function toast(kind, msg) {
+    if (!toaster) return;
+    var glyph = kind === 'ok' ? 'circle-check' : kind === 'bad' ? 'circle-alert' : 'info';
+    var el = document.createElement('div');
+    el.className = 'toast toast-' + kind;
+    el.innerHTML = icon(glyph) + '<span>' + esc(msg) + '</span>';
+    toaster.appendChild(el);
+    while (toaster.children.length > 4) toaster.removeChild(toaster.firstChild);
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 5000);
+  }
   function fail(msg) {
     errBox.textContent = msg;
+    toast('bad', msg);
+  }
+  function busy(btn, on) {
+    if (!btn) return;
+    btn.classList[on ? 'add' : 'remove']('is-busy');
+    btn.disabled = !!on;
+  }
+  function setMetric(id, text, tone) {
+    var value = document.getElementById(id);
+    if (!value) return;
+    value.textContent = text;
+    var tile = value.closest ? value.closest('.tile') : null;
+    if (!tile) return;
+    tile.classList.remove('tone-ok', 'tone-warn', 'tone-bad');
+    if (tone) tile.classList.add('tone-' + tone);
+  }
+  async function get(path) {
+    var res = await fetch(path, { headers: headers() });
+    if (res.status === 401 || res.status === 403) throw new Error('Rejected (401/403) — set a valid server API key.');
+    if (!res.ok) throw new Error('Request failed: ' + res.status);
+    return res.json();
+  }
+  /** ISO timestamps are unreadable in a table; fall back to the raw value. */
+  function formatWhen(value) {
+    if (!value || value === 'Never') return 'Never';
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
+  // ── Tab rail ──────────────────────────────────────────────────────────────
+  var TABS = ['overview', 'games', 'users', 'keys', 'settings'];
+
+  function tabButton(name) { return document.getElementById('tab-' + name); }
+  function tabPanel(name) { return document.getElementById('panel-' + name); }
+
+  function showTab(name) {
+    if (TABS.indexOf(name) === -1) name = 'overview';
+    var btn = tabButton(name);
+    if (btn && btn.hidden) name = 'overview';
+    TABS.forEach(function (t) {
+      var b = tabButton(t);
+      var p = tabPanel(t);
+      var on = t === name;
+      if (b) {
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+      }
+      if (p) p.hidden = !on;
+    });
+    if (location.hash !== '#' + name) {
+      if (history.replaceState) history.replaceState(null, '', '#' + name);
+      else location.hash = name;
+    }
+  }
+
+  function setTabVisible(name, visible) {
+    var btn = tabButton(name);
+    if (!btn) return;
+    btn.hidden = !visible;
+    if (!visible && btn.getAttribute('aria-selected') === 'true') showTab('overview');
+  }
+
+  document.querySelector('.tabs').addEventListener('click', function (ev) {
+    var btn = ev.target.closest ? ev.target.closest('.tab') : null;
+    if (btn) showTab(btn.getAttribute('data-tab'));
+  });
+  document.querySelector('.tabs').addEventListener('keydown', function (ev) {
+    var keys = { ArrowRight: 1, ArrowLeft: -1, Home: 'first', End: 'last' };
+    var move = keys[ev.key];
+    if (!move) return;
+    var visible = TABS.filter(function (t) { var b = tabButton(t); return b && !b.hidden; });
+    if (!visible.length) return;
+    var i = visible.indexOf(document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute('data-tab') : null);
+    if (i === -1) i = 0;
+    if (move === 'first') i = 0;
+    else if (move === 'last') i = visible.length - 1;
+    else i = (i + move + visible.length) % visible.length;
+    ev.preventDefault();
+    tabButton(visible[i]).focus();
+    showTab(visible[i]);
+  });
+  window.addEventListener('hashchange', function () { showTab((location.hash || '').slice(1)); });
+
+  // ── Login gate ────────────────────────────────────────────────────────────
   async function verifyKey(k) {
     if (!k) return false;
     try {
@@ -194,114 +574,175 @@
       return !!(j && j.user);
     } catch (e) { return false; }
   }
-  async function tryAutoLogin() {
-    var k = (localStorage.getItem('dune_api_key') || '').trim();
-    if (!k) { loginOverlay.style.display = 'flex'; return; }
-    if (await verifyKey(k)) {
-      keyInput.value = k;
-      loginOverlay.style.display = 'none';
-      refresh();
-    } else {
-      loginOverlay.style.display = 'flex';
-      loginErr.textContent = 'Stored key is invalid. Enter a new one.';
-    }
-  }
-  document.getElementById('login-connect').addEventListener('click', async function () {
-    loginErr.textContent = '';
-    var k = loginKey.value.trim();
-    if (!k) { loginErr.textContent = 'Enter a key.'; return; }
-    if (await verifyKey(k)) {
-      localStorage.setItem('dune_api_key', k);
-      keyInput.value = k;
-      loginOverlay.style.display = 'none';
-      refresh();
-    } else {
-      loginErr.textContent = 'Invalid key.';
-    }
-  });
-  async function get(path) {
-    var res = await fetch(path, { headers: headers() });
-    if (res.status === 401 || res.status === 403) throw new Error('Rejected (401/403) — set a valid server API key.');
-    if (!res.ok) throw new Error('Request failed: ' + res.status);
-    return res.json();
-  }
-  function esc(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
+
+  function openLogin(message) {
+    loginOverlay.style.display = 'flex';
+    if (message) loginErr.textContent = message;
   }
 
+  async function tryAutoLogin() {
+    var k = (localStorage.getItem('dune_api_key') || '').trim();
+    if (!k) { openLogin(''); return; }
+    if (await verifyKey(k)) {
+      keyInput.value = k;
+      loginOverlay.style.display = 'none';
+      refresh();
+    } else {
+      openLogin('Stored key is invalid. Enter a new one.');
+    }
+  }
+
+  async function connect(key) {
+    loginErr.textContent = '';
+    if (!key) { loginErr.textContent = 'Enter a key.'; return; }
+    var btn = document.getElementById('login-connect');
+    busy(btn, true);
+    var valid = await verifyKey(key);
+    busy(btn, false);
+    if (!valid) { loginErr.textContent = 'Invalid key.'; return; }
+    localStorage.setItem('dune_api_key', key);
+    keyInput.value = key;
+    loginOverlay.style.display = 'none';
+    refresh();
+  }
+
+  document.getElementById('login-connect').addEventListener('click', function () {
+    connect(loginKey.value.trim());
+  });
+  loginKey.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') connect(loginKey.value.trim());
+  });
+
+  document.getElementById('signout').addEventListener('click', function () {
+    localStorage.removeItem('dune_api_key');
+    keyInput.value = '';
+    loginKey.value = '';
+    openLogin('Key forgotten. Paste one to continue.');
+  });
+
+  // ── Data loading ──────────────────────────────────────────────────────────
   async function refresh() {
     errBox.textContent = '';
+    busy(refreshBtn, true);
     try {
-      // Resolve game owners to names for admins; members only ever see their own.
+      // One round trip per independent endpoint, then one parallel batch per
+      // game (the old code awaited 2N requests one after another).
+      var head = await Promise.all([
+        get('/api/users/me').catch(function () { return null; }),
+        get('/health').catch(function () { return null; }),
+        get('/ready').catch(function () { return null; }),
+        get('/api/saves'),
+      ]);
+      var me = head[0], health = head[1], ready = head[2], saves = head[3];
+      var isAdmin = !!(me && me.user && me.user.role === 'admin');
+
       var ownerNames = {};
-      var isAdmin = false;
-      try {
-        var me = await get('/api/users/me');
-        isAdmin = !!(me.user && me.user.role === 'admin');
-        if (isAdmin) {
-          var ul = await get('/api/users');
-          (ul.users || []).forEach(function (u) { ownerNames[u.id] = u.name; });
-        }
-      } catch (e) { /* no /api/users access: fall back to no owner names */ }
-      var health = await get('/health').catch(function () { return null; });
-      document.getElementById('st-health').textContent = health && health.status === 'ok' ? 'ok' : 'down';
-      var ready = await get('/ready').catch(function () { return null; });
-      document.getElementById('st-ready').textContent = ready && ready.ready ? 'ready' : 'not ready';
-      var saves = await get('/api/saves');
-      var games = saves.games || [];
-      document.getElementById('st-games').textContent = games.length;
-      var totalFiles = 0;
+      if (isAdmin) {
+        var ul = await get('/api/users').catch(function () { return null; });
+        ((ul && ul.users) || []).forEach(function (u) { ownerNames[u.id] = u.name; });
+      }
+
+      var live = !!(health && health.status === 'ok');
+      setMetric('st-health', live ? 'ok' : 'down', live ? 'ok' : 'bad');
+      var isReady = !!(ready && ready.ready);
+      setMetric('st-ready', isReady ? 'ready' : 'not ready', isReady ? 'ok' : 'warn');
+
+      var games = (saves && saves.games) || [];
+      setMetric('st-games', String(games.length), null);
+
+      var details = await Promise.all(games.map(function (g) {
+        return Promise.all([
+          get('/api/list-files?game=' + encodeURIComponent(g.name)).catch(function () { return null; }),
+          get('/trpc/files.versions.list?batch=1&input=' + encodeURIComponent(JSON.stringify({ 0: { game: g.name } }))).catch(function () { return null; }),
+        ]);
+      }));
+
       var rows = '';
-      for (var i = 0; i < games.length; i++) {
-        var g = games[i];
-        var files = [];
-        var vers = [];
-        try {
-          var lf = await get('/api/list-files?game=' + encodeURIComponent(g.name));
-          files = lf.files || [];
-          var vl = await get('/trpc/files.versions.list?batch=1&input=' + encodeURIComponent(JSON.stringify({ 0: { game: g.name } })));
-          vers = (((vl[0] || {}).result || {}).data || {}).versions || [];
-        } catch (e) { /* per-game failure must not break the table */ }
+      var totalFiles = 0;
+      games.forEach(function (g, i) {
+        var files = ((details[i][0] || {}).files) || [];
+        var versions = ((((details[i][1] || [])[0] || {}).result || {}).data || {}).versions || [];
         totalFiles += files.length;
         var synced = g.status === 'In Sync';
         var ownerLabel = isAdmin ? (ownerNames[g.ownerId] || ('#' + g.ownerId)) : 'you';
-        rows += '<tr><td>' + esc(g.name) + '</td>'
-          + '<td><span class="dot ' + (synced ? 'ok' : 'warn') + '"></span>' + esc(g.status) + '</td>'
-          + '<td>' + esc(g.lastSync || 'Never') + '</td>'
-          + '<td>' + files.length + '</td>'
-          + '<td>' + vers.length + '</td>'
+        rows += '<tr>'
+          + '<td>' + esc(g.name) + '</td>'
+          + '<td><span class="pill ' + (synced ? 'pill-ok' : 'pill-warn') + '">'
+          + icon(synced ? 'circle-check' : 'circle-alert') + esc(g.status) + '</span></td>'
+          + '<td class="muted">' + esc(formatWhen(g.lastSync)) + '</td>'
+          + '<td class="num">' + files.length + '</td>'
+          + '<td class="num">' + versions.length + '</td>'
           + '<td class="muted">' + esc(ownerLabel) + '</td>'
-          + '<td><button class="secondary" data-delgameid="' + esc(String(g.id)) + '" data-delgamename="' + esc(g.name) + '">Delete</button></td></tr>';
+          + '<td><button class="btn btn-quiet btn-sm" data-delgameid="' + esc(String(g.id)) + '"'
+          + ' data-delgamename="' + esc(g.name) + '" aria-label="Delete ' + esc(g.name) + '">'
+          + icon('trash-2') + 'Delete</button></td>'
+          + '</tr>';
+      });
+      setMetric('st-files', String(totalFiles), null);
+      document.getElementById('games').innerHTML = rows
+        || '<tr><td colspan="7" class="table-empty">' + icon('gamepad-2', 'icon-lg')
+          + 'No games tracked yet. Push saves from the desktop app, or run a local sync once sources are configured.</td></tr>';
+
+      setTabVisible('users', isAdmin);
+      setTabVisible('settings', isAdmin);
+      if (isAdmin) {
+        await loadUsers().catch(function () { setTabVisible('users', false); });
+        await loadSettings().catch(function () { setTabVisible('settings', false); });
       }
-      document.getElementById('st-files').textContent = totalFiles;
-      document.getElementById('games').innerHTML = rows || '<tr><td colspan="7" class="muted">No games tracked yet.</td></tr>';
-      try { await loadUsers(); } catch (e) { usersCard.hidden = true; }
+      await loadKeys().catch(function () { /* members without key access keep the empty table */ });
     } catch (e) {
       fail(e.message || String(e));
+    } finally {
+      busy(refreshBtn, false);
     }
   }
 
-  // ── Users (admin-only; hidden automatically for members) ──────────────────
-  var usersCard = document.getElementById('users-card');
+  // ── Games ─────────────────────────────────────────────────────────────────
+  document.getElementById('games').addEventListener('click', async function (ev) {
+    var t = ev.target.closest ? ev.target.closest('[data-delgameid]') : null;
+    if (!t) return;
+    var delId = t.getAttribute('data-delgameid');
+    var delName = t.getAttribute('data-delgamename');
+    if (!window.confirm('Delete game "' + (delName || delId) + '" and all its saves?')) return;
+    errBox.textContent = '';
+    try {
+      var r = await fetch('/api/saves?id=' + encodeURIComponent(delId), { method: 'DELETE', headers: headers() });
+      if (!r.ok) throw new Error('Delete failed: ' + r.status);
+      toast('ok', 'Deleted ' + (delName || delId));
+      refresh();
+    } catch (e) { fail(e.message || String(e)); }
+  });
+
+  async function runLocalSync(btn) {
+    errBox.textContent = '';
+    busy(btn, true);
+    try {
+      var res = await fetch('/api/local-sync', { method: 'POST', headers: headers() });
+      if (!res.ok) throw new Error('Sync failed: ' + res.status);
+      toast('ok', 'Local sync complete');
+      await refresh();
+    } catch (e) {
+      fail(e.message || String(e));
+    } finally {
+      busy(btn, false);
+    }
+  }
+  document.getElementById('sync').addEventListener('click', function (ev) { runLocalSync(ev.currentTarget); });
+
+  // ── Users (admin only) ────────────────────────────────────────────────────
   async function loadUsers() {
     var me = await get('/api/users/me');
-    if (!me.user || me.user.role !== 'admin') { usersCard.hidden = true; return; }
-    usersCard.hidden = false;
+    if (!me.user || me.user.role !== 'admin') { setTabVisible('users', false); return; }
+    setTabVisible('users', true);
     var list = await get('/api/users');
     var rows = (list.users || []).map(function (u) {
-      return '<tr><td>' + esc(u.name) + '</td><td>' + esc(u.role) + '</td><td>' + (u.keyCount | 0) + '</td>'
-        + '<td><button class="secondary" data-issue="' + esc(u.id) + '">New key</button> '
-        + '<button class="secondary" data-del="' + esc(u.id) + '">Delete</button></td></tr>';
+      return '<tr><td>' + esc(u.name) + '</td><td class="muted">' + esc(u.role) + '</td><td class="num">' + (u.keyCount | 0) + '</td>'
+        + '<td><button class="btn btn-ghost btn-sm" data-issue="' + esc(u.id) + '" aria-label="Issue a new key for ' + esc(u.name) + '">New key</button> '
+        + '<button class="btn btn-quiet btn-sm" data-del="' + esc(u.id) + '" aria-label="Delete user ' + esc(u.name) + '">'
+        + icon('trash-2') + 'Delete</button></td></tr>';
     }).join('');
-    document.getElementById('users').innerHTML = rows || '<tr><td colspan="4" class="muted">No users.</td></tr>';
-  }
-
-  function jsonHeaders() {
-    var h = headers();
-    h['Content-Type'] = 'application/json';
-    return h;
+    document.getElementById('users').innerHTML = rows
+      || '<tr><td colspan="4" class="table-empty">No users.</td></tr>';
   }
 
   document.getElementById('user-create').addEventListener('click', async function () {
@@ -317,7 +758,8 @@
       if (!res.ok) throw new Error('Create failed: ' + res.status);
       var j = await res.json();
       document.getElementById('user-name').value = '';
-      document.getElementById('new-key').textContent = 'Key for ' + j.user.name + ' (copy now): ' + j.apiKey;
+      showNewKey('Key for ' + j.user.name + ' (copy now)', j.apiKey);
+      toast('ok', 'Created user ' + j.user.name);
       loadUsers();
     } catch (e) {
       fail(e.message || String(e));
@@ -325,62 +767,52 @@
   });
 
   document.getElementById('users').addEventListener('click', async function (ev) {
-    var t = ev.target;
-    var issue = t.getAttribute && t.getAttribute('data-issue');
-    var del = t.getAttribute && t.getAttribute('data-del');
+    var target = ev.target.closest ? ev.target.closest('[data-issue],[data-del]') : null;
+    if (!target) return;
     errBox.textContent = '';
     try {
+      var issue = target.getAttribute('data-issue');
       if (issue) {
         var r = await fetch('/api/users/' + encodeURIComponent(issue) + '/keys', { method: 'POST', headers: headers() });
         if (!r.ok) throw new Error('Issue failed: ' + r.status);
         var j = await r.json();
-        document.getElementById('new-key').textContent = 'New key (copy now): ' + j.apiKey;
+        showNewKey('New key (copy now)', j.apiKey);
+        toast('ok', 'Key issued');
         loadUsers();
-      } else if (del) {
+      } else {
         if (!window.confirm('Delete this user and all their games?')) return;
-        var d = await fetch('/api/users/' + encodeURIComponent(del), { method: 'DELETE', headers: headers() });
+        var d = await fetch('/api/users/' + encodeURIComponent(target.getAttribute('data-del')), { method: 'DELETE', headers: headers() });
         if (!d.ok) throw new Error('Delete failed: ' + d.status);
-        loadUsers();
+        toast('ok', 'User deleted');
+        refresh();
       }
     } catch (e) {
       fail(e.message || String(e));
     }
   });
 
-  document.getElementById('save').addEventListener('click', function () {
+  function showNewKey(label, key) {
+    document.getElementById('new-key').innerHTML = esc(label) + ': <code>' + esc(key) + '</code>';
+  }
+  function showNewApiKey(label, key) {
+    document.getElementById('key-new').innerHTML = esc(label) + ': <code>' + esc(key) + '</code>';
+  }
+
+  // ── Connection controls ───────────────────────────────────────────────────
+  function saveKey() {
     localStorage.setItem('dune_api_key', keyInput.value.trim());
+    toast('ok', 'Key saved');
     refresh();
-  });
-  document.getElementById('refresh').addEventListener('click', refresh);
-  document.getElementById('sync').addEventListener('click', async function () {
-    errBox.textContent = '';
-    try {
-      var res = await fetch('/api/local-sync', { method: 'POST', headers: headers() });
-      if (!res.ok) throw new Error('Sync failed: ' + res.status);
-      refresh();
-    } catch (e) {
-      fail(e.message || String(e));
-    }
-  });
-  document.getElementById('games').addEventListener('click', async function (ev) {
-    var t = ev.target;
-    var delId = t.getAttribute && t.getAttribute('data-delgameid');
-    var delName = t.getAttribute && t.getAttribute('data-delgamename');
-    if (!delId) return;
-    if (!window.confirm('Delete game \"' + (delName || delId) + '\" and all its saves?')) return;
-    errBox.textContent = '';
-    try {
-      var r = await fetch('/api/saves?id=' + encodeURIComponent(delId), { method: 'DELETE', headers: headers() });
-      if (!r.ok) throw new Error('Delete failed: ' + r.status);
-      refresh();
-    } catch (e) { fail(e.message || String(e)); }
-  });
-  // ── Settings (admin) ────────────────────────────────────────────────────────
-  var settingsCard = document.getElementById('settings-card');
+  }
+  document.getElementById('save').addEventListener('click', saveKey);
+  keyInput.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') saveKey(); });
+  refreshBtn.addEventListener('click', function () { refresh(); });
+
+  // ── Settings (admin only) ─────────────────────────────────────────────────
   async function loadSettings() {
     var me = await get('/api/users/me');
-    if (!me.user || me.user.role !== 'admin') { settingsCard.hidden = true; return; }
-    settingsCard.hidden = false;
+    if (!me.user || me.user.role !== 'admin') { setTabVisible('settings', false); return; }
+    setTabVisible('settings', true);
     var s = await get('/api/settings');
     if (s.settings) {
       document.getElementById('st-ollama-endpoint').value = s.settings.ollamaEndpoint || '';
@@ -388,8 +820,10 @@
       document.getElementById('st-maxversions').value = s.settings.maxVersions || 10;
     }
   }
-  document.getElementById('settings-save').addEventListener('click', async function () {
+  document.getElementById('settings-save').addEventListener('click', async function (ev) {
     errBox.textContent = '';
+    var btn = ev.currentTarget;
+    busy(btn, true);
     try {
       var body = {
         ollamaEndpoint: document.getElementById('st-ollama-endpoint').value.trim(),
@@ -401,20 +835,25 @@
       var r = await fetch('/api/settings', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body) });
       if (!r.ok) throw new Error('Save failed: ' + r.status);
       document.getElementById('st-steamgrid').value = '';
-      document.getElementById('settings-status').textContent = 'Saved.';
-      setTimeout(function () { document.getElementById('settings-status').textContent = ''; }, 2000);
-    } catch (e) { fail(e.message || String(e)); }
+      toast('ok', 'Settings saved');
+    } catch (e) {
+      fail(e.message || String(e));
+    } finally {
+      busy(btn, false);
+    }
   });
 
-  // ── API keys (self-service) ────────────────────────────────────────────────
+  // ── API keys (self-service) ───────────────────────────────────────────────
   async function loadKeys() {
     var list = await get('/api/api-keys');
     var keys = list.keys || [];
     var rows = keys.map(function (k) {
-      return '<tr><td>' + esc(k.id) + '</td><td>' + esc(k.description || '') + '</td><td>' + esc(k.createdAt) + '</td>'
-        + '<td><button class="secondary" data-revoke="' + esc(k.id) + '">Revoke</button></td></tr>';
+      return '<tr><td>' + esc(k.id) + '</td><td class="muted">' + esc(k.description || '') + '</td><td class="muted">' + esc(formatWhen(k.createdAt)) + '</td>'
+        + '<td><button class="btn btn-quiet btn-sm" data-revoke="' + esc(k.id) + '" aria-label="Revoke key ' + esc(k.id) + '">'
+        + icon('trash-2') + 'Revoke</button></td></tr>';
     }).join('');
-    document.getElementById('keys').innerHTML = rows || '<tr><td colspan="4" class="muted">No keys.</td></tr>';
+    document.getElementById('keys').innerHTML = rows
+      || '<tr><td colspan="4" class="table-empty">No keys yet — issue one above to connect a device.</td></tr>';
   }
   document.getElementById('key-issue').addEventListener('click', async function () {
     errBox.textContent = '';
@@ -424,30 +863,25 @@
       if (!r.ok) throw new Error('Issue failed: ' + r.status);
       var j = await r.json();
       document.getElementById('key-desc').value = '';
-      document.getElementById('key-new').textContent = 'New key (copy now): ' + j.key;
+      showNewApiKey('New key (copy now)', j.key);
+      toast('ok', 'Key issued');
       loadKeys();
     } catch (e) { fail(e.message || String(e)); }
   });
   document.getElementById('keys').addEventListener('click', async function (ev) {
-    var t = ev.target;
-    var id = t.getAttribute && t.getAttribute('data-revoke');
-    if (!id) return;
+    var t = ev.target.closest ? ev.target.closest('[data-revoke]') : null;
+    if (!t) return;
     if (!window.confirm('Revoke this key?')) return;
     errBox.textContent = '';
     try {
-      var r = await fetch('/api/api-keys/' + encodeURIComponent(id), { method: 'DELETE', headers: headers() });
+      var r = await fetch('/api/api-keys/' + encodeURIComponent(t.getAttribute('data-revoke')), { method: 'DELETE', headers: headers() });
       if (!r.ok) throw new Error('Revoke failed: ' + r.status);
+      toast('ok', 'Key revoked');
       loadKeys();
     } catch (e) { fail(e.message || String(e)); }
   });
 
-  var _origRefresh = refresh;
-  refresh = async function () {
-    await _origRefresh();
-    try { await loadSettings(); } catch (e) { settingsCard.hidden = true; }
-    try { await loadKeys(); } catch (e) { /* ignore */ }
-  };
-
+  showTab((location.hash || '').slice(1));
   tryAutoLogin();
 })();
 </script>
