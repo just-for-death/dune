@@ -3,6 +3,8 @@
 All notable changes, newest first. Format: Keep a Changelog (Added/Fixed/Changed).
 
 ## [Unreleased]
+
+## [0.2.0-beta.2] — 2026-10-18
 ### Added
 - Desktop app icon (`packages/client/build/icon.png`) wired into electron-builder.
 - REST contract tests for `/api/settings`, `DELETE /api/saves`, and admin user-key management, plus persisted-secret and CORS-allowlist unit tests.
