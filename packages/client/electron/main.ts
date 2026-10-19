@@ -5,10 +5,19 @@ import * as fs from 'fs'
 import Store from 'electron-store'
 import AdmZip from 'adm-zip'
 import axios from 'axios'
-import { diffFingerprints, changedPaths, nextId } from '@dune/shared'
+import { nextId } from '@dune/shared'
 import type { FileManifest, HashManifest } from '@dune/shared'
 import { autoDetectGames } from './scanner'
 import { autoUpdater } from 'electron-updater'
+import {
+  normalizeUrl,
+  expandPath,
+  asString,
+  sanitizeGame,
+  sanitizeSettings,
+  planUpload,
+  commitUploaded,
+} from './utils'
 
 // Define default games if empty
 const defaultGames = [
@@ -36,7 +45,7 @@ const store = new Store({
       autoSyncEnabled: false,
       autoSyncFreq: 'never',
       steamGridDbKey: '',
-      scanRoots: []
+      scanRoots: [] as string[]
     }
   }
 })
@@ -114,88 +123,8 @@ export function saveServerKey(key: string): void {
   (store as any).delete(LEGACY_KEY);
 }
 
-export function validateServerUrl(rawUrl: string): { valid: boolean; url: string; error?: string } {
-  if (!rawUrl || typeof rawUrl !== 'string') {
-    return { valid: false, url: '', error: 'Server URL is required' };
-  }
-  let normalized = rawUrl.trim();
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//i.test(normalized)) {
-    if (!/^https?:\/\//i.test(normalized)) {
-      return { valid: false, url: '', error: 'Only HTTP and HTTPS protocols are allowed' };
-    }
-  } else {
-    normalized = 'http://' + normalized;
-  }
-  normalized = normalized.replace(/\/+$/, '');
 
-  let parsed: URL;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    return { valid: false, url: '', error: 'Invalid URL format' };
-  }
 
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { valid: false, url: '', error: 'Only HTTP and HTTPS protocols are allowed' };
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-
-  // SSRF Protection: Block cloud metadata endpoints & link-local addresses
-  const blockedHostnames = [
-    '169.254.169.254',
-    'metadata.google.internal',
-    '100.100.100.200',
-    '169.254.169.253',
-    'instance-data',
-  ];
-  if (blockedHostnames.includes(hostname) || hostname.endsWith('.metadata.google.internal')) {
-    return { valid: false, url: '', error: 'Access to cloud metadata endpoints is prohibited' };
-  }
-
-  // Block IPv4 link-local (169.254.0.0/16)
-  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
-    return { valid: false, url: '', error: 'Access to link-local IPv4 addresses is prohibited' };
-  }
-
-  // Block IPv6 link-local and unique local
-  if (
-    hostname.startsWith('fe80:') ||
-    hostname.startsWith('fd00:') ||
-    hostname.startsWith('[fe80:') ||
-    hostname.startsWith('[fd00:')
-  ) {
-    return { valid: false, url: '', error: 'Access to link-local/unique-local IPv6 addresses is prohibited' };
-  }
-
-  // Dangerous non-HTTP ports
-  if (parsed.port) {
-    const port = parseInt(parsed.port, 10);
-    const blockedPorts = [21, 22, 23, 25, 53, 69, 110, 119, 123, 143, 161, 194, 445];
-    if (blockedPorts.includes(port)) {
-      return { valid: false, url: '', error: `Port ${port} is not allowed` };
-    }
-  }
-
-  return { valid: true, url: normalized };
-}
-
-export function normalizeUrl(url: string): string {
-  const check = validateServerUrl(url);
-  if (!check.valid) {
-    throw new Error(check.error || 'Invalid server URL');
-  }
-  return check.url;
-}
-
-export function expandPath(p: string): string {
-  if (!p) return '';
-  if (process.platform === 'win32') {
-    return p.replace(/%USERPROFILE%/g, process.env.USERPROFILE || '');
-  } else {
-    return p.replace(/^~/, process.env.HOME || '');
-  }
-}
 
 let autoSyncInterval: NodeJS.Timeout | null = null;
 let tray: Tray | null = null;
@@ -238,9 +167,7 @@ interface GameSyncState {
 }
 type SyncState = Record<string, GameSyncState>;
 
-export function toPosix(rel: string): string {
-  return rel.split(path.sep).join('/');
-}
+
 
 export function getSyncState(): SyncState {
   return (store.get('syncState') as SyncState) || {};
@@ -253,51 +180,15 @@ export function saveGameState(game: string, patch: Partial<GameSyncState>): void
 }
 
 /** size+mtime fingerprint for every readable local file, keyed by POSIX rel. */
-export function buildLocalManifest(files: { local: string; rel: string }[]): FileManifest {
-  const manifest: FileManifest = {};
-  for (const f of files) {
-    try {
-      const stat = fs.statSync(f.local);
-      manifest[toPosix(f.rel)] = { size: stat.size, mtimeMs: Math.round(stat.mtimeMs) };
-    } catch {
-      /* unreadable: treat as absent */
-    }
-  }
-  return manifest;
-}
 
-interface PlannedUpload {
-  game: string;
-  rel: string;
-  local: string;
-}
 
 /**
- * Reduce a game's local files to the ones that changed since the last push.
  * `deleted` names files that were pushed before but are gone now; it stays
  * empty when the local tree is empty, so an unmounted/empty save dir can never
  * wipe the server copy.
  */
-export function planUpload(
-  game: string,
-  files: { local: string; rel: string }[],
-): { plan: PlannedUpload[]; localManifest: FileManifest; deleted: string[] } {
-  const localManifest = buildLocalManifest(files);
-  const delta = diffFingerprints(getSyncState()[game]?.uploaded || {}, localManifest);
-  const wanted = new Set(changedPaths(delta));
-  const plan = files
-    .map(f => ({ game, rel: toPosix(f.rel), local: f.local }))
-    .filter(f => wanted.has(f.rel));
-  const deleted = files.length > 0 ? delta.deleted : [];
-  return { plan, localManifest, deleted };
-}
 
 /** Persist what actually landed: unchanged + succeeded, minus failures. */
-export function commitUploaded(game: string, localManifest: FileManifest, failedRels: string[]): void {
-  const uploaded = { ...localManifest };
-  for (const rel of failedRels) delete uploaded[rel];
-  saveGameState(game, { uploaded });
-}
 
 async function deleteRemoteFile(baseUrl: string, gameName: string, relativePath: string): Promise<void> {
   const cleanUrl = normalizeUrl(baseUrl);
@@ -378,7 +269,7 @@ async function performCloudSync(credentials: any) {
         }
 
         const syncId = Date.now().toString();
-        const { plan, localManifest, deleted } = planUpload(game.name, filePaths);
+        const { plan, localManifest, deleted } = planUpload(game.name, filePaths, getSyncState);
         let attempted = 0;
         const failedRels: string[] = [];
         for (let i = 0; i < plan.length; i += 5) {
@@ -401,7 +292,7 @@ async function performCloudSync(credentials: any) {
             /* keep going */
           }
         }
-        commitUploaded(game.name, localManifest, failedRels);
+        commitUploaded(game.name, localManifest, failedRels, saveGameState);
         if (plan.length > 0) {
           try {
             await refreshRemoteManifest(cleanUrl, game.name);
@@ -486,7 +377,7 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
       byGame.set(f.game, list);
     }
     const plans = new Map<string, ReturnType<typeof planUpload>>();
-    for (const [game, files] of byGame) plans.set(game, planUpload(game, files));
+    for (const [game, files] of byGame) plans.set(game, planUpload(game, files, getSyncState));
 
     const toUpload = [...plans.values()].flatMap(p => p.plan);
     const deletions = [...plans.entries()].flatMap(([game, p]) =>
@@ -527,7 +418,7 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
 
     // Persist exactly what landed, per game.
     for (const [game, p] of plans) {
-      commitUploaded(game, p.localManifest, failedByGame.get(game) || []);
+      commitUploaded(game, p.localManifest, failedByGame.get(game) || [], saveGameState);
     }
 
     // Refresh the server baseline for games we pushed to, so a later restore is
@@ -666,43 +557,7 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
 // Renderer runs with contextIsolation but must still be treated as
 // untrusted input at every IPC boundary: validate shapes, whitelist
 // fields, and normalize types before touching the store or fs.
-const GAME_STATUSES = ['Pending Upload', 'In Sync', 'Error'];
-const AUTO_SYNC_FREQS = ['never', '1h', '6h', '24h'];
 const ART_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'];
-
-export function asString(v: unknown, max = 2000): string {
-  return typeof v === 'string' ? v.slice(0, max) : '';
-}
-
-export function sanitizeGame(input: unknown): { name: string; winPath: string; linPath: string; lastSync: string; status: string; thumbnail: string } {
-  const g = (input ?? {}) as Record<string, unknown>;
-  const name = asString(g.name, 200).trim();
-  if (!name) throw new Error('Game title is required');
-  const status = asString(g.status, 32);
-  return {
-    name,
-    winPath: asString(g.winPath),
-    linPath: asString(g.linPath),
-    lastSync: asString(g.lastSync, 64) || 'Never',
-    status: GAME_STATUSES.includes(status) ? status : 'Pending Upload',
-    thumbnail: asString(g.thumbnail),
-  };
-}
-
-export function sanitizeSettings(input: unknown, fallback: any): any {
-  const s = (input ?? {}) as Record<string, unknown>;
-  const scanRoots = Array.isArray(s.scanRoots)
-    ? s.scanRoots.filter((r): r is string => typeof r === 'string').slice(0, 50).map(r => r.slice(0, 2000))
-    : fallback?.scanRoots ?? [];
-  const freq = asString(s.autoSyncFreq, 8);
-  return {
-    runInBackground: s.runInBackground === true,
-    autoSyncEnabled: s.autoSyncEnabled === true,
-    autoSyncFreq: AUTO_SYNC_FREQS.includes(freq) ? freq : 'never',
-    steamGridDbKey: asString(s.steamGridDbKey, 500),
-    scanRoots,
-  };
-}
 
 ipcMain.handle('config:load', () => {
   return {
