@@ -31,6 +31,9 @@
     font-size: var(--fs-md); line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
+  /* Author display rules (e.g. .tab's inline-flex) beat the UA [hidden] rule,
+     so hidden tabs/cards stayed visible. Make `hidden` mean hidden. */
+  [hidden] { display: none !important; }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -135,7 +138,8 @@
      buttons would out-shout the data. */
   .btn-quiet { background: transparent; border-color: transparent; color: var(--muted); }
   .btn-quiet:hover { background: var(--red-soft); border-color: rgba(240, 85, 72, .35); color: var(--red); }
-  .btn-danger { background: var(--red-soft); border-color: rgba(240, 85, 72, .35); color: var(--red); }
+  /* Text is a lighter red than --red so it clears 4.5:1 on the tinted fill. */
+  .btn-danger { background: var(--red-soft); border-color: rgba(240, 85, 72, .35); color: #ff7b70; }
   .btn-danger:hover { background: rgba(240, 85, 72, .22); }
   .btn-sm { padding: 5px 10px; font-size: var(--fs-sm); }
   .btn.is-busy .icon { animation: spin 1s linear infinite; }
@@ -168,6 +172,7 @@
   .pill .icon { width: 13px; height: 13px; }
   .pill-ok { background: var(--green-soft); color: var(--green); }
   .pill-warn { background: var(--sand-soft); color: var(--sand); }
+  .pill-muted { background: var(--panel-3); color: var(--muted); }
   .table-empty { padding: var(--sp-6) var(--sp-4); color: var(--muted); text-align: center; white-space: normal; }
   .table-empty .icon { display: block; width: 24px; height: 24px; margin: 0 auto var(--sp-2); opacity: .6; }
 
@@ -180,6 +185,18 @@
   .empty .icon { width: 24px; height: 24px; opacity: .6; }
   .key-line { margin: var(--sp-2) 0 0; font-size: var(--fs-sm); word-break: break-all; }
   .key-line code { padding: 2px 6px; border-radius: var(--r-sm); background: var(--bg); border: 1px solid var(--line); color: var(--sand); }
+
+  /* ── Server outage banner (DUN-099) ────────────────────────────────────── */
+  .outage { max-width: 1080px; margin: 0 auto; padding: var(--sp-5) var(--sp-5) 0; }
+  .outage-card {
+    display: flex; align-items: flex-start; gap: var(--sp-3); flex-wrap: wrap;
+    padding: var(--sp-5); background: var(--panel);
+    border: 1px solid rgba(240, 85, 72, .45); border-left: 3px solid var(--red); border-radius: var(--r-lg);
+  }
+  .outage-card > .icon { margin-top: 3px; color: var(--red); }
+  .outage-body { flex: 1 1 260px; min-width: 0; }
+  .outage-msg { margin: 0; color: var(--text); font-size: var(--fs-lg); font-weight: 600; overflow-wrap: anywhere; }
+  .outage-detail { min-height: 1.2em; margin: 4px 0 0; color: var(--muted); font-size: var(--fs-sm); }
 
   /* ── Toasts ────────────────────────────────────────────────────────────── */
   .toaster { position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 200; display: flex; flex-direction: column; gap: var(--sp-2); max-width: min(420px, 90vw); }
@@ -202,6 +219,7 @@
     .tabs { order: 3; flex-basis: 100%; }
     .topbar-actions { margin-left: auto; }
     .content { padding: var(--sp-4); }
+    .outage { padding: var(--sp-4) var(--sp-4) 0; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -258,7 +276,20 @@
   </div>
 </header>
 
-<main class="content">
+<!-- DUN-099: shown instead of the dashboard when /ready answers 503. Not dismissable;
+     the only action is a single, user-triggered re-check. -->
+<section class="outage" id="outage" aria-labelledby="outage-msg" hidden>
+  <div class="outage-card">
+    <svg class="icon icon-lg" aria-hidden="true" focusable="false"><use href="#i-circle-alert"></use></svg>
+    <div class="outage-body">
+      <p class="outage-msg" id="outage-msg" role="alert"></p>
+      <p class="outage-detail" id="outage-detail" aria-live="polite"></p>
+    </div>
+    <button class="btn btn-ghost" id="outage-retry" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh-cw"></use></svg><span>Check again</span></button>
+  </div>
+</section>
+
+<main class="content" id="main">
   <!-- ── Overview ─────────────────────────────────────────────────────────── -->
   <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
     <div class="section-head">
@@ -399,22 +430,16 @@
     <div class="section-head">
       <div>
         <h1>Settings</h1>
-        <p>Server-wide configuration. Admin only.</p>
+        <p>Server-wide configuration. Changes need an admin key.</p>
       </div>
     </div>
     <div class="card" id="settings-card">
       <h2 class="card-head"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings"></use></svg>Server configuration</h2>
       <div class="row">
         <div class="grow">
-          <label for="st-steamgrid">SteamGridDB API key</label>
-          <input id="st-steamgrid" type="password" autocomplete="off" placeholder="(unchanged)" />
-        </div>
-        <div class="grow">
           <label for="st-ollama-endpoint">Ollama endpoint</label>
           <input id="st-ollama-endpoint" placeholder="http://ollama:11434" />
         </div>
-      </div>
-      <div class="row" style="margin-top:var(--sp-3)">
         <div class="grow">
           <label for="st-ollama-model">Ollama model</label>
           <input id="st-ollama-model" placeholder="phi4-mini:latest" />
@@ -427,6 +452,27 @@
       <div class="row" style="margin-top:var(--sp-4);align-items:center">
         <button class="btn" id="settings-save" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-circle-check"></use></svg><span>Save settings</span></button>
       </div>
+      <div class="err" id="settings-err" role="alert"></div>
+    </div>
+
+    <!-- DUN-092: the SteamGridDB key is write-only. The page only ever knows
+         whether it is set; the input is never filled from the server. -->
+    <div class="card" id="sgdb-card">
+      <h2 class="card-head">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg>SteamGridDB API key
+        <span class="pill pill-muted push" id="sgdb-state"><span class="sr-only">Status: </span><span id="sgdb-state-text">Checking…</span></span>
+      </h2>
+      <p class="card-desc">Used to fetch cover art. The server stores it encrypted and never shows it again, not even to admins. You can replace it or clear it.</p>
+      <p class="card-desc" id="sgdb-admin-note" hidden>Only admins can replace or clear this key. Sign in with an admin key to change it.</p>
+      <div class="row">
+        <div class="grow">
+          <label for="st-steamgrid">New SteamGridDB API key</label>
+          <input id="st-steamgrid" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="sgdb-admin-note sgdb-err" />
+        </div>
+        <button class="btn" id="sgdb-replace" type="button" aria-describedby="sgdb-admin-note"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-circle-check"></use></svg><span id="sgdb-replace-label">Replace</span></button>
+        <button class="btn btn-danger" id="sgdb-clear" type="button" aria-describedby="sgdb-admin-note"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash-2"></use></svg><span>Clear</span></button>
+      </div>
+      <div class="err" id="sgdb-err" role="alert"></div>
     </div>
   </section>
 </main>
@@ -444,6 +490,26 @@
   var loginErr = document.getElementById('login-err');
   var toaster = document.getElementById('toaster');
   var refreshBtn = document.getElementById('refresh');
+  var mainEl = document.getElementById('main');
+  var tabsEl = document.querySelector('.tabs');
+  var topActions = document.querySelector('.topbar-actions');
+  var outageEl = document.getElementById('outage');
+  var outageMsg = document.getElementById('outage-msg');
+  var outageDetail = document.getElementById('outage-detail');
+  var outageRetry = document.getElementById('outage-retry');
+  var settingsErr = document.getElementById('settings-err');
+  var outageActive = false;
+
+  // User-facing copy. REST errors are `{ error, code }`; `code` is for
+  // branching only and is never shown.
+  var MSG = {
+    unauthorized: "The server didn't accept this key.",
+    forbidden: 'This needs an admin key.',
+    network: "Can't reach the Dune server.",
+    generic: "The server couldn't complete this request.",
+    dbDown: "Server unavailable: the database couldn't be opened. Check the server logs.",
+    dirDown: "Server unavailable: the data directory can't be written. Check the server logs.",
+  };
 
   keyInput.value = localStorage.getItem('dune_api_key') || '';
   loginKey.value = localStorage.getItem('dune_api_key') || '';
@@ -478,9 +544,13 @@
     while (toaster.children.length > 4) toaster.removeChild(toaster.firstChild);
     setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 5000);
   }
-  function fail(msg) {
-    errBox.textContent = msg;
+  /** Show an error (string or Error) in `box` (default: the Overview box) and as a toast. */
+  function fail(e, box) {
+    var msg = typeof e === 'string' ? e : (e && e.message) || MSG.generic;
+    (box || errBox).textContent = msg;
     toast('bad', msg);
+    // A 5xx may mean the database is gone (DUN-099): ask /ready once.
+    if (e && typeof e === 'object' && e.status >= 500) probeReady();
   }
   function busy(btn, on) {
     if (!btn) return;
@@ -496,12 +566,37 @@
     tile.classList.remove('tone-ok', 'tone-warn', 'tone-bad');
     if (tone) tile.classList.add('tone-' + tone);
   }
-  async function get(path) {
-    var res = await fetch(path, { headers: headers() });
-    if (res.status === 401 || res.status === 403) throw new Error('Rejected (401/403) — set a valid server API key.');
-    if (!res.ok) throw new Error('Request failed: ' + res.status);
-    return res.json();
+  function apiError(message, status, code) {
+    var e = new Error(message);
+    e.status = status || 0;
+    e.code = code || '';
+    return e;
   }
+  /** Turn a failed Response into an Error with a friendly message. */
+  async function readError(res) {
+    var body = null;
+    try { body = await res.json(); } catch (e) { body = null; }
+    var code = body && typeof body.code === 'string' ? body.code : '';
+    var msg;
+    if (res.status === 401) msg = MSG.unauthorized;
+    // authMiddleware answers an unknown/revoked key with 403 INVALID_API_KEY;
+    // that is a rejected key, not a missing admin role.
+    else if (res.status === 403) msg = code === 'INVALID_API_KEY' ? MSG.unauthorized : MSG.forbidden;
+    else if (body && typeof body.error === 'string' && body.error.trim()) msg = body.error.trim();
+    else msg = MSG.generic;
+    return apiError(msg, res.status, code);
+  }
+  /** fetch() with the page's key; throws friendly Errors (network, 4xx, 5xx). */
+  async function request(path, opts) {
+    opts = opts || {};
+    var init = { method: opts.method || 'GET', headers: opts.body !== undefined ? jsonHeaders() : headers() };
+    if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+    var res;
+    try { res = await fetch(path, init); } catch (e) { throw apiError(MSG.network, 0, ''); }
+    if (!res.ok) throw await readError(res);
+    try { return await res.json(); } catch (e) { return null; }
+  }
+  function get(path) { return request(path); }
   /** ISO timestamps are unreadable in a table; fall back to the raw value. */
   function formatWhen(value) {
     if (!value || value === 'Never') return 'Never';
@@ -564,15 +659,88 @@
   });
   window.addEventListener('hashchange', function () { showTab((location.hash || '').slice(1)); });
 
+  // ── Readiness / outage (DUN-099) ──────────────────────────────────────────
+  // /ready needs no key and is never rate limited. It is asked once per page
+  // load, per refresh, after a 5xx, or when the user presses "Check again";
+  // never on a timer, so a dead database can't turn into a request storm.
+  var probing = null;
+  /** Resolves 'ready' | 'down' (503, banner shown) | 'unreachable' | 'unknown'. */
+  function probeReady() {
+    if (probing) return probing;
+    probing = (async function () {
+      try {
+        var res = await fetch('/ready', { cache: 'no-store' });
+        var body = null;
+        try { body = await res.json(); } catch (e) { body = null; }
+        if (res.status === 503) { showOutage(body); return 'down'; }
+        return res.ok && body && body.ready ? 'ready' : 'unknown';
+      } catch (e) {
+        return 'unreachable';
+      } finally {
+        probing = null;
+      }
+    })();
+    return probing;
+  }
+
+  function showOutage(body) {
+    var checks = (body && body.checks) || {};
+    var dirOnly = checks.database && checks.database.ok === true && checks.dataDir && checks.dataDir.ok === false;
+    var first = !outageActive;
+    outageActive = true;
+    loginOverlay.style.display = 'none';
+    mainEl.hidden = true;
+    tabsEl.hidden = true;
+    topActions.hidden = true;
+    outageEl.hidden = false;
+    outageMsg.textContent = dirOnly ? MSG.dirDown : MSG.dbDown;
+    setMetric('st-ready', 'not ready', 'bad');
+    if (first) outageRetry.focus();
+  }
+
+  function hideOutage() {
+    outageActive = false;
+    outageEl.hidden = true;
+    outageMsg.textContent = '';
+    outageDetail.textContent = '';
+    mainEl.hidden = false;
+    tabsEl.hidden = false;
+    topActions.hidden = false;
+  }
+
+  outageRetry.addEventListener('click', async function () {
+    busy(outageRetry, true);
+    outageDetail.textContent = 'Checking…';
+    var state = await probeReady();
+    busy(outageRetry, false);
+    if (state === 'down') {
+      outageDetail.textContent = 'Still unavailable. Fix the cause on the server, restart it, then check again.';
+      outageRetry.focus();
+    } else if (state === 'unreachable') {
+      outageDetail.textContent = MSG.network;
+      outageRetry.focus();
+    } else {
+      hideOutage();
+      tryAutoLogin();
+    }
+  });
+
   // ── Login gate ────────────────────────────────────────────────────────────
+  /** Resolves the key's user, or throws a friendly Error (with .status). */
   async function verifyKey(k) {
-    if (!k) return false;
-    try {
-      var r = await fetch('/api/users/me', { headers: { 'x-api-key': k } });
-      if (!r.ok) return false;
-      var j = await r.json();
-      return !!(j && j.user);
-    } catch (e) { return false; }
+    var r;
+    try { r = await fetch('/api/users/me', { headers: { 'x-api-key': k } }); } catch (e) { throw apiError(MSG.network, 0, ''); }
+    if (!r.ok) throw await readError(r);
+    var j = null;
+    try { j = await r.json(); } catch (e) { j = null; }
+    if (!(j && j.user)) throw apiError(MSG.unauthorized, 401, '');
+    return j.user;
+  }
+  /** Login-gate copy for a verifyKey failure; resolves null when the outage banner took over. */
+  async function loginMessage(e) {
+    if (e.status >= 500 && (await probeReady()) === 'down') return null;
+    if (e.status === 401 || e.status === 403) return MSG.unauthorized;
+    return e.message || MSG.generic;
   }
 
   function openLogin(message) {
@@ -583,13 +751,24 @@
   async function tryAutoLogin() {
     var k = (localStorage.getItem('dune_api_key') || '').trim();
     if (!k) { openLogin(''); return; }
-    if (await verifyKey(k)) {
-      keyInput.value = k;
-      loginOverlay.style.display = 'none';
-      refresh();
-    } else {
-      openLogin('Stored key is invalid. Enter a new one.');
+    try {
+      await verifyKey(k);
+    } catch (e) {
+      var m = await loginMessage(e);
+      if (m !== null) openLogin(e.status === 401 || e.status === 403 ? m + ' Enter a new one.' : m);
+      return;
     }
+    keyInput.value = k;
+    loginOverlay.style.display = 'none';
+    refresh();
+  }
+
+  /** First load: check readiness before anything that needs the database. */
+  async function boot() {
+    var state = await probeReady();
+    if (state === 'down') return;
+    if (state === 'unreachable') { openLogin(MSG.network); return; }
+    tryAutoLogin();
   }
 
   async function connect(key) {
@@ -597,9 +776,15 @@
     if (!key) { loginErr.textContent = 'Enter a key.'; return; }
     var btn = document.getElementById('login-connect');
     busy(btn, true);
-    var valid = await verifyKey(key);
+    try {
+      await verifyKey(key);
+    } catch (e) {
+      var m = await loginMessage(e);
+      busy(btn, false);
+      if (m !== null) loginErr.textContent = m;
+      return;
+    }
     busy(btn, false);
-    if (!valid) { loginErr.textContent = 'Invalid key.'; return; }
     localStorage.setItem('dune_api_key', key);
     keyInput.value = key;
     loginOverlay.style.display = 'none';
@@ -622,18 +807,22 @@
 
   // ── Data loading ──────────────────────────────────────────────────────────
   async function refresh() {
+    if (outageActive) return;
     errBox.textContent = '';
     busy(refreshBtn, true);
     try {
+      // DUN-099: readiness first, so a dead database shows the outage banner
+      // instead of a page of empty tables and auth errors.
+      var readyState = await probeReady();
+      if (readyState === 'down') return;
       // One round trip per independent endpoint, then one parallel batch per
       // game (the old code awaited 2N requests one after another).
       var head = await Promise.all([
         get('/api/users/me').catch(function () { return null; }),
         get('/health').catch(function () { return null; }),
-        get('/ready').catch(function () { return null; }),
         get('/api/saves'),
       ]);
-      var me = head[0], health = head[1], ready = head[2], saves = head[3];
+      var me = head[0], health = head[1], saves = head[2];
       var isAdmin = !!(me && me.user && me.user.role === 'admin');
 
       var ownerNames = {};
@@ -644,7 +833,7 @@
 
       var live = !!(health && health.status === 'ok');
       setMetric('st-health', live ? 'ok' : 'down', live ? 'ok' : 'bad');
-      var isReady = !!(ready && ready.ready);
+      var isReady = readyState === 'ready';
       setMetric('st-ready', isReady ? 'ready' : 'not ready', isReady ? 'ok' : 'warn');
 
       var games = (saves && saves.games) || [];
@@ -684,14 +873,19 @@
           + 'No games tracked yet. Push saves from the desktop app, or run a local sync once sources are configured.</td></tr>';
 
       setTabVisible('users', isAdmin);
-      setTabVisible('settings', isAdmin);
+      // Settings is visible to everyone for the SteamGridDB key status; the
+      // server-configuration card stays admin-only.
+      setTabVisible('settings', true);
+      document.getElementById('settings-card').hidden = !isAdmin;
+      sgdb.admin = isAdmin;
       if (isAdmin) {
         await loadUsers().catch(function () { setTabVisible('users', false); });
-        await loadSettings().catch(function () { setTabVisible('settings', false); });
+        await loadSettings().catch(function (e) { fail(e, settingsErr); });
       }
+      await loadProviderKey();
       await loadKeys().catch(function () { /* members without key access keep the empty table */ });
     } catch (e) {
-      fail(e.message || String(e));
+      fail(e);
     } finally {
       busy(refreshBtn, false);
     }
@@ -706,23 +900,21 @@
     if (!window.confirm('Delete game "' + (delName || delId) + '" and all its saves?')) return;
     errBox.textContent = '';
     try {
-      var r = await fetch('/api/saves?id=' + encodeURIComponent(delId), { method: 'DELETE', headers: headers() });
-      if (!r.ok) throw new Error('Delete failed: ' + r.status);
+      await request('/api/saves?id=' + encodeURIComponent(delId), { method: 'DELETE' });
       toast('ok', 'Deleted ' + (delName || delId));
       refresh();
-    } catch (e) { fail(e.message || String(e)); }
+    } catch (e) { fail(e); }
   });
 
   async function runLocalSync(btn) {
     errBox.textContent = '';
     busy(btn, true);
     try {
-      var res = await fetch('/api/local-sync', { method: 'POST', headers: headers() });
-      if (!res.ok) throw new Error('Sync failed: ' + res.status);
+      await request('/api/local-sync', { method: 'POST' });
       toast('ok', 'Local sync complete');
       await refresh();
     } catch (e) {
-      fail(e.message || String(e));
+      fail(e);
     } finally {
       busy(btn, false);
     }
@@ -751,18 +943,13 @@
       var name = document.getElementById('user-name').value.trim();
       if (!name) { fail('Enter a user name first.'); return; }
       var role = document.getElementById('user-role').value;
-      var res = await fetch('/api/users', {
-        method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify({ name: name, role: role }),
-      });
-      if (!res.ok) throw new Error('Create failed: ' + res.status);
-      var j = await res.json();
+      var j = await request('/api/users', { method: 'POST', body: { name: name, role: role } });
       document.getElementById('user-name').value = '';
       showNewKey('Key for ' + j.user.name + ' (copy now)', j.apiKey);
       toast('ok', 'Created user ' + j.user.name);
       loadUsers();
     } catch (e) {
-      fail(e.message || String(e));
+      fail(e);
     }
   });
 
@@ -773,21 +960,18 @@
     try {
       var issue = target.getAttribute('data-issue');
       if (issue) {
-        var r = await fetch('/api/users/' + encodeURIComponent(issue) + '/keys', { method: 'POST', headers: headers() });
-        if (!r.ok) throw new Error('Issue failed: ' + r.status);
-        var j = await r.json();
+        var j = await request('/api/users/' + encodeURIComponent(issue) + '/keys', { method: 'POST' });
         showNewKey('New key (copy now)', j.apiKey);
         toast('ok', 'Key issued');
         loadUsers();
       } else {
         if (!window.confirm('Delete this user and all their games?')) return;
-        var d = await fetch('/api/users/' + encodeURIComponent(target.getAttribute('data-del')), { method: 'DELETE', headers: headers() });
-        if (!d.ok) throw new Error('Delete failed: ' + d.status);
+        await request('/api/users/' + encodeURIComponent(target.getAttribute('data-del')), { method: 'DELETE' });
         toast('ok', 'User deleted');
         refresh();
       }
     } catch (e) {
-      fail(e.message || String(e));
+      fail(e);
     }
   });
 
@@ -810,38 +994,130 @@
 
   // ── Settings (admin only) ─────────────────────────────────────────────────
   async function loadSettings() {
-    var me = await get('/api/users/me');
-    if (!me.user || me.user.role !== 'admin') { setTabVisible('settings', false); return; }
-    setTabVisible('settings', true);
     var s = await get('/api/settings');
-    if (s.settings) {
+    if (s && s.settings) {
       document.getElementById('st-ollama-endpoint').value = s.settings.ollamaEndpoint || '';
       document.getElementById('st-ollama-model').value = s.settings.ollamaModel || '';
       document.getElementById('st-maxversions').value = s.settings.maxVersions || 10;
     }
   }
   document.getElementById('settings-save').addEventListener('click', async function (ev) {
-    errBox.textContent = '';
+    settingsErr.textContent = '';
     var btn = ev.currentTarget;
     busy(btn, true);
     try {
+      // DUN-092: never send steamGridApiKey here (the server answers 400
+      // WRITE_ONLY_FIELD); it has its own write-only route below.
       var body = {
         ollamaEndpoint: document.getElementById('st-ollama-endpoint').value.trim(),
         ollamaModel: document.getElementById('st-ollama-model').value.trim(),
         maxVersions: parseInt(document.getElementById('st-maxversions').value, 10) || 10,
       };
-      var sg = document.getElementById('st-steamgrid').value.trim();
-      if (sg) body.steamGridApiKey = sg;
-      var r = await fetch('/api/settings', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body) });
-      if (!r.ok) throw new Error('Save failed: ' + r.status);
-      document.getElementById('st-steamgrid').value = '';
+      await request('/api/settings', { method: 'POST', body: body });
       toast('ok', 'Settings saved');
     } catch (e) {
-      fail(e.message || String(e));
+      fail(e, settingsErr);
     } finally {
       busy(btn, false);
     }
   });
+
+  // ── SteamGridDB key (write-only, DUN-092) ─────────────────────────────────
+  // GET -> { set } for any user; PUT { key } / DELETE are admin-only and also
+  // answer { set }. The key itself is never read back, so the input is only
+  // ever what the admin typed and is cleared after a successful save.
+  var SGDB_PATH = '/api/provider-keys/steamgriddb';
+  var sgdb = { set: null, admin: false, busy: false };
+  var sgdbInput = document.getElementById('st-steamgrid');
+  var sgdbReplace = document.getElementById('sgdb-replace');
+  var sgdbClear = document.getElementById('sgdb-clear');
+  var sgdbErr = document.getElementById('sgdb-err');
+
+  function renderSgdb() {
+    var pill = document.getElementById('sgdb-state');
+    var text = document.getElementById('sgdb-state-text');
+    pill.classList.remove('pill-ok', 'pill-warn', 'pill-muted');
+    if (sgdb.set === true) { pill.classList.add('pill-ok'); text.textContent = 'Set'; }
+    else if (sgdb.set === false) { pill.classList.add('pill-warn'); text.textContent = 'Not set'; }
+    else { pill.classList.add('pill-muted'); text.textContent = 'Unknown'; }
+    document.getElementById('sgdb-replace-label').textContent = sgdb.set === true ? 'Replace' : 'Set key';
+    document.getElementById('sgdb-admin-note').hidden = sgdb.admin;
+    // Only point at the admin note while it is shown (hidden text still counts as a description).
+    sgdbInput.setAttribute('aria-describedby', sgdb.admin ? 'sgdb-err' : 'sgdb-admin-note sgdb-err');
+    [sgdbReplace, sgdbClear].forEach(function (b) {
+      if (sgdb.admin) b.removeAttribute('aria-describedby');
+      else b.setAttribute('aria-describedby', 'sgdb-admin-note');
+    });
+    sgdbInput.disabled = !sgdb.admin || sgdb.busy;
+    sgdbReplace.disabled = !sgdb.admin || sgdb.busy;
+    sgdbClear.disabled = !sgdb.admin || sgdb.busy || sgdb.set !== true;
+  }
+  function sgdbBusy(btn, on) {
+    sgdb.busy = !!on;
+    btn.classList[on ? 'add' : 'remove']('is-busy');
+    renderSgdb();
+  }
+  function sgdbFail(e) {
+    if (e && e.status === 403 && e.code !== 'INVALID_API_KEY') sgdb.admin = false;
+    fail(e, sgdbErr);
+    renderSgdb();
+  }
+  /** Re-read { set } from the server (after every change, and on refresh). */
+  async function loadProviderKey() {
+    try {
+      var s = await get(SGDB_PATH);
+      sgdb.set = !!(s && s.set === true);
+    } catch (e) {
+      sgdb.set = null;
+      sgdbFail(e);
+    }
+    renderSgdb();
+  }
+
+  async function replaceSgdb() {
+    if (sgdb.busy) return;
+    sgdbErr.textContent = '';
+    if (!sgdb.admin) { sgdbErr.textContent = MSG.forbidden; return; }
+    var value = sgdbInput.value.trim();
+    if (!value) { sgdbErr.textContent = 'Paste the new SteamGridDB API key first.'; sgdbInput.focus(); return; }
+    var focusBack = document.activeElement;
+    sgdbBusy(sgdbReplace, true);
+    try {
+      await request(SGDB_PATH, { method: 'PUT', body: { key: value } });
+      sgdbInput.value = '';
+      toast('ok', 'SteamGridDB key saved');
+    } catch (e) {
+      sgdbFail(e);
+    } finally {
+      value = '';
+      await loadProviderKey();
+      sgdbBusy(sgdbReplace, false);
+      if (focusBack && !focusBack.disabled && focusBack.focus) focusBack.focus();
+    }
+  }
+  sgdbReplace.addEventListener('click', replaceSgdb);
+  sgdbInput.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') replaceSgdb(); });
+
+  sgdbClear.addEventListener('click', async function () {
+    if (sgdb.busy) return;
+    sgdbErr.textContent = '';
+    if (!sgdb.admin) { sgdbErr.textContent = MSG.forbidden; return; }
+    if (!window.confirm('Clear the SteamGridDB API key? Cover art lookups stop until a new key is set.')) return;
+    sgdbBusy(sgdbClear, true);
+    try {
+      await request(SGDB_PATH, { method: 'DELETE' });
+      toast('ok', 'SteamGridDB key cleared');
+    } catch (e) {
+      sgdbFail(e);
+    } finally {
+      await loadProviderKey();
+      sgdbBusy(sgdbClear, false);
+      // Clear is disabled once the key is gone; keep focus in the card.
+      var next = [sgdbClear, sgdbInput, sgdbReplace].filter(function (el) { return !el.disabled; })[0];
+      if (next) next.focus();
+    }
+  });
+  renderSgdb();
 
   // ── API keys (self-service) ───────────────────────────────────────────────
   async function loadKeys() {
@@ -859,14 +1135,12 @@
     errBox.textContent = '';
     try {
       var desc = document.getElementById('key-desc').value.trim();
-      var r = await fetch('/api/api-keys', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ description: desc }) });
-      if (!r.ok) throw new Error('Issue failed: ' + r.status);
-      var j = await r.json();
+      var j = await request('/api/api-keys', { method: 'POST', body: { description: desc } });
       document.getElementById('key-desc').value = '';
       showNewApiKey('New key (copy now)', j.key);
       toast('ok', 'Key issued');
       loadKeys();
-    } catch (e) { fail(e.message || String(e)); }
+    } catch (e) { fail(e); }
   });
   document.getElementById('keys').addEventListener('click', async function (ev) {
     var t = ev.target.closest ? ev.target.closest('[data-revoke]') : null;
@@ -874,15 +1148,14 @@
     if (!window.confirm('Revoke this key?')) return;
     errBox.textContent = '';
     try {
-      var r = await fetch('/api/api-keys/' + encodeURIComponent(t.getAttribute('data-revoke')), { method: 'DELETE', headers: headers() });
-      if (!r.ok) throw new Error('Revoke failed: ' + r.status);
+      await request('/api/api-keys/' + encodeURIComponent(t.getAttribute('data-revoke')), { method: 'DELETE' });
       toast('ok', 'Key revoked');
       loadKeys();
-    } catch (e) { fail(e.message || String(e)); }
+    } catch (e) { fail(e); }
   });
 
   showTab((location.hash || '').slice(1));
-  tryAutoLogin();
+  boot();
 })();
 </script>
 </body>
