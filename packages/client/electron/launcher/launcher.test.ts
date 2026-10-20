@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { Game } from '@dune/shared';
-import { getLaunchCommand, selectLaunchStrategy } from './manager.js';
+import { getLaunchCommand, launchGame, selectLaunchStrategy } from './manager.js';
 
 const tempFile = path.join(os.tmpdir(), 'dune-launch-test.sh');
 fs.writeFileSync(tempFile, '#!/bin/sh\n');
@@ -68,5 +68,18 @@ describe('launcher strategies', () => {
     const game = { ...baseGame, linPath: '/games/does-not-exist.sh' };
     expect(getLaunchCommand(game, {})).toBeNull();
     expect(selectLaunchStrategy(game, {})).toBeNull();
+  });
+
+  it('reports process exit for playtime tracking', async () => {
+    const script = path.join(os.tmpdir(), `dune-launch-exit-${Date.now()}.sh`);
+    fs.writeFileSync(script, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const game = { ...baseGame, linPath: script };
+    const exited = new Promise<{ startedAt: number; endedAt: number }>((resolve) => {
+      void launchGame(game, {}, { onExit: resolve }).then((result) => {
+        expect(result.success).toBe(true);
+      });
+    });
+    const info = await exited;
+    expect(info.endedAt).toBeGreaterThanOrEqual(info.startedAt);
   });
 });

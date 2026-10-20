@@ -18,11 +18,21 @@ export function getLaunchCommand(game: Game, options: LaunchOptions = {}): Launc
   return strategy ? strategy.getCommand(game, options) : null;
 }
 
-export async function launchGame(game: Game, options: LaunchOptions = {}): Promise<{ success: boolean; message: string; pid?: number }> {
+export interface LaunchTrackingHooks {
+  /** Called once the spawned process exits (or errors). */
+  onExit?: (info: { pid?: number; startedAt: number; endedAt: number }) => void;
+}
+
+export async function launchGame(
+  game: Game,
+  options: LaunchOptions = {},
+  hooks: LaunchTrackingHooks = {},
+): Promise<{ success: boolean; message: string; pid?: number }> {
   const command = getLaunchCommand(game, options);
   if (!command) return { success: false, message: 'No launch strategy available' };
 
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     try {
       const child = spawn(command.command, command.args, {
         env: { ...process.env, ...(command.env || {}) },
@@ -30,8 +40,24 @@ export async function launchGame(game: Game, options: LaunchOptions = {}): Promi
         detached: true,
         stdio: 'ignore',
       });
+      const pid = child.pid;
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        hooks.onExit?.({ pid, startedAt, endedAt: Date.now() });
+      };
+      // Protocol/launcher helpers (Steam, Heroic, Lutris) exit immediately or
+      // outlive the game. Only direct native/Wine processes map to playtime.
+      const directLaunch = command.command === (game.executable || game.linPath)
+        || command.command === 'wine'
+        || command.command === 'umu-run';
+      if (directLaunch) {
+        child.once('exit', finish);
+        child.once('error', finish);
+      }
       child.unref();
-      resolve({ success: true, message: 'Launched', pid: child.pid });
+      resolve({ success: true, message: 'Launched', pid });
     } catch (error) {
       resolve({ success: false, message: error instanceof Error ? error.message : 'Launch failed' });
     }

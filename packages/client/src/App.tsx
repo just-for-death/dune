@@ -240,6 +240,13 @@ export default function App() {
     return cleanup;
   }, []);
 
+  useEffect(() => {
+    const cleanup = window.electronAPI.onPlaytimeRecorded((data) => {
+      showToast(`Recorded ${formatMinutes(data.durationMinutes)} for ${data.game}`, 'success');
+    });
+    return cleanup;
+  }, [showToast]);
+
 
   useEffect(() => {
     if (activeTab !== 'saves' || games.length === 0 || !cloud.url) return;

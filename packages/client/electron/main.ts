@@ -10,6 +10,8 @@ import { nextId } from '@dune/shared'
 import type { FileManifest, HashManifest, Game, Settings, Cloud, BackupProfile } from '@dune/shared'
 import { autoDetectGames } from './scanner'
 import { launchGame, getLaunchCommand } from './launcher/manager'
+import type { LaunchOptions } from './launcher/strategies/types'
+import { buildPlaytimeSession, enqueuePlaytimeSession, type PlaytimeSessionPayload } from './playtime/session'
 import { listPrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix } from './prefix/manager'
 import { autoUpdater } from 'electron-updater'
 import {
@@ -48,6 +50,7 @@ const store = new Store({
     // Per-game delta state: `uploaded` = fingerprints this client last pushed,
     // `remote` = the server manifest this client last pulled.
     syncState: {},
+    pendingPlaytimeSessions: [] as unknown[],
     settings: {
       runInBackground: false,
       autoSyncEnabled: false,
@@ -71,6 +74,73 @@ export function serverHeaders(extra: Record<string, string> = {}): Record<string
   const key = loadServerKey();
   return key ? { ...extra, 'x-api-key': key } : { ...extra };
 }
+
+// ── Local playtime tracking ──────────────────────────────────────────────────
+const PENDING_PLAYTIME_KEY = 'pendingPlaytimeSessions';
+let playtimeQueueFlushing = false;
+
+function pendingPlaytimeQueue(): PlaytimeSessionPayload[] {
+  return (store.get(PENDING_PLAYTIME_KEY) || []) as PlaytimeSessionPayload[];
+}
+
+function savePlaytimeQueue(queue: PlaytimeSessionPayload[]): void {
+  store.set(PENDING_PLAYTIME_KEY, queue);
+}
+
+function playtimeSessionKey(session: PlaytimeSessionPayload): string {
+  return `${session.game}|${session.sessionStart}|${session.sessionEnd}`;
+}
+
+async function postPlaytimeSession(session: PlaytimeSessionPayload): Promise<{ success: boolean; message?: string }> {
+  const cloud = store.get('cloud') as Cloud | undefined;
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' };
+  try {
+    const cleanUrl = normalizeUrl(cloud.url);
+    const res = await axios.post(`${cleanUrl}/api/playtime`, session, {
+      headers: serverHeaders({ 'Content-Type': 'application/json' }),
+    });
+    return res.data;
+  } catch (err) {
+    return { success: false, message: errorMessage(err) };
+  }
+}
+
+async function flushPlaytimeQueue(): Promise<void> {
+  if (playtimeQueueFlushing) return;
+  playtimeQueueFlushing = true;
+  try {
+    const snapshot = pendingPlaytimeQueue();
+    if (snapshot.length === 0) return;
+    const sent = new Set<string>();
+    for (const session of snapshot) {
+      const res = await postPlaytimeSession(session);
+      if (res.success) sent.add(playtimeSessionKey(session));
+    }
+    if (sent.size > 0) {
+      savePlaytimeQueue(pendingPlaytimeQueue().filter((session) => !sent.has(playtimeSessionKey(session))));
+    }
+  } finally {
+    playtimeQueueFlushing = false;
+  }
+}
+
+async function recordLaunchPlaytime(game: string, startedAt: number, endedAt: number): Promise<void> {
+  const session = buildPlaytimeSession(game, startedAt, endedAt);
+  if (!session) return;
+
+  const res = await postPlaytimeSession(session);
+  if (!res.success) {
+    savePlaytimeQueue(enqueuePlaytimeSession(pendingPlaytimeQueue(), session));
+    return;
+  }
+
+  void flushPlaytimeQueue();
+  mainWindow?.webContents.send('playtime:recorded', {
+    game: session.game,
+    durationMinutes: session.durationMinutes,
+  });
+}
+
 
 // Server API key storage. Enforce OS keychain via Electron safeStorage;
 // NEVER persist plaintext API keys to disk. If keychain is unavailable,
@@ -657,6 +727,7 @@ ipcMain.handle('config:save', (_event, config) => {
   }
   if (cfg.cloud && typeof cfg.cloud === 'object') {
     store.set('cloud', { url: asString((cfg.cloud as Record<string, unknown>).url) });
+    void flushPlaytimeQueue();
   }
   if (cfg.settings && typeof cfg.settings === 'object') {
     store.set('settings', sanitizeSettings(cfg.settings, store.get('settings')));
@@ -928,18 +999,19 @@ ipcMain.handle('game:fetchArt', async (_event, id, name) => {
 // ── NEW IPC Handlers for Server Integration ─────────────────────────────────────
 
 // Playtime
-ipcMain.handle('playtime:record', async (_event, session) => {
-  const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
-  
+ipcMain.handle('playtime:record', async (_event, session: PlaytimeSessionPayload) => {
   try {
-    const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.post(`${cleanUrl}/api/playtime`, session, {
-      headers: serverHeaders({ 'Content-Type': 'application/json' })
-    })
-    return res.data
+    const res = await postPlaytimeSession(session);
+    if (res.success) {
+      void flushPlaytimeQueue();
+      mainWindow?.webContents.send('playtime:recorded', {
+        game: session.game,
+        durationMinutes: session.durationMinutes,
+      });
+    }
+    return res;
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return { success: false, message: errorMessage(e) };
   }
 })
 
@@ -1232,9 +1304,14 @@ ipcMain.handle('storage:get', async (_event, game: string) => {
 })
 
 // Game launcher
-ipcMain.handle('game:launch', async (_event, game, options) => {
+ipcMain.handle('game:launch', async (_event, game: Game, options?: Record<string, unknown>) => {
   try {
-    const result = await launchGame(game, options || {});
+    const tracking = {
+      onExit: ({ startedAt, endedAt }: { startedAt: number; endedAt: number }) => {
+        void recordLaunchPlaytime(game.name, startedAt, endedAt);
+      },
+    };
+    const result = await launchGame(game, (options || {}) as LaunchOptions, tracking);
     return result;
   } catch (e) {
     return { success: false, message: errorMessage(e) };
@@ -1654,5 +1731,6 @@ if (!gotSingleInstanceLock) {
     createWindow();
     setupAutoSync();
     setupAutoUpdates();
+    void flushPlaytimeQueue();
   });
 }

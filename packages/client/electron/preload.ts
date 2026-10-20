@@ -82,6 +82,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Playtime
   recordPlaytime: (session: Omit<PlaytimeSession, 'id' | 'createdAt'>) => 
     ipcRenderer.invoke('playtime:record', session),
+  onPlaytimeRecorded: (cb: (data: { game: string; durationMinutes: number }) => void) => {
+    const listener = (_event: unknown, data: { game: string; durationMinutes: number }) => cb(data);
+    ipcRenderer.on('playtime:recorded', listener);
+    return () => ipcRenderer.removeListener('playtime:recorded', listener);
+  },
   getPlaytimeSummary: (game?: string) => 
     ipcRenderer.invoke('playtime:summary', game),
   getRecentSessions: (limit?: number) => 

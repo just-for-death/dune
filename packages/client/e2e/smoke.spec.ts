@@ -40,6 +40,7 @@ test.beforeEach(async ({ page }) => {
       setCustomArt: async () => false,
       onSyncProgress: () => () => {},
       recordPlaytime: async () => ({ success: true }),
+      onPlaytimeRecorded: () => () => {},
       getPlaytimeSummary: async () => ({ success: true, summary: [] }),
       getRecentSessions: async () => ({ success: true, sessions: [] }),
       getTotalPlaytime: async () => ({ success: true, totalMinutes: 0 }),

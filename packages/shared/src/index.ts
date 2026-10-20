@@ -372,6 +372,7 @@ export interface ElectronAPI {
   
   // Playtime
   recordPlaytime: (session: Omit<PlaytimeSession, 'id' | 'createdAt'>) => Promise<{ success: boolean; message?: string }>;
+  onPlaytimeRecorded: (cb: (data: { game: string; durationMinutes: number }) => void) => () => void;
   getPlaytimeSummary: (game?: string) => Promise<{ success: boolean; summary: PlaytimeSummary[]; message?: string }>;
   getRecentSessions: (limit?: number) => Promise<{ success: boolean; sessions: PlaytimeSession[]; message?: string }>;
   getTotalPlaytime: () => Promise<{ success: boolean; totalMinutes: number; message?: string }>;
