@@ -27,6 +27,8 @@ export type LaunchableGame = {
   winePrefix?: string;
   protonPath?: string;
   executable?: string;
+  /** Install folder; only used as a launch target when it is a file. */
+  installPath?: string;
   emulator?: string;
   romPath?: string;
 };

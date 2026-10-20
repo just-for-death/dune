@@ -1,13 +1,14 @@
 import * as path from 'path';
 import type { LaunchStrategy } from './types.js';
+import { resolveLaunchTarget } from './target.js';
 
 export const wineStrategy: LaunchStrategy = {
   canLaunch(game, options) {
-    return Boolean((game.executable || game.linPath) && (options?.winePrefix || game.winePrefix || game.source === 'manual'));
+    return Boolean((game.executable || game.installPath) && (options?.winePrefix || game.winePrefix || game.source === 'manual'));
   },
   getCommand(game, options) {
     const opts = options ?? {};
-    const executable = game.executable || game.linPath;
+    const executable = resolveLaunchTarget(game);
     const prefix = opts.winePrefix || game.winePrefix;
     if (!executable || !prefix) return null;
     const env = {

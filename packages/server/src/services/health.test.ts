@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-health-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 
 // Controllable stub so both the healthy and the failing DB branch are
@@ -22,7 +23,7 @@ vi.mock('../db/index.js', () => ({
 const { checkReadiness } = await import('./health.js');
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   fs.rmSync(TMP, { recursive: true, force: true });
 });
 

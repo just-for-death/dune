@@ -22,13 +22,13 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
   const apiKey = extractApiKey(req.headers as Record<string, string | string[] | undefined>, req.url);
   
   if (!apiKey) {
-    res.status(401).json({ success: false, message: 'API key required' });
+    res.status(401).json({ error: 'API key required', code: 'UNAUTHORIZED' });
     return;
   }
 
   const user = database.resolveUserByKey(apiKey);
   if (!user) {
-    res.status(403).json({ success: false, message: 'Invalid API key' });
+    res.status(403).json({ error: 'Invalid API key', code: 'INVALID_API_KEY' });
     return;
   }
 
@@ -53,11 +53,11 @@ export function optionalAuthMiddleware(req: AuthenticatedRequest, res: Response,
 /** Express guard: allow only admins through. Assumes authMiddleware ran first. */
 export function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
   if (!req.user) {
-    res.status(401).json({ success: false, message: 'API key required' });
+    res.status(401).json({ error: 'API key required', code: 'UNAUTHORIZED' });
     return;
   }
   if (req.user.role !== 'admin') {
-    res.status(403).json({ success: false, message: 'Admin privileges required' });
+    res.status(403).json({ error: 'Admin privileges required', code: 'FORBIDDEN' });
     return;
   }
   next();

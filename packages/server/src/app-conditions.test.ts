@@ -14,6 +14,7 @@ import request from 'supertest';
 
 // Isolate ALL side effects BEFORE importing app modules.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-appcond-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'appcond-secret-0123456789abcdef';
 process.env.DUNE_CONFIG_DIR = path.join(TMP, 'config');
@@ -55,7 +56,7 @@ function uploadBytes(game: string, file: string, bytes: Buffer, syncId = String(
 }
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   delete process.env.DUNE_CONFIG_DIR;
   fs.rmSync(TMP, { recursive: true, force: true });
@@ -165,8 +166,8 @@ describe('D. adversarial app conditions', () => {
     const res = await api(
       request(app).get('/api/download-file?game=x&path=' + encodeURIComponent('../../etc/passwd')),
     );
-    expect([400, 404]).toContain(res.status);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'DOT_SEGMENT' });
   });
 
   it('rejects non-numeric versionId', async () => {

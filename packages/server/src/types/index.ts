@@ -7,8 +7,8 @@ export interface Game {
   lastSync: string; // ISO 8601
   thumbnail: string;
   analysis?: Record<string, FileAnalysis>;
-  /** Owning user id. Absent on pre-multi-user rows until migrated. */
-  ownerId?: string;
+  /** Owning user id. Every game has exactly one owner (DUN-087). */
+  ownerId: string;
   createdAt: string;
   updatedAt: string;
 }

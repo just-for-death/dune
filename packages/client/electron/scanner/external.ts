@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { nextId } from '@dune/shared';
 import type { Game } from '@dune/shared';
+import { toSaveFields, type SaveResolver } from './savePaths.js';
 
 function envRoots(name: string, defaults: string[]): string[] {
   const value = process.env[name];
@@ -12,14 +13,23 @@ function envRoots(name: string, defaults: string[]): string[] {
   return defaults.filter((candidate) => fs.existsSync(candidate));
 }
 
-function makeGame(name: string, installPath: string, source: NonNullable<Game['source']>): Game {
-  const exists = fs.existsSync(installPath);
+/**
+ * Build a scanner Game. installPath holds the install folder; winPath/linPath
+ * are save paths resolved from the Ludusavi manifest, or empty when unknown.
+ */
+function makeGame(
+  name: string,
+  installPath: string,
+  source: NonNullable<Game['source']>,
+  resolver: SaveResolver | null | undefined,
+): Game {
   const now = new Date().toISOString();
+  const savePath = resolver ? resolver.resolve({ name, installPath }) : '';
   return {
     id: nextId(),
     name,
-    winPath: exists ? '' : installPath,
-    linPath: exists ? installPath : '',
+    ...toSaveFields(savePath, resolver?.platform ?? process.platform),
+    installPath,
     lastSync: 'Never',
     status: 'Pending Upload',
     thumbnail: '',
@@ -30,7 +40,7 @@ function makeGame(name: string, installPath: string, source: NonNullable<Game['s
   };
 }
 
-function scanDirectories(roots: string[], source: NonNullable<Game['source']>): Game[] {
+function scanDirectories(roots: string[], source: NonNullable<Game['source']>, resolver?: SaveResolver | null): Game[] {
   const games: Game[] = [];
   for (const root of roots) {
     if (!fs.existsSync(root)) continue;
@@ -42,7 +52,7 @@ function scanDirectories(roots: string[], source: NonNullable<Game['source']>): 
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      games.push(makeGame(entry.name, path.join(root, entry.name), source));
+      games.push(makeGame(entry.name, path.join(root, entry.name), source, resolver));
     }
   }
   return games;
@@ -57,7 +67,7 @@ export function getEpicManifestRoots(): string[] {
   ]);
 }
 
-export function getEpicGames(roots: string[] = getEpicManifestRoots()): Game[] {
+export function getEpicGames(roots: string[] = getEpicManifestRoots(), resolver?: SaveResolver | null): Game[] {
   const games: Game[] = [];
   for (const root of roots) {
     if (!fs.existsSync(root)) continue;
@@ -78,7 +88,7 @@ export function getEpicGames(roots: string[] = getEpicManifestRoots()): Game[] {
         const name = manifest.DisplayName || manifest.AppName || path.basename(entry.name, '.item');
         const installLocation = manifest.InstallLocation || '';
         if (installLocation) {
-          games.push(makeGame(name, installLocation, 'epic'));
+          games.push(makeGame(name, installLocation, 'epic', resolver));
         }
       } catch {
         // Ignore malformed Epic manifests.
@@ -88,7 +98,7 @@ export function getEpicGames(roots: string[] = getEpicManifestRoots()): Game[] {
   return games;
 }
 
-export function getGogGames(roots?: string[]): Game[] {
+export function getGogGames(roots?: string[], resolver?: SaveResolver | null): Game[] {
   const resolvedRoots = roots ?? envRoots('GOG_GAMES_ROOTS', [
     path.join(os.homedir(), '.wine', 'drive_c', 'GOG Games'),
     path.join(os.homedir(), 'GOG Games'),
@@ -109,51 +119,51 @@ export function getGogGames(roots?: string[]): Game[] {
       const installPath = path.join(root, entry.name);
       const hasGogMarker = fs.readdirSync(installPath).some((file) => /^goggame-.*\.info$/i.test(file) || file.toLowerCase() === 'gog_game.info');
       if (hasGogMarker) {
-        games.push(makeGame(entry.name, installPath, 'gog'));
+        games.push(makeGame(entry.name, installPath, 'gog', resolver));
       }
     }
   }
   return games;
 }
 
-export function getUbisoftGames(roots?: string[]): Game[] {
+export function getUbisoftGames(roots?: string[], resolver?: SaveResolver | null): Game[] {
   return scanDirectories(roots ?? envRoots('UBISOFT_GAMES_ROOTS', [
     path.join(os.homedir(), '.wine', 'drive_c', 'Program Files (x86)', 'Ubisoft', 'Ubisoft Game Launcher', 'games'),
     'C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\games',
-  ]), 'ubisoft');
+  ]), 'ubisoft', resolver);
 }
 
-export function getEaGames(roots?: string[]): Game[] {
+export function getEaGames(roots?: string[], resolver?: SaveResolver | null): Game[] {
   return scanDirectories(roots ?? envRoots('EA_GAMES_ROOTS', [
     path.join(os.homedir(), '.wine', 'drive_c', 'Program Files', 'EA Games'),
     path.join(os.homedir(), '.wine', 'drive_c', 'Program Files (x86)', 'Origin Games'),
     'C:\\Program Files\\EA Games',
     'C:\\Program Files (x86)\\Origin Games',
-  ]), 'ea');
+  ]), 'ea', resolver);
 }
 
-export function getBattleNetGames(roots?: string[]): Game[] {
+export function getBattleNetGames(roots?: string[], resolver?: SaveResolver | null): Game[] {
   return scanDirectories(roots ?? envRoots('BATTLENET_GAMES_ROOTS', [
     path.join(os.homedir(), '.wine', 'drive_c', 'Program Files (x86)', 'Battle.net'),
     'C:\\Program Files (x86)\\Battle.net',
-  ]), 'battlenet');
+  ]), 'battlenet', resolver);
 }
 
-export function getXboxGames(roots?: string[]): Game[] {
+export function getXboxGames(roots?: string[], resolver?: SaveResolver | null): Game[] {
   return scanDirectories(roots ?? envRoots('XBOX_GAMES_ROOTS', [
     'C:\\XboxGames',
     path.join(os.homedir(), '.wine', 'drive_c', 'XboxGames'),
-  ]), 'xbox');
+  ]), 'xbox', resolver);
 }
 
-export function getMinecraftGames(roots?: string[]): Game[] {
+export function getMinecraftGames(roots?: string[], resolver?: SaveResolver | null): Game[] {
   const resolvedRoots = roots ?? envRoots('MINECRAFT_ROOTS', [
     path.join(os.homedir(), '.minecraft'),
   ]);
   const games: Game[] = [];
   for (const root of resolvedRoots) {
     if (!fs.existsSync(root)) continue;
-    games.push(makeGame('Minecraft', root, 'minecraft'));
+    games.push(makeGame('Minecraft', root, 'minecraft', resolver));
 
     const instancesRoot = path.join(root, 'versions');
     if (fs.existsSync(instancesRoot)) {
@@ -165,7 +175,7 @@ export function getMinecraftGames(roots?: string[]): Game[] {
       }
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          games.push(makeGame(`Minecraft ${entry.name}`, path.join(instancesRoot, entry.name), 'minecraft'));
+          games.push(makeGame(`Minecraft ${entry.name}`, path.join(instancesRoot, entry.name), 'minecraft', resolver));
         }
       }
     }
@@ -180,7 +190,7 @@ export function getMinecraftGames(roots?: string[]): Game[] {
       }
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          games.push(makeGame(entry.name, path.join(curseforgeRoot, entry.name), 'minecraft'));
+          games.push(makeGame(entry.name, path.join(curseforgeRoot, entry.name), 'minecraft', resolver));
         }
       }
     }

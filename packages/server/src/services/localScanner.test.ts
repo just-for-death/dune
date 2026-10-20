@@ -1,10 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { isSaveCandidate, findSaveFolders, syncLocalFolder } from './localScanner.js';
 
-const TEST_DIR = path.join(process.cwd(), 'test-scanner');
-const SAVES_DIR = path.join(process.cwd(), 'test-saves');
+// DUN-022: scratch space lives under the OS temp dir, never the package root.
+const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-scanner-test-'));
+const TEST_DIR = path.join(TEST_ROOT, 'test-scanner');
+const SAVES_DIR = path.join(TEST_ROOT, 'test-saves');
+
+afterAll(() => {
+  fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
@@ -101,13 +108,22 @@ describe('findSaveFolders', () => {
 });
 
 describe('syncLocalFolder', () => {
+  it('refuses a relative target dir (would resolve against cwd) and writes nothing', () => {
+    const source = path.join(TEST_DIR, 'source-rel');
+    fs.mkdirSync(source, { recursive: true });
+    fs.writeFileSync(path.join(source, 'slot1.sav'), 'x');
+    const before = fs.readdirSync(process.cwd()).sort();
+    expect(() => syncLocalFolder(source, 'RelativeLeak', 10)).toThrow(/must be absolute/);
+    expect(fs.readdirSync(process.cwd()).sort()).toEqual(before);
+  });
+
   it('should copy new files to target', () => {
     const source = path.join(TEST_DIR, 'source-game');
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data 1');
     fs.writeFileSync(path.join(source, 'config.ini'), 'config data');
 
-    const result = syncLocalFolder(source, 'TestGame', SAVES_DIR, 10);
+    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame'), 10);
     
     expect(result.filesSynced).toBe(2);
     expect(fs.existsSync(path.join(SAVES_DIR, 'TestGame', 'saves', 'slot1.sav'))).toBe(true);
@@ -119,9 +135,9 @@ describe('syncLocalFolder', () => {
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data');
 
-    syncLocalFolder(source, 'TestGame2', SAVES_DIR, 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame2'), 10);
     
-    const result = syncLocalFolder(source, 'TestGame2', SAVES_DIR, 10);
+    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame2'), 10);
     
     expect(result.filesSynced).toBe(0);
   });
@@ -131,12 +147,12 @@ describe('syncLocalFolder', () => {
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v1');
 
-    syncLocalFolder(source, 'TestGame3', SAVES_DIR, 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame3'), 10);
     
     // Modify file with different content - this should trigger a sync
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v2 modified content that is definitely different');
     
-    const result = syncLocalFolder(source, 'TestGame3', SAVES_DIR, 10);
+    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame3'), 10);
     
     expect(result.filesSynced).toBe(1);
   });
@@ -146,12 +162,12 @@ describe('syncLocalFolder', () => {
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v1');
 
-    syncLocalFolder(source, 'TestGame4', SAVES_DIR, 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame4'), 10);
     
     // Modify file with different content
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v2 completely different content');
     
-    syncLocalFolder(source, 'TestGame4', SAVES_DIR, 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame4'), 10);
     
     const versionsDir = path.join(SAVES_DIR, 'TestGame4', '.versions');
     expect(fs.existsSync(versionsDir)).toBe(true);
@@ -165,7 +181,7 @@ describe('syncLocalFolder', () => {
     
     for (let i = 0; i < 15; i++) {
       fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), `save data v${i}`);
-      syncLocalFolder(source, 'TestGame5', SAVES_DIR, 10);
+      syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame5'), 10);
     }
     
     const versionsDir = path.join(SAVES_DIR, 'TestGame5', '.versions');
@@ -186,7 +202,7 @@ describe('syncLocalFolder', () => {
     }
     
     if (fs.existsSync(linkPath)) {
-      const result = syncLocalFolder(source, 'TestSymlink', SAVES_DIR, 10);
+      const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestSymlink'), 10);
       expect(result.filesSynced).toBeGreaterThanOrEqual(1);
     }
   });

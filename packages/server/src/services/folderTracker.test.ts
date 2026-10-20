@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 // Isolate config + DB side effects BEFORE importing app modules.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-tracker-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'tracker-test-secret-0123456789abcdef';
 process.env.DUNE_CONFIG_DIR = path.join(TMP, 'config');
@@ -19,6 +20,15 @@ afterEach(() => {
     if (entry === 'config') continue;
     fs.rmSync(path.join(TMP, entry), { recursive: true, force: true });
   }
+});
+
+// DUN-022: this file used to leak its temp dir (one /tmp/dune-tracker-test-* per run).
+afterAll(() => {
+  while (trackers.length > 0) trackers.pop()?.stop();
+  process.env.DATA_DIR = SETUP_DATA_DIR;
+  delete process.env.API_KEY_SECRET;
+  delete process.env.DUNE_CONFIG_DIR;
+  fs.rmSync(TMP, { recursive: true, force: true });
 });
 
 function makeGameDir(root: string, name: string): string {

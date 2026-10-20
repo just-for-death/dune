@@ -14,6 +14,7 @@
     "build:all": "tsc && vite build && electron-builder",
     "preview": "vite preview --port 4173 --strictPort",
     "lint": "eslint .",
+    "test": "vitest run --environment node --exclude 'e2e/**'",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "yaml": "^2.8.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.0",
     "@types/node": "^26.6.5",
@@ -44,7 +46,8 @@
     "typescript-eslint": "^8.71.2",
     "vite": "^8.3.4",
     "vite-plugin-electron": "^1.1.2",
-    "vite-plugin-electron-renderer": "^1.0.0"
+    "vite-plugin-electron-renderer": "^1.0.0",
+    "vitest": "^5.0.5"
   },
   "build": {
     "appId": "io.github.just-for-death.dune",

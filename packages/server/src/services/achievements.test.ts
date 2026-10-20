@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { dataDir } from '../utils/path.js';
 import { upsertAchievements, getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from './achievements.js';
 
-const ACHIEVEMENTS_DB = path.join(process.cwd(), 'data', 'achievements.json');
+// Lives in the per-file temp DATA_DIR from src/test/setup.ts, never the real ./data (DUN-005).
+const ACHIEVEMENTS_DB = path.join(dataDir(), 'achievements.json');
 
 beforeEach(() => {
   if (fs.existsSync(ACHIEVEMENTS_DB)) fs.rmSync(ACHIEVEMENTS_DB);

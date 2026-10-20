@@ -3,10 +3,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import request from 'supertest';
-import { validateServerUrl, validateGamePath, normalizeUrl } from './utils/path.js';
+import { validateServerUrl, resolveGameFile, normalizeUrl } from './utils/path.js';
 import { extractApiKey } from './utils/authKey.js';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-security-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'security-test-secret-0123456789abcdef';
 
@@ -17,7 +18,7 @@ const VALID_KEY = 'test-security-valid-key-12345';
 database.addApiKey(VALID_KEY, 'Security test key');
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
@@ -82,8 +83,8 @@ describe('Security: SSRF Prevention', () => {
 });
 
 describe('Security: Path Traversal Prevention', () => {
-  it('rejects directory traversal in validateGamePath', () => {
-    expect(() => validateGamePath('TestGame', 'subdir/../../../../etc/passwd')).toThrow(/path traversal/i);
+  it('rejects directory traversal in resolveGameFile', () => {
+    expect(() => resolveGameFile(1, 'subdir/../../../../etc/passwd', 'usr_sec')).toThrow(expect.objectContaining({ code: 'DOT_SEGMENT' }));
   });
 
   it('rejects non-numeric versionId in download-version-file', async () => {
@@ -91,7 +92,7 @@ describe('Security: Path Traversal Prevention', () => {
       .get('/api/download-version-file?game=TestGame&versionId=../sneaky&path=save.dat')
       .set('x-api-key', VALID_KEY);
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Invalid versionId/i);
+    expect(res.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
   });
 
   it('rejects path traversal in filePath parameter', async () => {
@@ -99,7 +100,8 @@ describe('Security: Path Traversal Prevention', () => {
       .get('/api/download-file?game=TestGame&path=subdir/../../../../etc/passwd')
       .set('x-api-key', VALID_KEY);
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Invalid path/i);
+    expect(res.body).toMatchObject({ code: 'DOT_SEGMENT' });
+    expect(Object.keys(res.body).sort()).toEqual(['code', 'error']);
   });
 });
 
@@ -146,7 +148,7 @@ describe('Security: Authentication & Key Extraction', () => {
   it('blocks unauthenticated requests to protected endpoints with 401', async () => {
     const res = await request(app).get('/api/saves');
     expect(res.status).toBe(401);
-    expect(res.body.message).toMatch(/API key required/i);
+    expect(res.body).toEqual({ error: 'API key required', code: 'UNAUTHORIZED' });
   });
 
   it('blocks requests with invalid API keys with 403', async () => {
@@ -154,7 +156,7 @@ describe('Security: Authentication & Key Extraction', () => {
       .get('/api/saves')
       .set('x-api-key', 'invalid-key-999');
     expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/Invalid API key/i);
+    expect(res.body).toEqual({ error: 'Invalid API key', code: 'INVALID_API_KEY' });
   });
 
   it('allows access with valid API key in header', async () => {

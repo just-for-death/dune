@@ -45,6 +45,12 @@ const EMULATOR_CANDIDATES: Record<string, string[]> = {
   '.lnx': ['retroarch'],
 };
 
+/**
+ * Every emulator command Dune knows how to launch (DUN-061). The launcher
+ * only spawns an emulator from this list; anything else is not launchable.
+ */
+export const KNOWN_EMULATOR_COMMANDS: readonly string[] = Array.from(new Set(Object.values(EMULATOR_CANDIDATES).flat()));
+
 /** Folder-name hints disambiguate formats shared by several consoles (`.iso`). */
 const PLATFORM_HINTS: Array<{ pattern: RegExp; candidates: string[] }> = [
   { pattern: /(?:^|[/\\])(?:ps2|playstation[ -]?2)(?:[/\\]|$)/i, candidates: ['pcsx2'] },

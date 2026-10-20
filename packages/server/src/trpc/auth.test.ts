@@ -6,6 +6,7 @@ import { TRPCError } from '@trpc/server';
 import type { User } from '../types/index.js';
 
 // Isolate ALL side effects BEFORE importing app modules (static imports hoist).
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-auth-test-'));
 process.env.API_KEY_SECRET = 'auth-test-secret-0123456789abcdef';
 
@@ -16,7 +17,7 @@ const { database } = await import('../db/index.js');
 const TMP = process.env.DATA_DIR as string;
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });

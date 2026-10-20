@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { dataDir } from '../utils/path.js';
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from './playtime.js';
 
-const PLAYTIME_DB = path.join(process.cwd(), 'data', 'playtime.json');
+// Lives in the per-file temp DATA_DIR from src/test/setup.ts, never the real ./data (DUN-005).
+const PLAYTIME_DB = path.join(dataDir(), 'playtime.json');
 
 beforeEach(() => {
   if (fs.existsSync(PLAYTIME_DB)) fs.rmSync(PLAYTIME_DB);

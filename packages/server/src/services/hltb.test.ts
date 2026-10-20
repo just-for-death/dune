@@ -8,6 +8,7 @@ import axios from 'axios';
 import { getHLTBTimes, bulkFetchHLTB, readCache, writeCache } from './hltb.js';
 
 const HLTB_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-hltb-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = HLTB_TMP;
 const postMock = vi.mocked(axios.post);
 const CACHE_DIR = path.join(process.env.DATA_DIR as string, 'hltb-cache');
@@ -22,7 +23,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   fs.rmSync(HLTB_TMP, { recursive: true, force: true });
 });
 

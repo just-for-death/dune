@@ -87,6 +87,10 @@ function openSchema(file: string): DatabaseSync {
     // Safe only after ensureOwnerColumn: pre-multi-user DBs lack the column
     // until the ALTER runs.
     handle.exec('CREATE INDEX IF NOT EXISTS idx_games_owner ON games(ownerId);');
+    // DUN-087/088: a game is identified by (owner, title) case-insensitively;
+    // enforce it so two rows can never map to the same lookup. (SQLite NOCASE
+    // folds ASCII letters only.) Saves live under the game id, not the title.
+    handle.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_games_owner_name_nocase ON games(ownerId, name COLLATE NOCASE);');
 
     // Save versioning (Dune)
     handle.exec(`

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { nextId } from '@dune/shared';
-import { dataDir, savesDir } from '../utils/path.js';
+import { dataDir, savesDir, ownerSavesRoot, assertStrictlyInside } from '../utils/path.js';
 import type {
   Game,
   Settings,
@@ -16,7 +16,6 @@ import { hashApiKey, looksHashed, matchStoredHash } from '../utils/crypto.js';
 import { logger } from '../middleware/logging.js';
 import { getDb } from './sqlite.js';
 import { withDbLock } from './mutex.js';
-import { getGameRoot } from '../utils/path.js';
 
 export { withDbLock };
 export { closeDbForTests } from './sqlite.js';
@@ -43,12 +42,16 @@ function readSettingsRow(): Settings {
   }
 }
 
-function readGamesRows(ownerId?: string): Game[] {
+function readGamesRows(ownerId?: string, id?: number): Game[] {
   const db = getDb();
   // rowid order = insertion order, matching the old JSON array semantics.
-  const rows = (ownerId
-    ? db.prepare('SELECT * FROM games WHERE ownerId = ? ORDER BY rowid').all(ownerId)
-    : db.prepare('SELECT * FROM games ORDER BY rowid').all()) as Array<{
+  // Explicit columns: no launch/exec fields exist or are ever returned (DUN-061).
+  const cols = 'id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt';
+  const rows = (id !== undefined
+    ? db.prepare(`SELECT ${cols} FROM games WHERE id = ?`).all(id)
+    : ownerId
+      ? db.prepare(`SELECT ${cols} FROM games WHERE ownerId = ? ORDER BY rowid`).all(ownerId)
+      : db.prepare(`SELECT ${cols} FROM games ORDER BY rowid`).all()) as Array<{
     id: number;
     name: string;
     status: string;
@@ -66,7 +69,7 @@ function readGamesRows(ownerId?: string): Game[] {
     lastSync: r.lastSync,
     thumbnail: r.thumbnail,
     ...(r.analysis ? { analysis: JSON.parse(r.analysis) } : {}),
-    ...(r.ownerId ? { ownerId: r.ownerId } : {}),
+    ownerId: r.ownerId ?? '',
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   }));
@@ -92,44 +95,83 @@ function getGamesForUser(user: User): Game[] {
   return user.role === 'admin' ? readGamesRows() : readGamesRows(user.id);
 }
 
-export function writeDB(data: { games: Game[]; settings: Settings }): void {
-  const database = getDb();
-  const insertGame = database.prepare(
-    'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  );
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    database.prepare('DELETE FROM games').run();
-    for (const g of data.games) {
-      insertGame.run(
-        g.id, g.name, g.status, g.lastSync, g.thumbnail || '',
-        g.analysis ? JSON.stringify(g.analysis) : null,
-        g.ownerId ?? null,
-        g.createdAt, g.updatedAt,
-      );
-    }
-    saveSettings(data.settings);
-    database.exec('COMMIT');
-  } catch (err) {
-    database.exec('ROLLBACK');
-    throw err;
-  }
+// ── Games: owner-scoped (DUN-087/088) ───────────────────────────────────────
+// Every game belongs to exactly one owner and is identified by
+// (ownerId, name) with SQLite NOCASE matching (ASCII case-insensitive; see
+// idx_games_owner_name_nocase). Saves live at saves/<ownerId>/<gameId>, so a
+// rename never moves files.
+
+/** The caller's game with this title (case-insensitive), if any. */
+function findGame(ownerId: string, name: string): Game | undefined {
+  const row = getDb()
+    .prepare('SELECT id FROM games WHERE ownerId = ? AND name = ? COLLATE NOCASE ORDER BY rowid LIMIT 1')
+    .get(ownerId, name) as { id: number } | undefined;
+  return row ? getGameById(row.id) : undefined;
 }
 
-function getGameByName(name: string, ownerId?: string): Game | undefined {
-  const rows = ownerId ? getGames(ownerId) : getGames();
-  return rows.find((g) => g.name === name);
+/** Owner-scoped lookup by title. `ownerId` is required (DUN-088). */
+function getGameByName(name: string, ownerId: string): Game | undefined {
+  return findGame(ownerId, name);
+}
+
+/** Any owner's game by id. Only for admin-by-id paths and internal joins. */
+function getGameById(id: number): Game | undefined {
+  return readGamesRows(undefined, id)[0];
+}
+
+/** The game with this id only if `ownerId` owns it. */
+function getOwnedGame(id: number, ownerId: string): Game | undefined {
+  const g = getGameById(id);
+  return g && g.ownerId === ownerId ? g : undefined;
+}
+
+/**
+ * Find-or-create the caller's game row for `name` (an already validated
+ * title). Upload creates the row first, then the id-named folder.
+ */
+function ensureGame(ownerId: string, name: string): Game {
+  const existing = findGame(ownerId, name);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const id = nextId();
+  getDb()
+    .prepare(
+      'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(id, name, 'Pending Upload', 'Never', '', null, ownerId, now, now);
+  return getGameById(id) as Game;
+}
+
+/**
+ * DUN-085: mark ONE game as freshly synced after a successful upload, by id.
+ * Never deletes: child tables cascade on game delete.
+ */
+function markGameSynced(gameId: number, timestamp: string = new Date().toISOString()): boolean {
+  const res = getDb()
+    .prepare("UPDATE games SET status = 'In Sync', lastSync = ?, updatedAt = ? WHERE id = ?")
+    .run(timestamp, timestamp, gameId);
+  return (res.changes as number) > 0;
+}
+
+/** Rename the caller's game. Files stay put (the folder is the id). */
+function renameGame(id: number, ownerId: string, newName: string): 'ok' | 'not_found' | 'conflict' {
+  const game = getOwnedGame(id, ownerId);
+  if (!game) return 'not_found';
+  const clash = findGame(ownerId, newName);
+  if (clash && clash.id !== id) return 'conflict';
+  getDb().prepare('UPDATE games SET name = ?, updatedAt = ? WHERE id = ?').run(newName, new Date().toISOString(), id);
+  return 'ok';
 }
 
 function upsertGame(
-  game: Omit<Game, 'createdAt' | 'thumbnail' | 'id' | 'updatedAt'> &
-    Partial<Pick<Game, 'id' | 'thumbnail' | 'createdAt' | 'updatedAt'>>,
+  game: Omit<Game, 'createdAt' | 'thumbnail' | 'id' | 'updatedAt' | 'ownerId'> &
+    Partial<Pick<Game, 'id' | 'thumbnail' | 'createdAt' | 'updatedAt'>> & { ownerId: string },
 ): Game {
   const now = new Date().toISOString();
-  const ownerId = game.ownerId ?? null;
+  const ownerId = game.ownerId;
   const existing = getDb()
-    .prepare('SELECT id, createdAt, thumbnail, analysis FROM games WHERE name = ? AND ownerId IS ? LIMIT 1')
-    .get(game.name, ownerId) as
+    .prepare('SELECT id, createdAt, thumbnail, analysis FROM games WHERE ownerId = ? AND name = ? COLLATE NOCASE LIMIT 1')
+    .get(ownerId, game.name) as
     | { id: number; createdAt: string; thumbnail: string; analysis: string | null }
     | undefined;
 
@@ -143,13 +185,17 @@ function upsertGame(
         'UPDATE games SET status = ?, lastSync = ?, thumbnail = ?, analysis = ?, updatedAt = ? WHERE id = ?',
       )
       .run(game.status, game.lastSync, thumbnail, analysis, now, existing.id);
-    return { ...game, thumbnail, ownerId: ownerId ?? undefined, id: existing.id, createdAt: existing.createdAt, updatedAt: now };
+    return getGameById(existing.id) as Game;
   }
 
+  // Explicit fields only: nothing else the caller passed is stored or echoed.
   const created: Game = {
-    ...game,
+    name: game.name,
+    status: game.status,
+    lastSync: game.lastSync,
     thumbnail: game.thumbnail ?? '',
-    ownerId: ownerId ?? undefined,
+    ...(game.analysis ? { analysis: game.analysis } : {}),
+    ownerId,
     id: nextId(),
     createdAt: now,
     updatedAt: now,
@@ -167,68 +213,10 @@ function upsertGame(
   return created;
 }
 
-/** Delete a game. Pass `ownerId` to restrict deletion to that user's rows. */
-function deleteGame(id: number, ownerId?: string): boolean {
-  const res = ownerId
-    ? getDb().prepare('DELETE FROM games WHERE id = ? AND ownerId = ?').run(id, ownerId)
-    : getDb().prepare('DELETE FROM games WHERE id = ?').run(id);
+/** Delete the owner's game (DUN-087). Child rows cascade; files are the caller's job. */
+function deleteGame(id: number, ownerId: string): boolean {
+  const res = getDb().prepare('DELETE FROM games WHERE id = ? AND ownerId = ?').run(id, ownerId);
   return (res.changes as number) > 0;
-}
-
-/**
- * Whether `user` may read/write a game's files. Admins may touch anything;
- * members only their own games. Unknown games are admin-only (a member should
- * not reach files for a game that isn't in their library yet).
- */
-function canAccessGame(user: User, gameName: string): boolean {
-  if (user.role === 'admin') return true;
-  return getGames(user.id).some((g) => g.name === gameName);
-}
-
-/**
- * Non-mutating check: may `user` write files for `gameName`? An unknown name
- * is writable — the uploader claims it on success via `claimGame`. Admins may
- * write anything; members only their own games.
- */
-function canWriteGame(user: User, gameName: string): boolean {
-  if (user.role === 'admin') return true;
-  const existing = getGameByName(gameName);
-  return !existing || !existing.ownerId || existing.ownerId === user.id;
-}
-
-/**
- * Claim a brand-new or unowned game for `ownerId`. Called after a successful
- * upload so a failed transfer doesn't leave a phantom game row. No-op when
- * another user already owns the name.
- */
-function claimGame(gameName: string, ownerId: string): boolean {
-  // First check if this owner already has a game with this name
-  const existingForOwner = getGameByName(gameName, ownerId);
-  if (existingForOwner) return true; // already ours
-
-  // Check if any other owner has this game
-  const existingAny = getGameByName(gameName);
-  if (!existingAny) {
-    createOwnedGame(gameName, ownerId);
-    return true;
-  }
-  if (!existingAny.ownerId) {
-    getDb().prepare('UPDATE games SET ownerId = ?, updatedAt = ? WHERE name = ? AND ownerId IS NULL')
-      .run(ownerId, new Date().toISOString(), gameName);
-    return true;
-  }
-  return false; // owned by another user
-}
-
-/** Insert a minimal game row owned by `ownerId`. Returns false if name exists. */
-function createOwnedGame(name: string, ownerId: string): boolean {
-  const now = new Date().toISOString();
-  const result = getDb()
-    .prepare(
-      'INSERT OR IGNORE INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(nextId(), name, 'Pending Upload', 'Never', '', null, ownerId, now, now);
-  return (result.changes as number) > 0;
 }
 
 // ── Users & API keys ─────────────────────────────────────────────────────────
@@ -287,15 +275,21 @@ function deleteUser(id: string): boolean {
   const db = getDb();
   db.exec('BEGIN IMMEDIATE');
   try {
-    const res = db.prepare('DELETE FROM users WHERE id = ?').run(id);
-    db.prepare('DELETE FROM user_keys WHERE userId = ?').run(id);
+    // Children first (DUN-085): games.ownerId is ON DELETE SET NULL, so
+    // deleting the user row first nulled ownerId and this per-owner game
+    // delete matched nothing, leaving orphaned games + versions behind.
+    // Deleting the user's games here cascades to only *their* child rows.
     db.prepare('DELETE FROM games WHERE ownerId = ?').run(id);
+    db.prepare('DELETE FROM user_keys WHERE userId = ?').run(id);
+    const res = db.prepare('DELETE FROM users WHERE id = ?').run(id);
     db.exec('COMMIT');
     
     // Remove the user's save files from disk after DB commit
     try {
-      const userSaveDir = path.join(savesDir(), id);
-      if (fs.existsSync(userSaveDir)) {
+      // saves/<id> via the validated owner root, strictly inside saves/.
+      const userSaveDir = ownerSavesRoot(id);
+      assertStrictlyInside(userSaveDir, savesDir(), 'User save folder');
+      if (fs.lstatSync(userSaveDir, { throwIfNoEntry: false })?.isDirectory()) {
         fs.rmSync(userSaveDir, { recursive: true, force: true });
         logger.info({ userId: id }, 'Removed user save directory');
       }
@@ -459,24 +453,6 @@ function migrateApiKeys(): boolean {
  * `settings.apiKeys` hashes onto the first admin, then clears them so keys are
  * managed per-user from here on. Idempotent.
  */
-function migrateSavesLayout(): void {
-  for (const game of getGames()) {
-    if (!game.ownerId) continue;
-    const legacy = getGameRoot(game.name);
-    const target = getGameRoot(game.name, game.ownerId);
-    if (legacy === target) continue;
-    if (!fs.existsSync(legacy)) continue;
-    if (fs.existsSync(target)) continue;
-    try {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.renameSync(legacy, target);
-      logger.info({ game: game.name, owner: game.ownerId }, 'Migrated saves into per-owner layout');
-    } catch (err) {
-      logger.warn({ err, game: game.name }, 'Failed to migrate saves layout');
-    }
-  }
-}
-
 function ensureMultiUser(): void {
   // Create an admin if none exists (covers fresh DBs and DBs that lost
   // their admin rows).
@@ -518,8 +494,6 @@ export function runBootMigrations(): void {
 
   ensureMultiUser();
 
-  migrateSavesLayout();
-
   if (listKeyHashes().length === 0) {
     const admin = listUsers()[0];
     const defaultKey = randomBytes(24).toString('hex');
@@ -547,10 +521,13 @@ export const database = {
   getGames,
   getGamesForUser,
   getGameByName,
-  canAccessGame,
-  canWriteGame,
-  claimGame,
+  getGameById,
+  getOwnedGame,
+  findGame,
+  ensureGame,
   upsertGame,
+  markGameSynced,
+  renameGame,
   deleteGame,
   getLocalSources,
   addLocalSource,

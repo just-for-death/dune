@@ -12,6 +12,7 @@ import {
   getXboxGames,
   getMinecraftGames,
 } from './external.js';
+import { createSaveResolver } from './savePaths.js';
 
 describe('external launcher scanners', () => {
   const tempDirs: string[] = [];
@@ -25,8 +26,14 @@ describe('external launcher scanners', () => {
     'MINECRAFT_ROOTS',
   ];
 
+  const realHome = process.env.HOME;
+
   beforeEach(() => {
     for (const key of envKeys) delete process.env[key];
+    // Keep home-relative lookups (e.g. ~/.curseforge) inside a temp dir.
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-ext-home-'));
+    tempDirs.push(fakeHome);
+    process.env.HOME = fakeHome;
   });
 
   afterEach(() => {
@@ -34,6 +41,7 @@ describe('external launcher scanners', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
     for (const key of envKeys) delete process.env[key];
+    process.env.HOME = realHome;
   });
 
   it('scans Epic manifests', () => {
@@ -47,6 +55,32 @@ describe('external launcher scanners', () => {
     expect(games).toHaveLength(1);
     expect(games[0].name).toBe('Epic Game');
     expect(games[0].source).toBe('epic');
+    // Install location is not a save path.
+    expect(games[0].installPath).toBe(install);
+    expect(games[0].linPath).toBe('');
+    expect(games[0].winPath).toBe('');
+  });
+
+  it('resolves real save paths from the manifest and never uses the install folder', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-epic-saves-'));
+    tempDirs.push(root);
+    const install = path.join(root, 'install');
+    const saves = path.join(root, 'home', '.local', 'share', 'EpicGame');
+    fs.mkdirSync(install, { recursive: true });
+    fs.mkdirSync(saves, { recursive: true });
+    fs.writeFileSync(path.join(root, 'Game.item'), JSON.stringify({ DisplayName: 'Epic Game', InstallLocation: install }));
+    fs.writeFileSync(path.join(root, 'Other.item'), JSON.stringify({ DisplayName: 'No Manifest Entry', InstallLocation: install }));
+    const resolver = createSaveResolver(
+      { 'Epic Game': { files: { '<home>/.local/share/EpicGame': { tags: ['save'] }, '<base>': { tags: ['save'] } } } },
+      { home: path.join(root, 'home'), env: {}, platform: 'linux' },
+    );
+    const games = getEpicGames([root], resolver);
+    const epic = games.find((g) => g.name === 'Epic Game')!;
+    expect(epic.linPath).toBe(saves);
+    expect(epic.installPath).toBe(install);
+    const other = games.find((g) => g.name === 'No Manifest Entry')!;
+    expect(other.linPath).toBe('');
+    expect(other.installPath).toBe(install);
   });
 
   it('scans GOG game directories', () => {
@@ -60,6 +94,8 @@ describe('external launcher scanners', () => {
     expect(games).toHaveLength(1);
     expect(games[0].name).toBe('GOG Game');
     expect(games[0].source).toBe('gog');
+    expect(games[0].installPath).toBe(gameDir);
+    expect(games[0].linPath).toBe('');
   });
 
   it('scans simple launcher directories', () => {
@@ -75,10 +111,12 @@ describe('external launcher scanners', () => {
     process.env.BATTLENET_GAMES_ROOTS = makeRoot('dune-bn-');
     process.env.XBOX_GAMES_ROOTS = makeRoot('dune-xbox-');
 
-    expect(getUbisoftGames()).toHaveLength(1);
-    expect(getEaGames()).toHaveLength(1);
-    expect(getBattleNetGames()).toHaveLength(1);
-    expect(getXboxGames()).toHaveLength(1);
+    for (const games of [getUbisoftGames(), getEaGames(), getBattleNetGames(), getXboxGames()]) {
+      expect(games).toHaveLength(1);
+      expect(games[0].installPath).toMatch(/Game One$/);
+      expect(games[0].linPath).toBe('');
+      expect(games[0].winPath).toBe('');
+    }
   });
 
   it('scans Minecraft roots and versions', () => {
@@ -89,5 +127,7 @@ describe('external launcher scanners', () => {
     const games = getMinecraftGames();
     expect(games.map((g) => g.name)).toContain('Minecraft');
     expect(games.map((g) => g.name)).toContain('Minecraft 1.20.4');
+    expect(games.find((g) => g.name === 'Minecraft')?.installPath).toBe(root);
+    expect(games.every((g) => g.linPath === '' && g.winPath === '')).toBe(true);
   });
 });

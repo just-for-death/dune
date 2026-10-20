@@ -1,0 +1,141 @@
+{
+	"games": [
+		{
+			"id": 101,
+			"name": "Hollow Knight",
+			"winPath": "",
+			"linPath": "{{HOME}}/.local/share/Steam/steamapps/common/Hollow Knight",
+			"lastSync": "Never",
+			"status": "Pending Upload",
+			"thumbnail": "",
+			"sourceId": "steam",
+			"steamAppId": "367520",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 102,
+			"name": "Portal 2",
+			"winPath": "",
+			"linPath": "{{HOME}}/.local/share/Steam/steamapps/compatdata/620/pfx/drive_c/users/steamuser/AppData/Roaming/Portal2Saves",
+			"status": "Pending Upload",
+			"lastSync": "Never",
+			"thumbnail": "",
+			"sourceId": "steam",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 103,
+			"name": "Heroic Game",
+			"winPath": "C:\\Games\\Heroic Game",
+			"linPath": "{{HOME}}/Games/Heroic/Heroic Game",
+			"lastSync": "Never",
+			"status": "In Sync",
+			"thumbnail": "",
+			"platform": "epic",
+			"source": "heroic",
+			"sourceId": "heroic",
+			"heroicId": "heroic-1",
+			"executable": "game.exe",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 4242,
+			"name": "Lutris Game",
+			"winPath": "",
+			"linPath": "{{HOME}}/Games/lutris-game",
+			"lastSync": "Never",
+			"status": "In Sync",
+			"thumbnail": "",
+			"sourceId": "lutris",
+			"source": "lutris",
+			"lutrisSlug": "lutris-game",
+			"winePrefix": "{{HOME}}/Games/lutris-game/prefix",
+			"executable": "{{HOME}}/Games/lutris-game/game.exe",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 4243,
+			"name": "Lutris Exe Only",
+			"winPath": "",
+			"linPath": "{{HOME}}/Games/exe-only/run.sh",
+			"lastSync": "Never",
+			"status": "In Sync",
+			"thumbnail": "",
+			"sourceId": "lutris",
+			"source": "lutris",
+			"lutrisSlug": "exe-only",
+			"executable": "{{HOME}}/Games/exe-only/run.sh",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 105,
+			"name": "GOG Game",
+			"winPath": "",
+			"linPath": "{{HOME}}/GOG Games/GOG Game",
+			"lastSync": "Never",
+			"status": "Pending Upload",
+			"thumbnail": "",
+			"source": "gog",
+			"sourceId": "gog",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 106,
+			"name": "Fortnite",
+			"winPath": "C:\\Program Files\\Epic Games\\Fortnite",
+			"linPath": "",
+			"lastSync": "Never",
+			"status": "Pending Upload",
+			"thumbnail": "",
+			"source": "epic",
+			"sourceId": "epic",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 107,
+			"name": "My Manual Game",
+			"winPath": "%USERPROFILE%\\Saved Games\\My Manual Game",
+			"linPath": "~/Games/My Manual Game",
+			"lastSync": "2026-09-02T10:00:00.000Z",
+			"status": "In Sync",
+			"thumbnail": "",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		},
+		{
+			"id": 108,
+			"name": "Super Mario Bros",
+			"winPath": "",
+			"linPath": "{{HOME}}/.config/retroarch/saves/Super Mario Bros.srm",
+			"lastSync": "Never",
+			"status": "Pending Upload",
+			"thumbnail": "",
+			"source": "emulator",
+			"sourceId": "emulator",
+			"emulator": "retroarch",
+			"romPath": "{{HOME}}/roms/Super Mario Bros.nes",
+			"createdAt": "2026-09-01T00:00:00.000Z",
+			"updatedAt": "2026-09-01T00:00:00.000Z"
+		}
+	],
+	"cloud": {
+		"url": ""
+	},
+	"serverApiKeyEnc": "",
+	"syncState": {},
+	"pendingPlaytimeSessions": [],
+	"settings": {
+		"runInBackground": false,
+		"autoSyncEnabled": false,
+		"autoSyncFreq": "never",
+		"steamGridDbKey": "",
+		"scanRoots": []
+	}
+}

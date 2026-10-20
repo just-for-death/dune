@@ -59,8 +59,14 @@ export interface SyncResult {
   syncId: string;
 }
 
-export function syncLocalFolder(sourcePath: string, gameName: string, savesDir: string, maxVersions = 10): SyncResult {
-  const targetDir = path.join(savesDir, gameName);
+/**
+ * Mirror `sourcePath` into `targetDir`, the game's validated save root
+ * (saves/<ownerId>/<gameId> from getGameRoot). The caller owns the mapping
+ * from game to folder; nothing here derives a path from a title.
+ */
+export function syncLocalFolder(sourcePath: string, targetDir: string, maxVersions = 10): SyncResult {
+  // A relative target would resolve against cwd (e.g. packages/server).
+  if (!path.isAbsolute(targetDir)) throw new Error(`syncLocalFolder: targetDir must be absolute, got ${targetDir}`);
   const syncId = Date.now().toString();
   const normalizedSource = path.normalize(sourcePath);
   let filesSynced = 0;

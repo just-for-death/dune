@@ -1,111 +1,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { app } from 'electron';
 import { nextId } from '@dune/shared';
-
-import axios from 'axios';
-import YAML from 'yaml';
-
-const MANIFEST_URL = 'https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml';
-
-// Cache the manifest on disk so we don't re-fetch 4MB on every scan.
-// TTL: 24 hours. If the cache is fresh, use it; otherwise re-download.
-const MANIFEST_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
-
-function getManifestCachePath(): string {
-  return path.join(app.getPath('userData'), 'ludusavi-manifest.yaml');
-}
-
-async function fetchManifest(): Promise<string> {
-  const cachePath = getManifestCachePath();
-
-  // Check if the cached file exists and is fresh enough
-  if (fs.existsSync(cachePath)) {
-    const stat = fs.statSync(cachePath);
-    if (Date.now() - stat.mtimeMs < MANIFEST_TTL_MS) {
-      return fs.readFileSync(cachePath, 'utf-8');
-    }
-  }
-
-  // Download and cache
-  const response = await axios.get(MANIFEST_URL, { timeout: 30000 });
-  fs.writeFileSync(cachePath, response.data, 'utf-8');
-  return response.data;
-}
-
-// Translate ludusavi placeholders to real JS os counterparts
-function translatePath(template: string): string {
-  let mapped = template;
-  const home = os.homedir();
-
-  const replacements: Record<string, string> = {
-    '<home>':             home,
-    '<userProfile>':      home,
-    '<winAppData>':       process.env.APPDATA       || path.join(home, 'AppData', 'Roaming'),
-    '<winLocalAppData>':  process.env.LOCALAPPDATA  || path.join(home, 'AppData', 'Local'),
-    '<winDocuments>':     path.join(home, 'Documents'),
-    '<winPublic>':        process.env.PUBLIC        || 'C:\\Users\\Public',
-    '<winProgramFiles>':  process.env.ProgramFiles  || 'C:\\Program Files',
-    '<winProgramFilesX86>': process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
-    '<steam>':            process.platform === 'win32'
-      ? 'C:\\Program Files (x86)\\Steam'
-      : path.join(home, '.steam', 'steam'),
-  };
-
-  for (const [token, value] of Object.entries(replacements)) {
-    mapped = mapped.split(token).join(value);
-  }
-
-  return path.normalize(mapped);
-}
-
-function translatePathOverride(template: string, root: string): string {
-  let mapped = template;
-  const replacements: Record<string, string> = {
-    '<home>':             root,
-    '<winAppData>':       path.join(root, 'AppData', 'Roaming'),
-    '<winLocalAppData>':  path.join(root, 'AppData', 'Local'),
-    '<winDocuments>':     path.join(root, 'Documents'),
-    '<winPublic>':        path.join(root, '..', 'Public'),
-    '<winProgramFiles>':  path.join(root, '..', '..', 'Program Files'),
-    '<winProgramFilesX86>': path.join(root, '..', '..', 'Program Files (x86)'),
-    '<steam>':            path.join(root, '..', '..', 'Program Files (x86)', 'Steam'),
-    '<osUserName>':       process.env.USERNAME || process.env.USER || 'User',
-  };
-  for (const [token, value] of Object.entries(replacements)) {
-    mapped = mapped.split(token).join(value);
-  }
-  return path.normalize(mapped);
-}
-
-function expandCustomRoots(customRoots: string[]): string[] {
-  const expanded: string[] = [];
-  for (const root of customRoots) {
-    expanded.push(root);
-
-    // Wine Prefix Container Auto-Detection logic
-    if (process.platform !== 'win32') {
-      try {
-        const items = fs.readdirSync(root, { withFileTypes: true });
-        for (const item of items) {
-          if (!item.isDirectory()) continue;
-          const basePrefix = path.join(root, item.name, 'drive_c', 'users');
-          if (fs.existsSync(basePrefix)) {
-            for (const un of ['steamuser', 'lutrisuser', process.env.USER || '']) {
-              if (!un) continue;
-              const userDir = path.join(basePrefix, un);
-              if (fs.existsSync(userDir)) expanded.push(userDir);
-            }
-          }
-        }
-      } catch {
-        // Skip inaccessible directories
-      }
-    }
-  }
-  return expanded;
-}
+import type { Game } from '@dune/shared';
+import {
+  createSaveResolver,
+  loadManifest,
+  prefixUserDirs,
+  toSaveFields,
+  type LoadManifestOptions,
+  type SaveResolver,
+} from './savePaths.js';
 
 export interface DetectedGame {
   id: number;
@@ -116,60 +21,34 @@ export interface DetectedGame {
   lastSync: string;
 }
 
-/** Top-level shape of the Ludusavi manifest: game name -> entry. */
-type LudusaviManifest = Record<string, { files?: Record<string, unknown> } | undefined>;
+export interface AutoDetectOptions extends LoadManifestOptions {
+  /** Pre-built resolver (skips manifest loading). */
+  resolver?: SaveResolver;
+}
 
-export async function autoDetectGames(customRoots: string[] = []): Promise<DetectedGame[]> {
-  const discovered: DetectedGame[] = [];
-
+/**
+ * Manifest-driven save discovery: every Ludusavi game whose save path exists
+ * on disk. This finds *saves*, not the Steam library (see getSteamLibraryGames).
+ */
+export async function autoDetectGames(customRoots: string[] = [], options: AutoDetectOptions = {}): Promise<DetectedGame[]> {
   try {
-    // Use cached manifest — avoids 4MB download on every scan
-    const rawManifest = await fetchManifest();
-    const manifest = YAML.parse(rawManifest) as LudusaviManifest | null;
-
-    if (!manifest) return [];
-
-    const activeRoots = expandCustomRoots(customRoots);
-
-    for (const [gameName, gameData] of Object.entries(manifest)) {
-      if (!gameData?.files) continue;
-
-      let validPath = '';
-
-      for (const template of Object.keys(gameData.files)) {
-        const rawTrans = translatePath(template);
-        if (fs.existsSync(rawTrans)) {
-          validPath = rawTrans;
-          break;
-        }
-
-        for (const root of activeRoots) {
-          const overrideTrans = translatePathOverride(template, root);
-          if (fs.existsSync(overrideTrans)) {
-            validPath = overrideTrans;
-            break;
-          }
-        }
-        if (validPath) break;
-      }
-
-      if (validPath) {
-        discovered.push({
-          id: nextId(),
-          name: gameName,
-          winPath: process.platform === 'win32' ? validPath : '',
-          linPath: process.platform !== 'win32' ? validPath : '',
-          status: 'Pending Upload',
-          lastSync: 'Never',
-        });
-      }
+    let resolver = options.resolver;
+    if (!resolver) {
+      const manifest = await loadManifest(options);
+      if (!manifest) return [];
+      resolver = createSaveResolver(manifest, { customRoots });
     }
+    return resolver.discoverAll().map(({ name, path: savePath }) => ({
+      id: nextId(),
+      name,
+      ...toSaveFields(savePath, resolver.platform),
+      status: 'Pending Upload' as const,
+      lastSync: 'Never',
+    }));
   } catch (error) {
     console.error('Scanner failed:', error);
     return [];
   }
-
-  return discovered;
 }
 
 export interface SteamLibraryFolder {
@@ -238,7 +117,7 @@ export function getSteamPath(): string | null {
 export function getSteamLibraryFolders(steamPath: string): SteamLibraryFolder[] {
   const vdfPath = path.join(steamPath, 'steamapps', 'libraryfolders.vdf');
   if (!fs.existsSync(vdfPath)) {
-    return [{ path: path.join(steamPath, 'steamapps'), label: 'Default' }];
+    return [{ path: steamPath, label: 'Default' }];
   }
 
   try {
@@ -262,7 +141,7 @@ export function getSteamLibraryFolders(steamPath: string): SteamLibraryFolder[] 
     return folders;
   } catch (error) {
     console.error('Failed to parse libraryfolders.vdf:', error);
-    return [{ path: path.join(steamPath, 'steamapps'), label: 'Default' }];
+    return [{ path: steamPath, label: 'Default' }];
   }
 }
 
@@ -277,24 +156,33 @@ function parseVDF(content: string): VdfObject {
   const lines = content.split('\n');
   let currentObj: VdfObject = result;
   const stack: VdfObject[] = [result];
+  // Real Steam files put the section name and its `{` on separate lines.
+  let pendingKey: string | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed || trimmed.startsWith('//')) continue;
 
     if (trimmed.endsWith('{')) {
-      const key = trimmed.slice(0, -1).trim().replace(/"/g, '');
+      const inlineKey = trimmed.slice(0, -1).trim().replace(/"/g, '');
+      const key = inlineKey || pendingKey || '';
+      pendingKey = null;
       const newObj: VdfObject = {};
       currentObj[key] = newObj;
       stack.push(newObj);
       currentObj = newObj;
     } else if (trimmed === '}') {
+      pendingKey = null;
       stack.pop();
       currentObj = stack[stack.length - 1] || result;
     } else {
       const match = trimmed.match(/"([^"]+)"\s*"([^"]*)"/);
       if (match) {
-        currentObj[match[1]] = match[2];
+        currentObj[match[1]] = match[2].replace(/\\\\/g, '\\');
+        pendingKey = null;
+      } else {
+        const keyOnly = trimmed.match(/^"([^"]+)"$/);
+        pendingKey = keyOnly ? keyOnly[1] : null;
       }
     }
   }
@@ -398,6 +286,84 @@ export function getInstalledSteamGames(steamPath: string): SteamGameInfo[] {
     console.error('Failed to get installed Steam games:', error);
     return [];
   }
+}
+
+export interface SteamLibraryGame extends SteamGameInfo {
+  /** Library root (folder containing `steamapps`). */
+  libraryPath: string;
+  /** `<library>/steamapps/common/<installdir>` */
+  installPath: string;
+}
+
+/** Installed Steam games with the library each one lives in. */
+export function getInstalledSteamLibraryGames(steamPath: string): SteamLibraryGame[] {
+  const out: SteamLibraryGame[] = [];
+  const seen = new Set<string>();
+  for (const library of getSteamLibraryFolders(steamPath)) {
+    const steamappsPath = path.join(library.path, 'steamapps');
+    let files: string[];
+    try {
+      files = fs.readdirSync(steamappsPath);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.startsWith('appmanifest_') || !file.endsWith('.acf')) continue;
+      let info: SteamGameInfo | null;
+      try {
+        info = parseAppManifest(fs.readFileSync(path.join(steamappsPath, file), 'utf-8'));
+      } catch {
+        info = null;
+      }
+      if (!info || seen.has(info.appId)) continue;
+      seen.add(info.appId);
+      out.push({
+        ...info,
+        libraryPath: library.path,
+        installPath: info.installDir ? path.join(steamappsPath, 'common', info.installDir) : '',
+      });
+    }
+  }
+  return out;
+}
+
+/** Proton prefix user dirs for an app (`steamapps/compatdata/<id>/pfx/drive_c/users/*`). */
+export function getProtonUserDirs(libraryPath: string, appId: string): string[] {
+  return prefixUserDirs(path.join(libraryPath, 'steamapps', 'compatdata', appId, 'pfx'));
+}
+
+/**
+ * The Steam source: installed library games (steamAppId + installPath set),
+ * with winPath/linPath resolved from the save manifest or left empty.
+ */
+export function getSteamLibraryGames(resolver: SaveResolver | null, steamPath: string | null = getSteamPath()): Game[] {
+  if (!steamPath) return [];
+  const now = new Date().toISOString();
+  return getInstalledSteamLibraryGames(steamPath).map((g) => {
+    const savePath = resolver
+      ? resolver.resolve({
+          name: g.name,
+          steamAppId: g.appId,
+          installPath: g.installPath || undefined,
+          extraRoots: getProtonUserDirs(g.libraryPath, g.appId),
+          tokens: { root: g.libraryPath, game: g.installDir || undefined, storeGameId: g.appId },
+        })
+      : '';
+    return {
+      id: nextId(),
+      name: g.name,
+      ...toSaveFields(savePath, resolver?.platform ?? process.platform),
+      installPath: g.installPath,
+      steamAppId: g.appId,
+      lastSync: 'Never',
+      status: 'Pending Upload' as const,
+      thumbnail: '',
+      source: 'steam' as const,
+      sourceId: 'steam',
+      createdAt: now,
+      updatedAt: now,
+    };
+  });
 }
 
 /**

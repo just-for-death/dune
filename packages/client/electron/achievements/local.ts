@@ -3,9 +3,9 @@ import * as path from 'path';
 import type { Game } from '@dune/shared';
 
 /**
- * Local achievement import for Goldberg/CODEX-style installs.
+ * Local achievement import for offline / local achievement file formats.
  *
- * Emulators and cracked/offline builds often leave achievement state on disk
+ * Offline and locally installed builds often leave achievement state on disk
  * instead of exposing an API. This module reads only known achievement file
  * names, bounds directory walking, and merges duplicate entries by API name.
  */
@@ -225,13 +225,16 @@ export function scanLocalAchievements(roots: string[]): LocalAchievement[] {
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
-/** Game install, executable, and Wine prefix roots worth scanning. */
+/**
+ * Game install, executable, and Wine prefix roots worth scanning. winPath /
+ * linPath are save paths and are deliberately not treated as install roots.
+ */
 export function getAchievementRoots(
-  game: Pick<Game, 'linPath' | 'winPath' | 'executable' | 'winePrefix'>,
+  game: Pick<Game, 'executable' | 'installPath' | 'winePrefix'>,
 ): string[] {
   const roots = new Set<string>();
 
-  for (const candidate of [game.executable, game.linPath, game.winPath]) {
+  for (const candidate of [game.executable, game.installPath]) {
     if (!candidate) continue;
     try {
       const stat = fs.statSync(candidate);

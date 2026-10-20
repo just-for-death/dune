@@ -4,9 +4,15 @@ import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { authMiddleware, optionalAuthMiddleware, requireAdmin, AuthenticatedRequest } from './middleware/auth.js';
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
-import { dataDir, validateGamePath, getGameRoot, listFilesInDir, validateServerUrl } from './utils/path.js';
+import {
+  dataDir, getGameRoot, listFilesInDir, validateServerUrl, resolveGameFile, requireGameTitle,
+  PathRuleError, ownerSavesRoot, assertStrictlyInside,
+} from './utils/path.js';
+import { ApiError, isApiError, apiErrorBody, gameNotFound, assertNoLaunchFields } from './utils/apiError.js';
+import { validateRelativeSavePath } from '@dune/shared/pathRules';
+import type { Game } from './types/index.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
-import { listSaveVersions, getSaveVersion, getVersionDiff, createVersionFromDirectory, restoreVersion } from './services/saveVersions.js';
+import { listSaveVersions, getSaveVersion, getVersionDiff, createVersionFromDirectory, restoreVersion, VERSION_DIR_ID } from './services/saveVersions.js';
 import { listConflicts, detectConflict, resolveConflict, hasUnresolvedConflict } from './services/conflicts.js';
 import { getBackupProfile, upsertBackupProfile } from './services/backupProfiles.js';
 import { scanStorage, getDriveFreeBytes } from './services/storage.js';
@@ -77,43 +83,36 @@ const uploadRateLimitMiddleware = process.env.VITEST
 
 app.post('/api/upload-file', authMiddleware, uploadRateLimitMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
-    const game = req.headers['x-game'] as string;
-    const filePath = req.headers['x-path'] as string;
+    // DUN-064/127: x-game / x-path arrive encodeURIComponent'd; decoded once here.
+    const game = decodeHeader(req, 'x-game');
+    const filePath = decodeHeader(req, 'x-path');
     const syncId = (req.headers['x-sync-id'] as string) || Date.now().toString();
 
     if (!game || !filePath) {
-      return res.status(400).json({ success: false, message: 'Game and path headers required' });
+      return sendError(res, 400, 'BAD_REQUEST', 'Game and path headers required');
     }
-
-    // Resolve the target owner up front: an admin uploading to an existing
-    // member's game must write into that member's save root, not the admin's.
-    const existingGame = database.getGameByName(path.basename(game));
-    const ownerId = existingGame?.ownerId ?? (req as AuthenticatedRequest).user?.id;
-
-    // Ownership gate: rejects writes to another user's game (unknown games are
-    // claimable and get assigned to the uploader once the upload succeeds).
-    if (!ensureGameWrite(req, res, path.basename(game))) return;
+    // DUN-086/093: validated title; the row (owner, title NOCASE) is found or
+    // created and its id names the folder. DUN-087: always the caller's (or
+    // an admin's explicit `owner`) namespace, never inferred from the title.
+    const title = gameParam(game);
+    const ownerId = targetOwnerId(req);
 
     // Upfront content-length guard (streaming guard in sync.ts is authoritative)
     const contentLength = parseInt(req.headers['content-length'] || '0', 10);
     const maxUploadBytes =
       Math.max(1, parseInt(process.env.MAX_UPLOAD_MB || '500', 10)) * 1024 * 1024;
     if (contentLength > maxUploadBytes) {
-      return res.status(413).json({ success: false, message: 'File exceeds upload size limit' });
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'File exceeds upload size limit');
     }
 
-    const result = await handleUploadFile(game, filePath, req, syncId, ownerId);
-    if (!result.success && result.status) {
-      return res.status(result.status).json(result);
-    }
-    if (result.success && req.user) {
-      // Assign a new/unowned game to the uploader only after a good write.
-      database.claimGame(path.basename(game), ownerId ?? req.user.id);
+    const result = await handleUploadFile(title, filePath, req, syncId, ownerId);
+    if (!result.success && result.pathError) throw result.pathError;
+    if (!result.success) {
+      return sendError(res, result.status ?? 500, result.status === 413 ? 'PAYLOAD_TOO_LARGE' : 'UPLOAD_FAILED', result.message);
     }
     res.json(result);
   } catch (e) {
-    logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
-    res.status(500).json({ success: false, message: 'Internal error' });
+    restError(req, res, e, 'API internal error');
   }
 });
 
@@ -123,59 +122,57 @@ app.post('/api/local-sync', authMiddleware, requireAdmin, async (_req, res) => {
     res.json(result);
   } catch (e) {
     logger.error({ reqId: (_req as LoggedRequest).reqId, err: e }, 'API internal error');
-    res.status(500).json({ success: false, message: 'Internal error' });
+    sendError(res, 500, 'INTERNAL', 'Internal error');
   }
 });
 
 app.get('/api/download-file', authMiddleware, (req, res) => {
   try {
     const { game, path: filePath } = req.query;
-    if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
+    if (!game || !filePath) return sendError(res, 400, 'BAD_REQUEST', 'Game and path required');
 
-    if (!ensureGameRead(req as AuthenticatedRequest, res, path.basename(game.toString()))) return;
-
-    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
-    let fullPath: string;
-    try {
-      fullPath = validateGamePath(game.toString(), filePath.toString(), ownerId);
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid path' });
+    // DUN-111: path rules first, so a bad path is 400 even for an unknown game.
+    const rel = validateRelativeSavePath(filePath.toString());
+    if (!rel.ok) throw new PathRuleError(rel.code, rel.message);
+    const row = requireGame(req as AuthenticatedRequest, game.toString());
+    // Validated, symlink-free, strictly inside saves/<owner>/<gameId> (DUN-086).
+    const fullPath = resolveGameFile(row.id, filePath.toString(), row.ownerId).abs;
+    if (!fs.statSync(fullPath, { throwIfNoEntry: false })?.isFile()) {
+      return sendError(res, 404, 'FILE_NOT_FOUND', 'File not found');
     }
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ success: false, message: 'File not found' });
 
     // Serve dotfiles too: the manifest/list endpoints include them, and express
     // 5's `send` would otherwise 404 a listed save (path is traversal-checked).
     res.download(fullPath, path.basename(fullPath), { dotfiles: 'allow' });
   } catch (e) {
-    logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
-    res.status(500).json({ success: false, message: 'Internal error' });
+    restError(req, res, e, 'API internal error');
   }
 });
 
 app.get('/api/download-version-file', authMiddleware, (req, res) => {
   try {
     const { game, versionId, path: filePath } = req.query;
-    if (!game || !versionId || !filePath) return res.status(400).json({ success: false, message: 'Missing params' });
+    if (!game || !versionId || !filePath) return sendError(res, 400, 'BAD_REQUEST', 'Missing params');
 
-    if (!/^\d+$/.test(versionId.toString())) {
-      return res.status(400).json({ success: false, message: 'Invalid versionId' });
+    // DUN-125: only the stored snapshot id formats (digits / UUID).
+    if (!VERSION_DIR_ID.test(versionId.toString())) {
+      throw new PathRuleError('INVALID_VERSION_ID', 'Invalid version id');
     }
-    if (!ensureGameRead(req as AuthenticatedRequest, res, path.basename(game.toString()))) return;
-    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
-    let fullPath: string;
-    try {
-      fullPath = validateGamePath(game.toString(), path.join('.versions', versionId.toString(), filePath.toString()), ownerId);
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid path' });
+    // Check the client path on its own first, then resolve the joined path
+    // (lexical rules + no symlinks + strict containment).
+    const rel = validateRelativeSavePath(filePath.toString());
+    if (!rel.ok) throw new PathRuleError(rel.code, rel.message);
+    const row = requireGame(req as AuthenticatedRequest, game.toString());
+    const fullPath = resolveGameFile(row.id, `.versions/${versionId.toString()}/${rel.value}`, row.ownerId).abs;
+    if (!fs.statSync(fullPath, { throwIfNoEntry: false })?.isFile()) {
+      return sendError(res, 404, 'FILE_NOT_FOUND', 'File not found');
     }
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ success: false, message: 'File not found' });
 
     // Version snapshots live under a dot-directory (`.versions`); express 5's
     // `send` defaults to `dotfiles: 'ignore'` and would 404 them.
     res.download(fullPath, path.basename(fullPath), { dotfiles: 'allow' });
   } catch (e) {
-    logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, 'API internal error');
-    res.status(500).json({ success: false, message: 'Internal error' });
+    restError(req, res, e, 'API internal error');
   }
 });
 
@@ -184,9 +181,43 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
 // existing tRPC procedure / service so the app works against a real server.
 // All require x-api-key via authMiddleware, like the file routes above.
 
+/**
+ * DUN-064/127: the ONE place a game/path header is decoded. Clients send
+ * encodeURIComponent(value) so non-ASCII titles ('DARK SOULS™ III', '大神')
+ * survive HTTP headers. Decoded exactly once: '..%252F' becomes the literal
+ * '..%2F', never '../'. Malformed escapes -> 400 INVALID_HEADER_ENCODING.
+ * The result still goes through validateGameTitle / validateRelativeSavePath.
+ */
+function decodeHeader(req: express.Request, name: 'x-game' | 'x-path'): string | undefined {
+  const raw = req.headers[name];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value === undefined || value === '') return undefined;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new ApiError(400, 'INVALID_HEADER_ENCODING', `Malformed percent-encoding in ${name} header`);
+  }
+}
+
+/** Every REST error body is exactly `{ error, code }`. */
+function sendError(res: express.Response, status: number, code: string, error: string) {
+  res.status(status).json({ error, code });
+}
+
 function restError(req: express.Request, res: express.Response, e: unknown, label: string) {
+  // DUN-086/093/111: a rejected title, path, id or launch field is the
+  // client's fault: its status + { error, code }, never a 500.
+  if (isApiError(e)) {
+    res.status(e.status).json(apiErrorBody(e));
+    return;
+  }
   logger.error({ reqId: (req as LoggedRequest).reqId, err: e }, label);
-  res.status(500).json({ success: false, message: 'Internal error' });
+  sendError(res, 500, 'INTERNAL', 'Internal error');
+}
+
+/** Game-title intake (DUN-086/093): shared validateGameTitle -> 400 on reject. */
+function gameParam(raw: unknown): string {
+  return requireGameTitle(raw);
 }
 
 /** `undefined` = all owners (admin view); otherwise scope to the caller. */
@@ -194,22 +225,37 @@ function ownerScope(req: AuthenticatedRequest): string | undefined {
   return req.user?.role === 'admin' ? undefined : req.user?.id;
 }
 
-/** Respond 403 and return false when the caller may not read `game`. */
-function ensureGameRead(req: AuthenticatedRequest, res: express.Response, game: string): boolean {
-  if (!req.user || !database.canAccessGame(req.user, game)) {
-    res.status(403).json({ success: false, message: 'No access to this game' });
-    return false;
-  }
-  return true;
+/**
+ * DUN-087/088: whose games this request addresses. Members: always their
+ * own. Admins: their own unless `owner` (query or body) names another user.
+ * Never inferred from a game name, so a title can't reach another user's data.
+ */
+function targetOwnerId(req: AuthenticatedRequest): string {
+  if (!req.user) throw new ApiError(401, 'UNAUTHORIZED', 'API key required');
+  const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {};
+  const raw = req.query.owner ?? body.owner;
+  if (raw === undefined || raw === '' || raw === req.user.id) return req.user.id;
+  if (req.user.role !== 'admin') throw new ApiError(403, 'FORBIDDEN', 'Only admins may target another owner');
+  const user = typeof raw === 'string' ? database.getUserById(raw) : undefined;
+  if (!user) throw new ApiError(404, 'USER_NOT_FOUND', 'User not found');
+  return user.id;
 }
 
-/** Respond 403 and return false when the caller may not write `game`. */
-function ensureGameWrite(req: AuthenticatedRequest, res: express.Response, game: string): boolean {
-  if (!req.user || !database.canWriteGame(req.user, game)) {
-    res.status(403).json({ success: false, message: 'No access to this game' });
-    return false;
-  }
-  return true;
+/**
+ * DUN-087: by-id routes (version detail/diff, conflict resolve) reach a game
+ * through a child row. Members see only their own games; anything else is
+ * reported exactly like a missing row.
+ */
+function canSeeGame(req: AuthenticatedRequest, gameId: number): boolean {
+  const g = database.getGameById(gameId);
+  return Boolean(g && req.user && (req.user.role === 'admin' || g.ownerId === req.user.id));
+}
+
+/** The target owner's game with this title (case-insensitive), else 404. */
+function requireGame(req: AuthenticatedRequest, rawTitle: unknown): Game {
+  const game = database.findGame(targetOwnerId(req), gameParam(rawTitle));
+  if (!game) throw gameNotFound();
+  return game;
 }
 
 app.get('/api/saves', authMiddleware, (req: AuthenticatedRequest, res) => {
@@ -223,10 +269,11 @@ app.get('/api/saves', authMiddleware, (req: AuthenticatedRequest, res) => {
 app.get('/api/list-files', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game } = req.query;
-    if (!game) return res.status(400).json({ success: false, message: 'Game required' });
-    if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
-    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
-    const gameDir = getGameRoot(game.toString(), ownerId);
+    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'Game required');
+    // Unknown in the caller's namespace -> [] (says nothing about other users).
+    const row = database.findGame(targetOwnerId(req), gameParam(game.toString()));
+    if (!row) return res.json({ success: true, files: [] });
+    const gameDir = getGameRoot(row.id, row.ownerId); // strictly inside saves/<owner>
     if (!fs.existsSync(gameDir)) return res.json({ success: true, files: [] });
     res.json({ success: true, files: listFilesInDir(gameDir) });
   } catch (e) {
@@ -239,10 +286,9 @@ app.get('/api/list-files', authMiddleware, (req: AuthenticatedRequest, res) => {
 app.get('/api/manifest', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game } = req.query;
-    if (!game) return res.status(400).json({ success: false, message: 'Game required' });
-    if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
-    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
-    res.json({ success: true, files: manifestForGame(game.toString(), ownerId) });
+    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'Game required');
+    const row = database.findGame(targetOwnerId(req), gameParam(game.toString()));
+    res.json({ success: true, files: row ? manifestForGame(row.id, row.ownerId) : [] });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -252,16 +298,17 @@ app.get('/api/manifest', authMiddleware, (req: AuthenticatedRequest, res) => {
 app.delete('/api/file', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game, path: filePath } = req.query;
-    if (!game || !filePath) return res.status(400).json({ success: false, message: 'Game and path required' });
-    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
-    const ownerId = database.getGameByName(path.basename(game.toString()))?.ownerId ?? (req as AuthenticatedRequest).user?.id;
-    try {
-      validateGamePath(game.toString(), filePath.toString(), ownerId);
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid path' });
-    }
-    const removed = removeGameFile(game.toString(), filePath.toString(), ownerId);
-    if (!removed) return res.status(404).json({ success: false, message: 'File not found' });
+    if (!game || !filePath) return sendError(res, 400, 'BAD_REQUEST', 'Game and path required');
+    // DUN-087: only the caller's own game (or an admin's explicit `owner`);
+    // another user's title is simply "not found" here.
+    const rel = validateRelativeSavePath(filePath.toString());
+    if (!rel.ok) throw new PathRuleError(rel.code, rel.message);
+    const row = requireGame(req, game.toString());
+    // DUN-086: removeGameFile validates (shared rules + no symlinks + strict
+    // containment) and deletes only the validated path; a reject throws
+    // PathRuleError, which restError answers with 400 { error, code }.
+    const removed = removeGameFile(row.id, filePath.toString(), row.ownerId);
+    if (!removed) return sendError(res, 404, 'FILE_NOT_FOUND', 'File not found');
     res.json({ success: true });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -272,7 +319,7 @@ app.post('/api/playtime', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const { game, platform, sessionStart, sessionEnd } = req.body ?? {};
     if (!game || !platform || !sessionStart || !sessionEnd) {
-      return res.status(400).json({ success: false, message: 'game, platform, sessionStart, sessionEnd required' });
+      return sendError(res, 400, 'BAD_REQUEST', 'game, platform, sessionStart, sessionEnd required');
     }
     res.json(recordPlaytimeSession(game, platform, sessionStart, sessionEnd, req.user?.id ?? ''));
   } catch (e) {
@@ -310,7 +357,7 @@ app.post('/api/achievements/import', authMiddleware, (req: AuthenticatedRequest,
   try {
     const { game, achievements } = req.body ?? {};
     if (typeof game !== 'string' || !game.trim() || !Array.isArray(achievements)) {
-      return res.status(400).json({ success: false, message: 'game and achievements[] required' });
+      return sendError(res, 400, 'BAD_REQUEST', 'game and achievements[] required');
     }
 
     const cleaned = achievements
@@ -382,22 +429,19 @@ app.get('/api/hltb/:game', authMiddleware, async (req, res) => {
 app.post('/api/analyze-files-ai', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     const { gameName, files } = req.body ?? {};
+    assertNoLaunchFields(req.body);
     if (!gameName || !Array.isArray(files)) {
-      return res.status(400).json({ success: false, message: 'gameName and files array required' });
+      return sendError(res, 400, 'BAD_REQUEST', 'gameName and files array required');
     }
     const settings = database.getSettings();
     const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
     const model = settings.ollamaModel || 'phi4-mini:latest';
     const check = validateServerUrl(endpoint);
-    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+    if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
     const result = await analyzeFilesAI(check.url, model, gameName, files);
     if (result.success && result.analysis) {
-      const games = req.user ? database.getGamesForUser(req.user) : [];
-      const idx = games.findIndex(g => g.name.toLowerCase() === gameName.toLowerCase());
-      if (idx !== -1) {
-        games[idx].analysis = result.analysis;
-        database.upsertGame(games[idx]);
-      }
+      const row = database.findGame(targetOwnerId(req), gameParam(gameName));
+      if (row) database.upsertGame({ ...row, analysis: result.analysis });
     }
     res.json(result);
   } catch (e) {
@@ -408,9 +452,9 @@ app.post('/api/analyze-files-ai', authMiddleware, async (req: AuthenticatedReque
 app.get('/api/search-art', authMiddleware, async (req, res) => {
   try {
     const { query } = req.query;
-    if (!query) return res.status(400).json({ success: false, message: 'query required' });
+    if (!query) return sendError(res, 400, 'BAD_REQUEST', 'query required');
     const apiKey = database.getSettings().steamGridApiKey;
-    if (!apiKey) return res.status(400).json({ success: false, message: 'SteamGridDB API key not configured' });
+    if (!apiKey) return sendError(res, 400, 'BAD_REQUEST', 'SteamGridDB API key not configured');
     res.json(await searchArt(apiKey, query.toString()));
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -420,7 +464,7 @@ app.get('/api/search-art', authMiddleware, async (req, res) => {
 app.get('/api/auto-match-all', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     const apiKey = database.getSettings().steamGridApiKey;
-    if (!apiKey) return res.status(400).json({ success: false, message: 'SteamGridDB API key not configured' });
+    if (!apiKey) return sendError(res, 400, 'BAD_REQUEST', 'SteamGridDB API key not configured');
     const games = req.user ? database.getGamesForUser(req.user) : [];
     const matched = await autoMatchAll(apiKey, games);
     for (const m of matched) {
@@ -447,8 +491,8 @@ app.get('/api/local-sources', authMiddleware, (_req, res) => {
 app.post('/api/local-sources', authMiddleware, requireAdmin, (req, res) => {
   try {
     const { path: sourcePath } = req.body ?? {};
-    if (!sourcePath) return res.status(400).json({ success: false, message: 'path required' });
-    if (!fs.existsSync(sourcePath)) return res.status(400).json({ success: false, message: 'Path does not exist' });
+    if (!sourcePath) return sendError(res, 400, 'BAD_REQUEST', 'path required');
+    if (!fs.existsSync(sourcePath)) return sendError(res, 400, 'BAD_REQUEST', 'Path does not exist');
     res.json({ success: true, source: database.addLocalSource(sourcePath) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -458,8 +502,8 @@ app.post('/api/local-sources', authMiddleware, requireAdmin, (req, res) => {
 app.delete('/api/local-sources/:id', authMiddleware, requireAdmin, (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
-    if (!database.removeLocalSource(id)) return res.status(404).json({ success: false, message: 'Source not found' });
+    if (!Number.isFinite(id)) return sendError(res, 400, 'INVALID_ID', 'Invalid id');
+    if (!database.removeLocalSource(id)) return sendError(res, 404, 'NOT_FOUND', 'Source not found');
     res.json({ success: true });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -477,9 +521,9 @@ app.get('/api/remote-servers', authMiddleware, (_req, res) => {
 app.post('/api/remote-servers', authMiddleware, requireAdmin, (req, res) => {
   try {
     const { url } = req.body ?? {};
-    if (!url) return res.status(400).json({ success: false, message: 'url required' });
+    if (!url) return sendError(res, 400, 'BAD_REQUEST', 'url required');
     const check = validateServerUrl(url);
-    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+    if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
     res.json({ success: true, server: database.addRemoteServer(check.url) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -489,8 +533,8 @@ app.post('/api/remote-servers', authMiddleware, requireAdmin, (req, res) => {
 app.delete('/api/remote-servers/:id', authMiddleware, requireAdmin, (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
-    if (!database.removeRemoteServer(id)) return res.status(404).json({ success: false, message: 'Server not found' });
+    if (!Number.isFinite(id)) return sendError(res, 400, 'INVALID_ID', 'Invalid id');
+    if (!database.removeRemoteServer(id)) return sendError(res, 404, 'NOT_FOUND', 'Server not found');
     res.json({ success: true });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -500,7 +544,7 @@ app.delete('/api/remote-servers/:id', authMiddleware, requireAdmin, (req, res) =
 // Self-service key management: a user sees/rotates only their own keys.
 app.get('/api/api-keys', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+    if (!req.user) return sendError(res, 401, 'UNAUTHORIZED', 'API key required');
     const keys = database.listUserKeys(req.user.id).map(k => ({
       id: k.hash.slice(0, 12),
       description: k.description,
@@ -515,7 +559,7 @@ app.get('/api/api-keys', authMiddleware, (req: AuthenticatedRequest, res) => {
 
 app.post('/api/api-keys', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+    if (!req.user) return sendError(res, 401, 'UNAUTHORIZED', 'API key required');
     const { description } = req.body ?? {};
     const key = database.issueUserKey(req.user.id, typeof description === 'string' ? description : '');
     // Returned once; never retrievable again.
@@ -527,10 +571,10 @@ app.post('/api/api-keys', authMiddleware, (req: AuthenticatedRequest, res) => {
 
 app.delete('/api/api-keys/:id', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+    if (!req.user) return sendError(res, 401, 'UNAUTHORIZED', 'API key required');
     const match = database.listUserKeys(req.user.id).find(k => k.hash.slice(0, 12) === req.params.id);
     if (!match || !database.removeUserKeyByHash(match.hash)) {
-      return res.status(404).json({ success: false, message: 'Key not found' });
+      return sendError(res, 404, 'KEY_NOT_FOUND', 'Key not found');
     }
     res.json({ success: true });
   } catch (e) {
@@ -540,7 +584,7 @@ app.delete('/api/api-keys/:id', authMiddleware, (req: AuthenticatedRequest, res)
 
 // ── User administration (admin-only, except /api/users/me) ───────────────────
 app.get('/api/users/me', authMiddleware, (req: AuthenticatedRequest, res) => {
-  if (!req.user) return res.status(401).json({ success: false, message: 'API key required' });
+  if (!req.user) return sendError(res, 401, 'UNAUTHORIZED', 'API key required');
   res.json({ success: true, user: { id: req.user.id, name: req.user.name, role: req.user.role } });
 });
 
@@ -565,10 +609,10 @@ app.post('/api/users', authMiddleware, requireAdmin, (req, res) => {
   try {
     const { name, role } = req.body ?? {};
     if (!name || typeof name !== 'string') {
-      return res.status(400).json({ success: false, message: 'name required' });
+      return sendError(res, 400, 'BAD_REQUEST', 'name required');
     }
     if (database.getUserByName(name)) {
-      return res.status(409).json({ success: false, message: 'User name already exists' });
+      return sendError(res, 409, 'USER_EXISTS', 'User name already exists');
     }
     const user = database.createUser(name, role === 'admin' ? 'admin' : 'member');
     const apiKey = database.issueUserKey(user.id, 'Initial key');
@@ -581,7 +625,7 @@ app.post('/api/users', authMiddleware, requireAdmin, (req, res) => {
 app.post('/api/users/:id/keys', authMiddleware, requireAdmin, (req, res) => {
   try {
     if (!database.getUserById(req.params.id.toString())) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      return sendError(res, 404, 'USER_NOT_FOUND', 'User not found');
     }
     const { description } = req.body ?? {};
     const apiKey = database.issueUserKey(req.params.id.toString(), typeof description === 'string' ? description : '');
@@ -595,7 +639,7 @@ app.delete('/api/users/:id/keys/:keyId', authMiddleware, requireAdmin, (req, res
   try {
     const match = database.listUserKeys(req.params.id.toString()).find(k => k.hash.slice(0, 12) === req.params.keyId.toString());
     if (!match || !database.removeUserKeyByHash(match.hash)) {
-      return res.status(404).json({ success: false, message: 'Key not found' });
+      return sendError(res, 404, 'KEY_NOT_FOUND', 'Key not found');
     }
     res.json({ success: true });
   } catch (e) {
@@ -606,9 +650,9 @@ app.delete('/api/users/:id/keys/:keyId', authMiddleware, requireAdmin, (req, res
 app.delete('/api/users/:id', authMiddleware, requireAdmin, (req, res) => {
   try {
     const target = database.getUserById(req.params.id.toString());
-    if (!target) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!target) return sendError(res, 404, 'USER_NOT_FOUND', 'User not found');
     if (target.role === 'admin' && database.countAdmins() <= 1) {
-      return res.status(400).json({ success: false, message: 'Cannot remove the last admin' });
+      return sendError(res, 400, 'LAST_ADMIN', 'Cannot remove the last admin');
     }
     database.deleteUser(req.params.id.toString());
     res.json({ success: true });
@@ -620,13 +664,13 @@ app.delete('/api/users/:id', authMiddleware, requireAdmin, (req, res) => {
 app.get('/api/ollama-models', authMiddleware, async (req, res) => {
   try {
     const { endpoint } = req.query;
-    if (!endpoint) return res.status(400).json({ success: false, message: 'endpoint required' });
+    if (!endpoint) return sendError(res, 400, 'BAD_REQUEST', 'endpoint required');
     const check = validateServerUrl(endpoint.toString());
-    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+    if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
     try {
       new URL(check.url);
     } catch {
-      return res.status(400).json({ success: false, message: 'Invalid endpoint' });
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid endpoint');
     }
     res.json(await fetchModels(check.url));
   } catch (e) {
@@ -639,7 +683,7 @@ app.get('/api/ollama-health', authMiddleware, async (_req, res) => {
     const settings = database.getSettings();
     const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
     const check = validateServerUrl(endpoint);
-    if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+    if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
     res.json(await checkModelStatus(
       check.url,
       settings.ollamaModel || 'phi4-mini:latest',
@@ -683,7 +727,7 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
     if (typeof input.steamGridApiKey === 'string') merged.steamGridApiKey = input.steamGridApiKey;
     if (typeof input.ollamaEndpoint === 'string') {
       const check = validateServerUrl(input.ollamaEndpoint);
-      if (!check.valid) return res.status(400).json({ success: false, message: check.error });
+      if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
       merged.ollamaEndpoint = check.url;
     }
     if (typeof input.ollamaModel === 'string') merged.ollamaModel = input.ollamaModel;
@@ -699,21 +743,28 @@ app.delete('/api/saves', authMiddleware, requireAdmin, (req: AuthenticatedReques
   try {
     const idParam = (req.query.id as string | undefined)?.toString();
     const game = (req.query.game as string | undefined)?.toString();
-    let row;
+    let row: Game | undefined;
     if (idParam) {
       const id = Number(idParam);
-      if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid id' });
-      row = database.getGames().find(g => g.id === id);
+      if (!Number.isSafeInteger(id) || id <= 0) return sendError(res, 400, 'INVALID_GAME_ID', 'Invalid id');
+      // Admin by id: explicit target, any owner.
+      row = database.getGameById(id);
     } else if (game) {
-      row = database.getGames().find(g => g.name === game);
+      // By title: scoped to the admin's own games unless `owner` is given.
+      row = database.findGame(targetOwnerId(req), gameParam(game));
     } else {
-      return res.status(400).json({ success: false, message: 'id or game required' });
+      return sendError(res, 400, 'BAD_REQUEST', 'id or game required');
     }
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
-    database.deleteGame(row.id);
-    const root = getGameRoot(row.name, row.ownerId);
-    if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
-    res.json({ success: true });
+    if (!row) throw gameNotFound();
+    // DUN-093: the folder is saves/<owner>/<gameId>, checked strictly inside
+    // saves/<owner> (never the owner root itself or anything outside it).
+    const root = getGameRoot(row.id, row.ownerId);
+    assertStrictlyInside(root, ownerSavesRoot(row.ownerId), 'Game folder');
+    database.deleteGame(row.id, row.ownerId);
+    const st = fs.lstatSync(root, { throwIfNoEntry: false });
+    if (st?.isDirectory()) fs.rmSync(root, { recursive: true, force: true });
+    else if (st?.isSymbolicLink()) fs.unlinkSync(root); // remove the link, never its target
+    res.json({ success: true, filesRemoved: Boolean(st) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -723,11 +774,25 @@ app.delete('/api/saves', authMiddleware, requireAdmin, (req: AuthenticatedReques
 app.get('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const game = req.query.game?.toString();
-    if (!game) return res.status(400).json({ success: false, message: 'game required' });
-    if (!ensureGameRead(req, res, path.basename(game))) return;
-    const row = database.getGameByName(path.basename(game));
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
+    const row = requireGame(req, game);
     res.json({ success: true, versions: listSaveVersions(row.id) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// Registered before /:id so 'diff' is not captured as a version id.
+app.get('/api/save-versions/diff', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const from = req.query.from?.toString();
+    const to = req.query.to?.toString();
+    if (!from || !to) return sendError(res, 400, 'BAD_REQUEST', 'from and to required');
+    for (const id of [from, to]) {
+      const v = getSaveVersion(id);
+      if (!v || !canSeeGame(req, v.version.gameId)) return sendError(res, 404, 'VERSION_NOT_FOUND', 'Version not found');
+    }
+    res.json({ success: true, diff: getVersionDiff(from, to) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -736,19 +801,8 @@ app.get('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) =
 app.get('/api/save-versions/:id', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const detail = getSaveVersion(req.params.id.toString());
-    if (!detail) return res.status(404).json({ success: false, message: 'Version not found' });
+    if (!detail || !canSeeGame(req, detail.version.gameId)) return sendError(res, 404, 'VERSION_NOT_FOUND', 'Version not found');
     res.json({ success: true, ...detail });
-  } catch (e) {
-    restError(req, res, e, 'API internal error');
-  }
-});
-
-app.get('/api/save-versions/diff', authMiddleware, (req: AuthenticatedRequest, res) => {
-  try {
-    const from = req.query.from?.toString();
-    const to = req.query.to?.toString();
-    if (!from || !to) return res.status(400).json({ success: false, message: 'from and to required' });
-    res.json({ success: true, diff: getVersionDiff(from, to) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -756,17 +810,14 @@ app.get('/api/save-versions/diff', authMiddleware, (req: AuthenticatedRequest, r
 
 app.post('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
+    assertNoLaunchFields(req.body); // DUN-061
     const { game, deviceId, changeSummary } = req.body ?? {};
-    if (!game) return res.status(400).json({ success: false, message: 'game required' });
-    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
-    const row = database.getGameByName(path.basename(game.toString()));
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
-    const ownerId = row.ownerId ?? req.user?.id;
+    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
+    const row = requireGame(req, game.toString());
     const resolvedDeviceId = typeof deviceId === 'string' ? deviceId : req.user?.id;
     const version = createVersionFromDirectory({
       gameId: row.id,
-      gameName: game.toString(),
-      ownerId,
+      ownerId: row.ownerId,
       deviceId: resolvedDeviceId,
       changeSummary: typeof changeSummary === 'string' ? changeSummary : 'manual snapshot',
     });
@@ -782,13 +833,14 @@ app.post('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) 
 
 app.post('/api/restore-version', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
+    assertNoLaunchFields(req.body); // DUN-061
     const { game, versionId } = req.body ?? {};
-    if (!game || !versionId) return res.status(400).json({ success: false, message: 'game and versionId required' });
-    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
-    const row = database.getGameByName(path.basename(game.toString()));
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
-    const result = restoreVersion(game.toString(), versionId.toString(), row.ownerId ?? req.user?.id);
-    if (!result.success) return res.status(404).json(result);
+    if (!game || !versionId) return sendError(res, 400, 'BAD_REQUEST', 'game and versionId required');
+    const row = requireGame(req, game.toString());
+    // DUN-125: restoreVersion validates versionId format (400
+    // INVALID_VERSION_ID) + containment; a version of another game is 404.
+    const result = restoreVersion(row.id, versionId.toString(), row.ownerId);
+    if (!result.success) return sendError(res, 404, 'VERSION_NOT_FOUND', result.message);
     res.json(result);
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -800,12 +852,10 @@ app.get('/api/conflicts', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const game = req.query.game?.toString();
     if (game) {
-      if (!ensureGameRead(req, res, path.basename(game))) return;
-      const row = database.getGameByName(path.basename(game));
-      if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+      const row = requireGame(req, game);
       res.json({ success: true, conflicts: listConflicts(row.id), hasUnresolved: hasUnresolvedConflict(row.id) });
     } else {
-      res.json({ success: true, conflicts: listConflicts(), hasUnresolved: false });
+      res.json({ success: true, conflicts: listConflicts(undefined, ownerScope(req)), hasUnresolved: false });
     }
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -816,11 +866,9 @@ app.post('/api/conflicts/detect', authMiddleware, (req: AuthenticatedRequest, re
   try {
     const { game, localVersionId, remoteVersionId } = req.body ?? {};
     if (!game || !localVersionId || !remoteVersionId) {
-      return res.status(400).json({ success: false, message: 'game, localVersionId and remoteVersionId required' });
+      return sendError(res, 400, 'BAD_REQUEST', 'game, localVersionId and remoteVersionId required');
     }
-    if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
-    const row = database.getGameByName(path.basename(game.toString()));
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    const row = requireGame(req, game.toString());
     const conflict = detectConflict(row.id, localVersionId.toString(), remoteVersionId.toString());
     res.json({ success: true, conflict, hasUnresolved: hasUnresolvedConflict(row.id) });
   } catch (e) {
@@ -832,10 +880,12 @@ app.post('/api/conflicts/:id/resolve', authMiddleware, (req: AuthenticatedReques
   try {
     const { resolution } = req.body ?? {};
     if (!['local', 'remote', 'both', 'later'].includes(resolution)) {
-      return res.status(400).json({ success: false, message: 'invalid resolution' });
+      return sendError(res, 400, 'BAD_REQUEST', 'invalid resolution');
     }
+    const existing = listConflicts().find(c => c.id === req.params.id.toString());
+    if (!existing || !canSeeGame(req, existing.gameId)) return sendError(res, 404, 'CONFLICT_NOT_FOUND', 'Conflict not found');
     const conflict = resolveConflict(req.params.id.toString(), resolution);
-    if (!conflict) return res.status(404).json({ success: false, message: 'Conflict not found' });
+    if (!conflict) return sendError(res, 404, 'CONFLICT_NOT_FOUND', 'Conflict not found');
     res.json({ success: true, conflict });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -846,10 +896,8 @@ app.post('/api/conflicts/:id/resolve', authMiddleware, (req: AuthenticatedReques
 app.get('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const game = req.query.game?.toString();
-    if (!game) return res.status(400).json({ success: false, message: 'game required' });
-    if (!ensureGameRead(req, res, path.basename(game))) return;
-    const row = database.getGameByName(path.basename(game));
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
+    const row = requireGame(req, game);
     res.json({ success: true, profile: getBackupProfile(row.id) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -858,11 +906,10 @@ app.get('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) 
 
 app.post('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
+    assertNoLaunchFields(req.body); // DUN-061
     const { game, includeGlobs, excludeGlobs, autoExcludeCache, maxFileSizeMB } = req.body ?? {};
-    if (!game) return res.status(400).json({ success: false, message: 'game required' });
-    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
-    const row = database.getGameByName(path.basename(game.toString()));
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
+    const row = requireGame(req, game.toString());
     const profile = upsertBackupProfile({
       gameId: row.id,
       includeGlobs: Array.isArray(includeGlobs) ? includeGlobs : ['**/*'],
@@ -880,12 +927,9 @@ app.post('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res)
 app.get('/api/storage', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const game = req.query.game?.toString();
-    if (!game) return res.status(400).json({ success: false, message: 'game required' });
-    if (!ensureGameRead(req, res, path.basename(game))) return;
-    const row = database.getGameByName(path.basename(game));
-    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
-    const ownerId = row.ownerId ?? req.user?.id;
-    const root = getGameRoot(game.toString(), ownerId);
+    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
+    const row = requireGame(req, game);
+    const root = getGameRoot(row.id, row.ownerId);
     const entry = {
       gameId: row.id,
       ...scanStorage(root, row.lastSync === 'Never' ? null : row.lastSync),
@@ -922,7 +966,7 @@ app.get('/api/playtime/export', authMiddleware, (req: AuthenticatedRequest, res)
     const range = (req.query.range?.toString() || 'all') as 'all' | 'year' | 'month' | 'week' | 'custom';
     const customRange = req.query.start && req.query.end ? { start: req.query.start.toString(), end: req.query.end.toString() } : undefined;
     const result = exportPlaytimeData(format, range, customRange, ownerScope(req));
-    if (!result.success) return res.status(400).json(result);
+    if (!result.success) return sendError(res, 400, 'BAD_REQUEST', result.message ?? 'Export failed');
     res.json(result);
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -933,7 +977,7 @@ app.get('/api/playtime/export', authMiddleware, (req: AuthenticatedRequest, res)
 // JSON 404 instead of letting the SPA catch-all serve index.html with a 200.
 // Registered *after* every /api route so it can never shadow a real handler.
 app.use('/api', (_req, res) => {
-  res.status(404).json({ success: false, message: 'Not found' });
+  sendError(res, 404, 'NOT_FOUND', 'Not found');
 });
 
 if (fs.existsSync(FRONTEND_DIR)) {

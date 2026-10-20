@@ -9,6 +9,7 @@ import axios from 'axios';
 
 // Isolate ALL side effects BEFORE importing the app module.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-restshim-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'restshim-secret-0123456789abcdef';
 
@@ -31,7 +32,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
@@ -328,14 +329,15 @@ describe('bundled dashboard (tracked, dependency-free)', () => {
   it('does not serve the shell for unknown /api routes (JSON 404 instead)', async () => {
     const res = await request(app).get('/api/definitely-not-a-route');
     expect(res.status).toBe(404);
-    expect(res.body).toEqual({ success: false, message: 'Not found' });
+    expect(res.body).toEqual({ error: 'Not found', code: 'NOT_FOUND' });
   });
 });
 
 describe('delta sync endpoints', () => {
   const game = 'DeltaGame';
   const adminId = database.listUsers()[0].id;
-  const gameDir = path.join(TMP, 'saves', adminId, game);
+  // saves/<owner>/<gameId>: the row exists first, then its id folder (DUN-086).
+  const gameDir = path.join(TMP, 'saves', adminId, String(database.ensureGame(adminId, game).id));
 
   it('returns a content-hash manifest, and 400 without a game', async () => {
     fs.mkdirSync(gameDir, { recursive: true });
@@ -353,9 +355,12 @@ describe('delta sync endpoints', () => {
     fs.mkdirSync(gameDir, { recursive: true });
     fs.writeFileSync(path.join(gameDir, 'slot1.sav'), 'hello');
 
-    // Leading `../` is neutralized by validateGamePath: never touches the parent.
-    await api(request(app).delete(`/api/file?game=${game}&path=../escape.sav`));
-    expect(fs.existsSync(path.join(TMP, 'saves', 'escape.sav'))).toBe(false);
+    // A leading `../` is rejected (400 DOT_SEGMENT), never stripped.
+    fs.writeFileSync(path.join(TMP, 'saves', adminId, 'escape.sav'), 'keep');
+    const dotdot = await api(request(app).delete(`/api/file?game=${game}&path=../escape.sav`));
+    expect(dotdot.status).toBe(400);
+    expect(dotdot.body).toMatchObject({ code: 'DOT_SEGMENT' });
+    expect(fs.readFileSync(path.join(TMP, 'saves', adminId, 'escape.sav'), 'utf-8')).toBe('keep');
 
     // A path that still normalizes outside the game root is rejected outright.
     const escaping = await api(
@@ -375,7 +380,7 @@ describe('delta sync endpoints', () => {
 describe('save version, conflict, profile, and storage endpoints', () => {
   const game = 'VersionShimGame';
   const owner = database.listUsers()[0];
-  const gameDir = path.join(TMP, 'saves', owner.id, game);
+  const gameDir = path.join(TMP, 'saves', owner.id, String(database.ensureGame(owner.id, game).id));
 
   const upload = (contents: string, syncId: string) =>
     api(
@@ -389,6 +394,8 @@ describe('save version, conflict, profile, and storage endpoints', () => {
 
   it('creates, lists, reads, and restores snapshots', async () => {
     expect((await upload('one', '100')).status).toBe(200);
+    // Upload lands in the owner-scoped save dir inside the temp DATA_DIR.
+    expect(fs.readFileSync(path.join(gameDir, 'slot1.sav'), 'utf-8')).toBe('one');
     const first = await api(request(app).post('/api/save-versions')).send({
       game,
       deviceId: 'device-a',
@@ -400,6 +407,7 @@ describe('save version, conflict, profile, and storage endpoints', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect((await upload('two', '101')).status).toBe(200);
+    expect(fs.readFileSync(path.join(gameDir, 'slot1.sav'), 'utf-8')).toBe('two');
     const second = await api(request(app).post('/api/save-versions')).send({
       game,
       deviceId: 'device-b',
@@ -421,9 +429,13 @@ describe('save version, conflict, profile, and storage endpoints', () => {
     expect((await api(request(app).get('/api/save-versions/does-not-exist'))).status).toBe(404);
     expect((await api(request(app).post('/api/save-versions')).send({})).status).toBe(400);
     expect((await api(request(app).post('/api/restore-version')).send({})).status).toBe(400);
-    expect(
-      (await api(request(app).post('/api/restore-version')).send({ game, versionId: 'missing' })).status,
-    ).toBe(404);
+    // DUN-125: a malformed id is 400 INVALID_VERSION_ID; a well-formed unknown id is 404.
+    const malformed = await api(request(app).post('/api/restore-version')).send({ game, versionId: 'missing' });
+    expect(malformed.status).toBe(400);
+    expect(malformed.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
+    const unknown = await api(request(app).post('/api/restore-version')).send({ game, versionId: '00000000-0000-4000-8000-000000000000' });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body).toEqual({ error: 'Version not found', code: 'VERSION_NOT_FOUND' });
   });
 
   it('detects, lists, and resolves conflicts', async () => {
@@ -448,7 +460,7 @@ describe('save version, conflict, profile, and storage endpoints', () => {
 
     expect((await api(request(app).post('/api/conflicts/detect')).send({})).status).toBe(400);
 
-    const row = database.getGameByName(game)!;
+    const row = database.getGameByName(game, owner.id)!;
     const recorded = recordConflict(row.id, latest.id, previous.id);
     const all = await api(request(app).get('/api/conflicts'));
     expect(all.status).toBe(200);

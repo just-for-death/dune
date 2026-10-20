@@ -25,10 +25,14 @@ export interface Game {
   winePrefix?: string;
   protonPath?: string;
   executable?: string;
+  /** Install folder of the game (set by scanners). Never a save path; saves live in winPath/linPath. */
+  installPath?: string;
   /** Emulator command used for ROM entries (for example `retroarch`). */
   emulator?: string;
   /** Absolute ROM path for emulator entries; may differ from linPath. */
   romPath?: string;
+  /** DUN-062 managed prefix id chosen for this game; main resolves it to a path at launch (DUN-061). */
+  managedPrefixId?: string;
 }
 
 // Collection / smart view
@@ -348,21 +352,103 @@ export interface PrefixSummary {
   lutris: PrefixEntry[];
 }
 
+/** A Wine prefix Dune created itself, recorded in main's prefix registry (DUN-062). */
+export interface ManagedPrefix {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: string;
+  gameId?: string;
+}
+
+/** Fixed failure codes for prefix operations. Raw OS messages are logged in main, never returned. */
+export type PrefixOpFailureReason =
+  | 'not-found'
+  | 'not-managed'
+  | 'symlink'
+  | 'outside-root'
+  | 'invalid-name'
+  | 'exists'
+  | 'in-use'
+  | 'trash-failed'
+  | 'error';
+
+export type CreatePrefixResult =
+  | { ok: true; prefix: ManagedPrefix }
+  | { ok: false; reason: Extract<PrefixOpFailureReason, 'invalid-name' | 'exists' | 'outside-root' | 'error'> };
+
+export type BackupPrefixResult =
+  | { ok: true; backupPath: string }
+  | { ok: false; reason: Extract<PrefixOpFailureReason, 'not-found' | 'not-managed' | 'symlink' | 'outside-root' | 'exists' | 'error'> };
+
+export type DeletePrefixResult =
+  | { ok: true; trashedPath: string }
+  | { ok: false; reason: Extract<PrefixOpFailureReason, 'not-found' | 'not-managed' | 'symlink' | 'outside-root' | 'trash-failed' | 'error'> };
+
+/** Why a drive's free space could not be read. Raw OS messages are logged in main, never returned. */
+export type DriveSpaceUnavailableReason = 'not-found' | 'permission' | 'unsupported' | 'error';
+
+/**
+ * Free/total space for one drive (device). `paths` lists every requested folder on that
+ * drive in its original requested form, deduped. Unavailable entries are grouped by reason.
+ */
+export type DriveSpace =
+  | { paths: string[]; mount: string; label?: string; status: 'ok'; freeBytes: number; totalBytes: number }
+  | { paths: string[]; status: 'unavailable'; reason: DriveSpaceUnavailableReason };
+
+// Game launch (DUN-061): the renderer sends a game id only; main reads the
+// executable, args, cwd, launcher and prefix from its own store.
+export type LaunchFailureReason = 'not-found' | 'not-launchable' | 'error';
+export type LaunchFailure = { ok: false; reason: LaunchFailureReason; message?: string };
+export type LaunchResult = { ok: true; pid?: number } | LaunchFailure;
+export type LaunchCommandResult =
+  | { ok: true; command: { command: string; args: string[]; env?: Record<string, string>; cwd?: string } }
+  | LaunchFailure;
+
+// Launch settings (DUN-061): launch fields are main-only. The renderer sends
+// metadata or an id; main picks files in its own dialog and validates ids.
+export type NewGameInput = { name: string; winPath?: string; linPath?: string; thumbnail?: string; tags?: string[] };
+export type AddGameResult = { ok: true; game: Game; games: Game[] } | { ok: false; reason: 'invalid' | 'error' };
+export type PickLaunchTargetResult = { ok: true; game: Game } | { ok: false; reason: 'not-found' | 'cancelled' | 'invalid' | 'error' };
+export type SetGamePrefixResult = { ok: true; game: Game } | { ok: false; reason: 'not-found' | 'prefix-not-found' | 'error' };
+export interface EmulatorInfo { id: string; name: string }
+export type SetGameEmulatorResult = { ok: true; game: Game } | { ok: false; reason: 'not-found' | 'unknown-emulator' | 'not-emulator' | 'error' };
+
+// Server-call results (Dune UI contract). Every IPC handler that calls the
+// Dune Server resolves to `{ ok: true, ...body }` or a ServerFailure:
+// `status` is the HTTP status (absent when no response arrived; then code is
+// 'NETWORK'), `code` is the server body's `code` unchanged, `message` the
+// server body's `error`. Local pre-checks use codes such as 'NO_SERVER'.
+export type ServerFailure = { ok: false; status?: number; code: string; message: string };
+export type ServerResult<T extends object = object> = ({ ok: true } & T) | ServerFailure;
+
+/** One failed file or game inside a save sync / restore. */
+export interface SyncFailureItem { game: string; path?: string; status?: number; code: string; message: string }
+/** Local files a restore replaced, copied to `<userData>/restore-backups` first (DUN-066). */
+export interface RestoreBackupInfo { game: string; dir: string; files: string[] }
+export type CloudSyncResult =
+  | { ok: true; message: string; uploaded?: number; restored?: number; backups?: RestoreBackupInfo[] }
+  | (ServerFailure & { failures?: SyncFailureItem[]; backups?: RestoreBackupInfo[] });
+
+export type RemoveGameResult = { ok: true; games: Game[] } | { ok: false; reason: 'invalid' | 'not-found' | 'error' };
+export type ImportLocalAchievementsResult = ServerResult<{ success?: boolean; count: number; message?: string }>;
+
 export interface ElectronAPI {
   // Config
   loadConfig: () => Promise<{ games: Game[]; cloud: Cloud; settings: Settings } | null>;
   saveConfig: (config: Partial<{ games: Game[]; cloud: Cloud; settings: Settings }>) => Promise<boolean>;
   
   // Games
-  addGame: (game: Omit<Game, 'id'>) => Promise<Game[]>;
-  removeGame: (id: number) => Promise<Game[]>;
+  addGame: (game: NewGameInput) => Promise<AddGameResult>;
+  /** The only way a game leaves the store (config:save never removes games). */
+  removeGame: (gameId: number) => Promise<RemoveGameResult>;
   autoDetectGames: (roots: string[]) => Promise<{ count: number; currentGames: Game[] }>;
   
   // Sync
   exportSaves: () => Promise<{ success: boolean; path?: string; message?: string }>;
-  syncCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
-  restoreCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
-  testCloud: (creds: { url: string }) => Promise<{ success: boolean; message: string }>;
+  syncCloud: (creds: { url: string }) => Promise<CloudSyncResult>;
+  restoreCloud: (creds: { url: string }) => Promise<CloudSyncResult>;
+  testCloud: (creds: { url: string }) => Promise<ServerResult<{ message: string }>>;
   
   // Art
   fetchArt: (id: number, name: string) => Promise<{ success: boolean; thumbnail?: string; message?: string }>;
@@ -375,92 +461,102 @@ export interface ElectronAPI {
   onSyncProgress: (cb: (data: { percent: number; message: string }) => void) => () => void;
   
   // Playtime
-  recordPlaytime: (session: Omit<PlaytimeSession, 'id' | 'createdAt'>) => Promise<{ success: boolean; message?: string }>;
+  recordPlaytime: (session: Omit<PlaytimeSession, 'id' | 'createdAt'>) => Promise<ServerResult<{ success?: boolean; message?: string }>>;
   onPlaytimeRecorded: (cb: (data: { game: string; durationMinutes: number }) => void) => () => void;
-  getPlaytimeSummary: (game?: string) => Promise<{ success: boolean; summary: PlaytimeSummary[]; message?: string }>;
-  getRecentSessions: (limit?: number) => Promise<{ success: boolean; sessions: PlaytimeSession[]; message?: string }>;
-  getTotalPlaytime: () => Promise<{ success: boolean; totalMinutes: number; message?: string }>;
-  getPlaytimeGraphData: (range: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) => Promise<{ success: boolean; data: PlaytimeGraphData; message?: string }>;
-  getPlaytimeComparison: (range: 'week' | 'month' | 'year') => Promise<{ success: boolean; comparison: PlaytimeComparison; message?: string }>;
-  exportPlaytimeData: (format: 'csv' | 'json', range?: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) => Promise<{ success: boolean; data: string; message?: string }>;
+  getPlaytimeSummary: (game?: string) => Promise<ServerResult<{ success: boolean; summary: PlaytimeSummary[]; message?: string }>>;
+  getRecentSessions: (limit?: number) => Promise<ServerResult<{ success: boolean; sessions: PlaytimeSession[]; message?: string }>>;
+  getTotalPlaytime: () => Promise<ServerResult<{ success: boolean; totalMinutes: number; message?: string }>>;
+  getPlaytimeGraphData: (range: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) => Promise<ServerResult<{ success: boolean; data: PlaytimeGraphData; message?: string }>>;
+  getPlaytimeComparison: (range: 'week' | 'month' | 'year') => Promise<ServerResult<{ success: boolean; comparison: PlaytimeComparison; message?: string }>>;
+  exportPlaytimeData: (format: 'csv' | 'json', range?: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) => Promise<ServerResult<{ success: boolean; data: string; message?: string }>>;
   
   // Achievements
-  getAchievements: (game: string) => Promise<{ success: boolean; achievements: Achievement[]; message?: string }>;
-  getAchievementSummary: (game?: string) => Promise<{ success: boolean; summary: AchievementSummary[]; message?: string }>;
-  getRecentUnlocks: (limit?: number) => Promise<{ success: boolean; unlocks: Achievement[]; message?: string }>;
-  getAchievementDetail: (game: string) => Promise<{ success: boolean; achievements: AchievementDetail[]; progress?: AchievementProgress | null; message?: string }>;
-  importLocalAchievements: (game: Game) => Promise<{ success: boolean; count: number; message?: string }>;
+  getAchievements: (game: string) => Promise<ServerResult<{ success: boolean; achievements: Achievement[]; message?: string }>>;
+  getAchievementSummary: (game?: string) => Promise<ServerResult<{ success: boolean; summary: AchievementSummary[]; message?: string }>>;
+  getRecentUnlocks: (limit?: number) => Promise<ServerResult<{ success: boolean; unlocks: Achievement[]; message?: string }>>;
+  getAchievementDetail: (game: string) => Promise<ServerResult<{ success: boolean; achievements: AchievementDetail[]; progress?: AchievementProgress | null; message?: string }>>;
+  importLocalAchievements: (gameId: number) => Promise<ImportLocalAchievementsResult>;
   onAchievementsImported: (cb: (data: { game: string; count: number }) => void) => () => void;
   
   // HLTB
-  getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string; stale?: boolean }>;
+  getHLTBTimes: (gameName: string) => Promise<ServerResult<{ success: boolean; times?: HLTBTimes; message?: string; stale?: boolean }>>;
 
   // Launcher
-  launchGame: (game: Game, options?: Record<string, unknown>) => Promise<{ success: boolean; message: string; pid?: number }>;
-  getLaunchCommand: (game: Game, options?: Record<string, unknown>) => Promise<{ success: boolean; command?: { command: string; args: string[]; env?: Record<string, string>; cwd?: string } | null; message?: string }>;
+  launchGame: (gameId: number) => Promise<LaunchResult>;
+  getLaunchCommand: (gameId: number) => Promise<LaunchCommandResult>;
+  pickLaunchTarget: (gameId: number) => Promise<PickLaunchTargetResult>;
+  setGamePrefix: (gameId: number, prefixId: string | null) => Promise<SetGamePrefixResult>;
+  listEmulators: () => Promise<EmulatorInfo[]>;
+  setGameEmulator: (gameId: number, emulatorId: string | null) => Promise<SetGameEmulatorResult>;
 
-  // Prefix manager
-  listPrefixes: () => Promise<{ success: boolean; prefixes?: PrefixSummary; message?: string }>;
-  createPrefix: (prefixPath: string) => Promise<{ success: boolean; message: string }>;
-  deletePrefix: (prefixPath: string) => Promise<{ success: boolean; message: string }>;
-  backupPrefix: (prefixPath: string) => Promise<{ success: boolean; message: string; backupPath?: string }>;
+  // Prefix manager (DUN-062): only Dune-managed prefixes, addressed by name (create) or registry id.
+  // No method takes a filesystem path from the renderer.
+  listPrefixes: () => Promise<ManagedPrefix[]>;
+  createPrefix: (name: string) => Promise<CreatePrefixResult>;
+  backupPrefix: (id: string) => Promise<BackupPrefixResult>;
+  deletePrefix: (id: string) => Promise<DeletePrefixResult>;
 
   // Save versions
-  getSaveVersions: (game: string) => Promise<{ success: boolean; versions?: SaveVersion[]; message?: string }>;
-  createSaveVersion: (game: string, deviceId?: string, changeSummary?: string) => Promise<{ success: boolean; version?: SaveVersion; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>;
-  getSaveVersion: (id: string) => Promise<{ success: boolean; version?: SaveVersion; files?: SaveFileSnapshot[]; message?: string }>;
-  getSaveVersionDiff: (from: string, to: string) => Promise<{ success: boolean; diff?: { added: string[]; removed: string[]; changed: string[]; unchanged: number }; message?: string }>;
-  restoreSaveVersion: (game: string, versionId: string) => Promise<{ success: boolean; message?: string; restoredFiles?: number }>;
+  getSaveVersions: (game: string) => Promise<ServerResult<{ success: boolean; versions?: SaveVersion[]; message?: string }>>;
+  createSaveVersion: (game: string, deviceId?: string, changeSummary?: string) => Promise<ServerResult<{ success: boolean; version?: SaveVersion; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>>;
+  getSaveVersion: (id: string) => Promise<ServerResult<{ success: boolean; version?: SaveVersion; files?: SaveFileSnapshot[]; message?: string }>>;
+  getSaveVersionDiff: (from: string, to: string) => Promise<ServerResult<{ success: boolean; diff?: { added: string[]; removed: string[]; changed: string[]; unchanged: number }; message?: string }>>;
+  restoreSaveVersion: (game: string, versionId: string) => Promise<ServerResult<{ success: boolean; message?: string; restoredFiles?: number }>>;
 
   // Conflicts
-  getConflicts: (game?: string) => Promise<{ success: boolean; conflicts?: ConflictRecord[]; hasUnresolved?: boolean; message?: string }>;
-  detectConflict: (game: string, localVersionId: string, remoteVersionId: string) => Promise<{ success: boolean; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>;
-  resolveConflict: (id: string, resolution: 'local' | 'remote' | 'both' | 'later') => Promise<{ success: boolean; conflict?: ConflictRecord; message?: string }>;
+  getConflicts: (game?: string) => Promise<ServerResult<{ success: boolean; conflicts?: ConflictRecord[]; hasUnresolved?: boolean; message?: string }>>;
+  detectConflict: (game: string, localVersionId: string, remoteVersionId: string) => Promise<ServerResult<{ success: boolean; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>>;
+  resolveConflict: (id: string, resolution: 'local' | 'remote' | 'both' | 'later') => Promise<ServerResult<{ success: boolean; conflict?: ConflictRecord; message?: string }>>;
 
   // Backup profiles
-  getBackupProfile: (game: string) => Promise<{ success: boolean; profile?: BackupProfile; message?: string }>;
-  setBackupProfile: (profile: BackupProfile & { game?: string }) => Promise<{ success: boolean; profile?: BackupProfile; message?: string }>;
+  getBackupProfile: (game: string) => Promise<ServerResult<{ success: boolean; profile?: BackupProfile; message?: string }>>;
+  setBackupProfile: (profile: BackupProfile & { game?: string }) => Promise<ServerResult<{ success: boolean; profile?: BackupProfile; message?: string }>>;
 
   // Storage
-  getStorage: (game: string) => Promise<{ success: boolean; entry?: StorageEntry; freeBytes?: number; message?: string }>;
+  getStorage: (game: string) => Promise<ServerResult<{ success: boolean; entry?: StorageEntry; freeBytes?: number; message?: string }>>;
   refreshHLTBCache: (gameName?: string) => Promise<{ success: boolean; message?: string }>;
   getHLTBCacheStats: () => Promise<{ success: boolean; stats: { entries: number; oldest: string; newest: string }; message?: string }>;
   
   // AI Analysis
-  analyzeFiles: (gameName: string, files: GameFile[]) => Promise<{ success: boolean; analysis?: Record<string, FileAnalysis>; message?: string }>;
+  analyzeFiles: (gameName: string, files: GameFile[]) => Promise<ServerResult<{ success: boolean; analysis?: Record<string, FileAnalysis>; message?: string }>>;
   
   // SteamGridDB
-  searchArt: (query: string) => Promise<{ success: boolean; results?: string[]; message?: string }>;
-  autoMatchAll: () => Promise<{ success: boolean; count: number; message?: string }>;
+  searchArt: (query: string) => Promise<ServerResult<{ success: boolean; results?: string[]; message?: string }>>;
+  autoMatchAll: () => Promise<ServerResult<{ success: boolean; count: number; message?: string }>>;
   
   // Local sync
-  triggerLocalSync: () => Promise<{ success: boolean; count: number; games: string[]; message?: string }>;
-  getLocalSources: () => Promise<{ success: boolean; sources: LocalSource[]; message?: string }>;
-  addLocalSource: (path: string) => Promise<{ success: boolean; source?: LocalSource; message?: string }>;
-  removeLocalSource: (id: number) => Promise<{ success: boolean; message?: string }>;
+  triggerLocalSync: () => Promise<ServerResult<{ success: boolean; count: number; games: string[]; message?: string }>>;
+  getLocalSources: () => Promise<ServerResult<{ success: boolean; sources: LocalSource[]; message?: string }>>;
+  addLocalSource: (path: string) => Promise<ServerResult<{ success: boolean; source?: LocalSource; message?: string }>>;
+  removeLocalSource: (id: number) => Promise<ServerResult<{ success: boolean; message?: string }>>;
   
   // Remote servers
-  getRemoteServers: () => Promise<{ success: boolean; servers: RemoteServer[]; message?: string }>;
-  addRemoteServer: (url: string) => Promise<{ success: boolean; server?: RemoteServer; message?: string }>;
-  removeRemoteServer: (id: number) => Promise<{ success: boolean; message?: string }>;
+  getRemoteServers: () => Promise<ServerResult<{ success: boolean; servers: RemoteServer[]; message?: string }>>;
+  addRemoteServer: (url: string) => Promise<ServerResult<{ success: boolean; server?: RemoteServer; message?: string }>>;
+  removeRemoteServer: (id: number) => Promise<ServerResult<{ success: boolean; message?: string }>>;
   
   // API Keys (self-service: keys belong to the authenticated user)
-  getApiKeys: () => Promise<{ success: boolean; keys: ApiKeyInfo[]; message?: string }>;
-  addApiKey: (description?: string) => Promise<{ success: boolean; key?: string; message?: string }>;
-  removeApiKey: (id: string) => Promise<{ success: boolean; message?: string }>;
+  getApiKeys: () => Promise<ServerResult<{ success: boolean; keys: ApiKeyInfo[]; message?: string }>>;
+  addApiKey: (description?: string) => Promise<ServerResult<{ success: boolean; key?: string; message?: string }>>;
+  removeApiKey: (id: string) => Promise<ServerResult<{ success: boolean; message?: string }>>;
   
   // Ollama
-  getOllamaModels: (endpoint: string) => Promise<{ success: boolean; models?: string[]; message?: string }>;
-  checkOllamaHealth: () => Promise<HealthStatus>;
+  getOllamaModels: (endpoint: string) => Promise<ServerResult<{ success: boolean; models?: string[]; message?: string }>>;
+  checkOllamaHealth: () => Promise<ServerResult<HealthStatus>>;
 
   // Renderer diagnostics, secret store, and help (client-only bridge methods)
   reportRendererError: (report: { message: string; stack?: string; url?: string }) => Promise<unknown>;
   openErrorLog: () => Promise<unknown>;
   getServerKey: () => Promise<{ success: boolean; key: string }>;
   setServerKey: (key: string) => Promise<{ success: boolean }>;
+
+  // Disk space (one entry per drive; never rejects)
+  getDiskSpace(paths?: string[]): Promise<DriveSpace[]>;
 }
 
 // NOTE: no `declare global Window` here on purpose. This package is a pure
 // types module; stamping a global Window.electronAPI would silently override
 // the renderer's own bridge declaration (preload.ts is the runtime truth)
 // for every importer. Renderers declare their own Window binding instead.
+
+export * from './pathRules.js';

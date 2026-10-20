@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { BackupProfile, Game } from '@dune/shared';
+import type { BackupProfile, Game, NewGameInput } from '@dune/shared';
 
 interface Cloud {
   url: string;
@@ -37,8 +37,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('config:save', config),
   
   // Games
-  addGame: (game: Omit<Game, 'id'>) => ipcRenderer.invoke('game:add', game),
-  removeGame: (id: number) => ipcRenderer.invoke('game:remove', id),
+  // DUN-061: metadata only; launch fields are set by main (scanners / pickers below).
+  addGame: (game: NewGameInput) => ipcRenderer.invoke('game:add', game),
+  // Follow-up (a): the only way to remove a game (config:save never removes).
+  removeGame: (gameId: number) => ipcRenderer.invoke('game:remove', gameId),
   autoDetectGames: (customRoots: string[]) => ipcRenderer.invoke('games:autodetect', customRoots),
   
   // Sync
@@ -92,8 +94,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('achievements:summary', game),
   getRecentUnlocks: (limit?: number) => 
     ipcRenderer.invoke('achievements:recent', limit),
-  importLocalAchievements: (game: Game) =>
-    ipcRenderer.invoke('achievements:importLocal', game),
+  // Follow-up (b): a game id only; main reads the game from its store.
+  importLocalAchievements: (gameId: number) =>
+    ipcRenderer.invoke('achievements:importLocal', gameId),
   onAchievementsImported: (cb: (data: { game: string; count: number }) => void) => {
     const listener = (_event: unknown, data: { game: string; count: number }) => cb(data);
     ipcRenderer.on('achievements:imported', listener);
@@ -104,21 +107,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getHLTBTimes: (gameName: string) => 
     ipcRenderer.invoke('hltb:get', gameName),
 
-  // Launcher
-  launchGame: (game: Game, options?: Record<string, unknown>) =>
-    ipcRenderer.invoke('game:launch', game, options),
-  getLaunchCommand: (game: Game, options?: Record<string, unknown>) =>
-    ipcRenderer.invoke('game:launchCommand', game, options),
+  // Launcher (DUN-061): game id only; main reads everything else from its store.
+  launchGame: (gameId: number) =>
+    ipcRenderer.invoke('game:launch', gameId),
+  getLaunchCommand: (gameId: number) =>
+    ipcRenderer.invoke('game:launchCommand', gameId),
+  pickLaunchTarget: (gameId: number) =>
+    ipcRenderer.invoke('game:pickLaunchTarget', gameId),
+  setGamePrefix: (gameId: number, prefixId: string | null) =>
+    ipcRenderer.invoke('game:setPrefix', gameId, prefixId),
+  listEmulators: () =>
+    ipcRenderer.invoke('emulators:list'),
+  setGameEmulator: (gameId: number, emulatorId: string | null) =>
+    ipcRenderer.invoke('game:setEmulator', gameId, emulatorId),
 
   // Prefix manager
+  // DUN-062: names/ids only; main builds and checks every path.
   listPrefixes: () =>
     ipcRenderer.invoke('prefix:list'),
-  createPrefix: (prefixPath: string) =>
-    ipcRenderer.invoke('prefix:create', prefixPath),
-  deletePrefix: (prefixPath: string) =>
-    ipcRenderer.invoke('prefix:delete', prefixPath),
-  backupPrefix: (prefixPath: string) =>
-    ipcRenderer.invoke('prefix:backup', prefixPath),
+  createPrefix: (name: string) =>
+    ipcRenderer.invoke('prefix:create', name),
+  backupPrefix: (id: string) =>
+    ipcRenderer.invoke('prefix:backup', id),
+  deletePrefix: (id: string) =>
+    ipcRenderer.invoke('prefix:delete', id),
 
   // Save versions
   getSaveVersions: (game: string) =>
@@ -203,4 +215,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('server-key:get'),
   setServerKey: (key: string) =>
     ipcRenderer.invoke('server-key:set', key),
+
+  // Disk space
+  getDiskSpace: (paths?: string[]) =>
+    ipcRenderer.invoke('system:diskSpace', paths),
 });

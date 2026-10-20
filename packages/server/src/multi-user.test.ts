@@ -6,6 +6,7 @@ import request from 'supertest';
 
 // Full-stack (Express middleware + auth + SQLite) multi-user isolation test.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-multiuser-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'multiuser-secret-0123456789abcdef';
 
@@ -14,6 +15,7 @@ const { database } = await import('./db/index.js');
 
 const ADMIN_KEY = 'admin-int-test-key-0123456789';
 database.addApiKey(ADMIN_KEY, 'Multi-user test admin');
+const adminId = database.resolveUserByKey(ADMIN_KEY)!.id;
 
 let memberKey = '';
 let memberId = '';
@@ -32,7 +34,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
@@ -66,15 +68,23 @@ describe('multi-user isolation over HTTP', () => {
     expect(adminSaves.body.games.map((g: { name: string }) => g.name).sort()).toEqual(['AdminGame', 'MemberGame']);
   });
 
-  it('rejects cross-user reads and writes (403)', async () => {
-    expect((await asMember(request(app).get('/api/list-files?game=AdminGame'))).status).toBe(403);
-    expect((await asMember(request(app).get('/api/manifest?game=AdminGame'))).status).toBe(403);
-    expect((await asMember(request(app).get('/api/download-file?game=AdminGame&path=save.sav'))).status).toBe(403);
-    expect((await asMember(request(app).delete('/api/file?game=AdminGame&path=save.sav'))).status).toBe(403);
+  it('resolves titles only in the caller\'s namespace: another user\'s game is invisible (DUN-087/088)', async () => {
+    // The member has no 'AdminGame': reads are empty / 404, never the admin's data.
+    expect((await asMember(request(app).get('/api/list-files?game=AdminGame'))).body).toEqual({ success: true, files: [] });
+    expect((await asMember(request(app).get('/api/manifest?game=AdminGame'))).body).toEqual({ success: true, files: [] });
+    const dl = await asMember(request(app).get('/api/download-file?game=AdminGame&path=save.sav'));
+    expect(dl.status).toBe(404);
+    expect(dl.body).toEqual({ error: 'Game not found', code: 'GAME_NOT_FOUND' });
+    expect((await asMember(request(app).delete('/api/file?game=AdminGame&path=save.sav'))).status).toBe(404);
+    // A member can't target another owner explicitly either.
+    const targeted = await asMember(request(app).get(`/api/download-file?game=AdminGame&path=save.sav&owner=${encodeURIComponent(adminId)}`));
+    expect(targeted.status).toBe(403);
 
-    // A member cannot upload into another user's game either.
-    const blocked = await asMember(upload(request(app).post('/api/upload-file'), 'AdminGame', 'evil.sav', Buffer.from('X')));
-    expect(blocked.status).toBe(403);
+    // Uploading 'AdminGame' as the member creates the MEMBER's own game; the admin's is untouched.
+    const own = await asMember(upload(request(app).post('/api/upload-file'), 'AdminGame', 'evil.sav', Buffer.from('X')));
+    expect(own.status).toBe(200);
+    const adminFiles = await asAdmin(request(app).get('/api/list-files?game=AdminGame'));
+    expect(adminFiles.body.files.map((f: { path: string }) => f.path)).toEqual(['save.sav']);
 
     // The owner can read their own.
     expect((await asMember(request(app).get('/api/manifest?game=MemberGame'))).status).toBe(200);

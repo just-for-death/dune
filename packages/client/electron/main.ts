@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage, session, net } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage, session, net, shell } from 'electron'
 import { pathToFileURL } from 'node:url'
 import * as path from 'path'
 import * as os from 'os'
@@ -7,24 +7,36 @@ import Store from 'electron-store'
 import AdmZip from 'adm-zip'
 import axios from 'axios'
 import { nextId } from '@dune/shared'
-import type { FileManifest, HashManifest, Game, Settings, Cloud, BackupProfile } from '@dune/shared'
-import { autoDetectGames } from './scanner'
+import type { FileManifest, HashManifest, Game, Settings, Cloud, BackupProfile, CloudSyncResult, ImportLocalAchievementsResult, RestoreBackupInfo, ServerFailure, ServerResult, SyncFailureItem } from '@dune/shared'
+import { fullScan, gameRegistry } from './scanner/registry'
+import { createSaveResolver, loadManifest } from './scanner/savePaths'
+import { getInstalledSteamLibraryGames, getSteamPath } from './scanner/steam'
+import { runStoredGamesMigration } from './scanner/migrateStore'
 import { getEmulatorGames } from './emulators/roms'
-import { launchGame, getLaunchCommand } from './launcher/manager'
-import type { LaunchOptions } from './launcher/strategies/types'
+import { createLaunchIpcHandlers, parseGameId } from './launcher/byId'
+import { createGameSettingsIpcHandlers, saveRendererGames, type GameSettingsDeps } from './launcher/gameSettings'
 import { buildPlaytimeSession, enqueuePlaytimeSession, type PlaytimeSessionPayload } from './playtime/session'
+import { createPlaytimeFlushGate } from './sync/serverUrl'
+import { resolveRestoreTarget } from './sync/restoreTarget'
+import { writeRestoreFiles, type RestoreRejection } from './sync/restoreWrite'
+import { acceptsRelativePath, listSaveFiles, resolveSaveTarget } from './sync/saveTarget'
+import { backupLocalFiles, fingerprintOf, planRestore } from './sync/restorePlan'
+import { commitGameStatusPatches, type GameStatusPatch } from './sync/gameStatus'
+import { uploadFileHeaders } from './net/uploadHeaders'
+import { ServerCallError, callServer, failureFromResponse, noServerFailure, serverOk, toServerFailure } from './net/serverError'
+import { createNavigationGuards } from './security/navigation'
 import { importLocalAchievementsFromDisk } from './achievements/import'
-import { listPrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix } from './prefix/manager'
+import { PrefixRegistry, createPrefixIpcHandlers, defaultPrefixRegistryPaths, isStrictlyInside } from './prefix/registry'
+import { getDiskSpace, buildDefaultDiskPaths, detectSteamLibraries } from './system/diskSpace'
 import { autoUpdater } from 'electron-updater'
 import {
   normalizeUrl,
   expandPath,
   asString,
-  sanitizeGame,
   sanitizeSettings,
   planUpload,
   commitUploaded,
-  filterBackupFiles,
+  backupProfileFilter,
 } from './utils'
 
 // Define default games if empty
@@ -70,6 +82,40 @@ type LegacyStore = {
 };
 const legacyStore = store as unknown as LegacyStore;
 
+// DUN-001: older scanners stored install folders in winPath/linPath (save
+// paths). Move them to installPath and re-resolve saves from the manifest,
+// once. See scanner/migrateStore.ts for the exact rule. config:load/save await
+// this so the renderer never reads (or writes back) a pre-migration list.
+// Only the on-disk manifest cache is used here so startup is never blocked on
+// a download; without a cache the migration is retried on the next launch.
+let gameStoreMigration: Promise<void> = Promise.resolve();
+async function migrateLegacyGameStore(): Promise<void> {
+  try {
+    const settings = store.get('settings') as Settings | undefined;
+    const steamPath = getSteamPath();
+    const result = await runStoredGamesMigration(legacyStore, {
+      getResolver: async () => {
+        const manifest = await loadManifest({
+          ttlMs: Number.POSITIVE_INFINITY,
+          download: async () => { throw new Error('manifest not cached yet'); },
+        });
+        if (!manifest) {
+          void loadManifest(); // warm the cache for the next launch
+          return null;
+        }
+        return createSaveResolver(manifest, { customRoots: settings?.scanRoots || [] });
+      },
+      steamGames: steamPath ? getInstalledSteamLibraryGames(steamPath) : [],
+      storePath: store.path,
+    });
+    if (result.status === 'migrated' && result.changed > 0) {
+      console.log(`Migrated ${result.changed} scanner game(s) to installPath/save paths (backup: ${result.backupPath})`);
+    }
+  } catch (e) {
+    console.error('Game store migration failed:', e);
+  }
+}
+
 // Auth header for Dune Server calls. The server requires x-api-key on every
 // route except /health; without it the whole client↔server integration 401s.
 export function serverHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -93,30 +139,40 @@ function playtimeSessionKey(session: PlaytimeSessionPayload): string {
   return `${session.game}|${session.sessionStart}|${session.sessionEnd}`;
 }
 
-async function postPlaytimeSession(session: PlaytimeSessionPayload): Promise<{ success: boolean; message?: string }> {
-  const cloud = store.get('cloud') as Cloud | undefined;
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' };
-  try {
-    const cleanUrl = normalizeUrl(cloud.url);
-    const res = await axios.post(`${cleanUrl}/api/playtime`, session, {
-      headers: serverHeaders({ 'Content-Type': 'application/json' }),
-    });
-    return res.data;
-  } catch (err) {
-    return { success: false, message: errorMessage(err) };
-  }
+// DUN-045: playtime only ever goes to the saved, validated server URL. The
+// renderer persists cloud.url on every keystroke, so the gate waits for the
+// URL to settle and exposes null while it is being edited or is invalid.
+// Queued sessions are never touched here; they stay queued until a flush to
+// a valid URL succeeds. See sync/serverUrl.ts.
+const playtimeFlushGate = createPlaytimeFlushGate({
+  initialUrl: (store.get('cloud') as Cloud | undefined)?.url,
+  flush: () => { void flushPlaytimeQueue(); },
+});
+
+async function postPlaytimeSession(
+  session: PlaytimeSessionPayload,
+  serverUrl: string | null = playtimeFlushGate.savedUrl(),
+): Promise<ServerResult<{ success?: boolean; message?: string }>> {
+  if (!serverUrl) return { ok: false, code: 'NO_SERVER', message: 'No valid Dune Server URL saved' };
+  return callServer(() => axios.post(`${serverUrl}/api/playtime`, session, {
+    headers: serverHeaders({ 'Content-Type': 'application/json' }),
+  }));
 }
 
 async function flushPlaytimeQueue(): Promise<void> {
   if (playtimeQueueFlushing) return;
   playtimeQueueFlushing = true;
   try {
+    // No saved, validated URL (empty, invalid or still being typed): leave
+    // the queue untouched; a later trigger flushes it.
+    const serverUrl = playtimeFlushGate.savedUrl();
+    if (!serverUrl) return;
     const snapshot = pendingPlaytimeQueue();
     if (snapshot.length === 0) return;
     const sent = new Set<string>();
     for (const session of snapshot) {
-      const res = await postPlaytimeSession(session);
-      if (res.success) sent.add(playtimeSessionKey(session));
+      const res = await postPlaytimeSession(session, serverUrl);
+      if (res.ok) sent.add(playtimeSessionKey(session));
     }
     if (sent.size > 0) {
       savePlaytimeQueue(pendingPlaytimeQueue().filter((session) => !sent.has(playtimeSessionKey(session))));
@@ -131,7 +187,7 @@ async function recordLaunchPlaytime(game: string, startedAt: number, endedAt: nu
   if (!session) return;
 
   const res = await postPlaytimeSession(session);
-  if (!res.success) {
+  if (!res.ok) {
     savePlaytimeQueue(enqueuePlaytimeSession(pendingPlaytimeQueue(), session));
     return;
   }
@@ -230,16 +286,9 @@ function setupAutoSync() {
 
     if (ms > 0) {
       autoSyncInterval = setInterval(async () => {
-        if (isCloudSyncing) return;
         const creds = store.get('cloud') as Cloud | undefined;
-        if (creds?.url) {
-          isCloudSyncing = true;
-          try {
-            await performCloudSync(creds);
-          } finally {
-            isCloudSyncing = false;
-          }
-        }
+        // performCloudSync holds the sync lock itself (returns SYNC_IN_PROGRESS).
+        if (creds?.url) await performCloudSync(creds);
       }, ms);
     }
   }
@@ -301,20 +350,16 @@ async function refreshRemoteManifest(baseUrl: string, gameName: string): Promise
   saveGameState(gameName, { remote: manifest });
 }
 
-async function uploadFile(baseUrl: string, gameName: string, localPath: string, relativePath: string, syncId?: string) {
+async function uploadFile(baseUrl: string, gameName: string, localPath: string, relativePath: string, syncId: string) {
   const cleanUrl = normalizeUrl(baseUrl);
   const stream = fs.createReadStream(localPath);
   try {
+    // DUN-064/127: x-game / x-path are encodeURIComponent'd (net/uploadHeaders.ts).
     const res = await axios.post(`${cleanUrl}/api/upload-file`, stream, {
-      headers: serverHeaders({
-        'x-game': gameName,
-        'x-path': relativePath,
-        'x-sync-id': syncId || 'default',
-        'Content-Type': 'application/octet-stream'
-      })
+      headers: serverHeaders(uploadFileHeaders(gameName, relativePath, syncId)),
     });
     if (!(res.data && res.data.success)) {
-      throw new Error((res.data && res.data.message) || 'Upload rejected by server');
+      throw new ServerCallError(failureFromResponse(res.status, res.data));
     }
   } finally {
     // A failed POST aborts without draining the stream, which leaks the file
@@ -323,119 +368,61 @@ async function uploadFile(baseUrl: string, gameName: string, localPath: string, 
   }
 }
 
-async function performCloudSync(credentials: Cloud) {
-  try {
-    const games = (store.get('games') || []) as Game[]
-    const cleanUrl = normalizeUrl(credentials.url)
-
-    let totalAttempted = 0
-    let totalFailed = 0
-
-    for (const game of games) {
-      const rawPath = process.platform === 'win32' ? game.winPath : game.linPath
-      const expanded = expandPath(rawPath)
-      if (expanded && fs.existsSync(expanded)) {
-        const filePaths: { local: string, rel: string }[] = [];
-        const stats = fs.statSync(expanded);
-        if (stats.isDirectory()) {
-          const walk = (dir: string, base: string) => {
-            const items = fs.readdirSync(dir, { withFileTypes: true });
-            for (const item of items) {
-              if (item.isSymbolicLink()) continue; // skip symlinks
-              const fullPath = path.join(dir, item.name);
-              if (item.isDirectory()) {
-                walk(fullPath, base);
-              } else {
-                filePaths.push({ local: fullPath, rel: path.relative(base, fullPath) });
-              }
-            }
-          };
-          walk(expanded, expanded);
-        } else {
-          filePaths.push({ local: expanded, rel: path.basename(expanded) });
-        }
-
-        const syncId = Date.now().toString();
-        let profileFiles = filePaths;
-        try {
-          const profileRes = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(game.name)}`, { headers: serverHeaders() });
-          if (profileRes.data?.success && profileRes.data.profile) {
-            profileFiles = filterBackupFiles(filePaths.map((file) => ({ ...file, rel: file.rel })), profileRes.data.profile);
-          }
-        } catch {
-          // Fall back to the full file set when the server is unavailable.
-        }
-        const { plan, localManifest, deleted } = planUpload(game.name, profileFiles, getSyncState);
-        let attempted = 0;
-        const failedRels: string[] = [];
-        for (let i = 0; i < plan.length; i += 5) {
-          const chunk = plan.slice(i, i + 5);
-          await Promise.all(chunk.map(async (f) => {
-            attempted++;
-            try {
-              await uploadFile(cleanUrl, f.game, f.local, f.rel, syncId);
-            } catch (e) {
-              failedRels.push(f.rel);
-              console.error(`Failed to sync ${f.rel}:`, e);
-            }
-          }));
-        }
-        // Mirror local deletions (best-effort; never fatal).
-        for (const rel of deleted) {
-          try {
-            await deleteRemoteFile(cleanUrl, game.name, rel);
-          } catch {
-            /* keep going */
-          }
-        }
-        commitUploaded(game.name, localManifest, failedRels, saveGameState);
-        if (plan.length > 0) {
-          try {
-            await refreshRemoteManifest(cleanUrl, game.name);
-          } catch {
-            /* non-fatal: a stale baseline only costs an extra download later */
-          }
-        }
-
-        if (plan.length > 0 && failedRels.length === 0) {
-          try {
-            await axios.post(`${cleanUrl}/api/save-versions`, {
-              game: game.name,
-              deviceId: os.hostname(),
-              changeSummary: `Synced ${plan.length} changed file(s)`,
-            }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) });
-          } catch {
-            /* Version creation is non-fatal; sync already succeeded. */
-          }
-        }
-
-        totalAttempted += attempted
-        totalFailed += failedRels.length
-        // Never claim "In Sync" for a game whose changed files didn't all land.
-        if (failedRels.length === 0 && filePaths.length > 0) {
-          game.status = 'In Sync'
-          game.lastSync = new Date().toISOString()
-        } else if (failedRels.length > 0) {
-          game.status = 'Error'
-        }
-      }
-    }
-
-    store.set('games', games)
-    if (totalFailed > 0) {
-      return { success: false, message: `Background sync completed with ${totalFailed}/${totalAttempted} file(s) failed.` }
-    }
-    return { success: true, message: 'Background sync complete.' }
-  } catch (err) {
-    return { success: false, message: 'Background sync failed: ' + (errorMessage(err) || String(err)) }
-  }
-}
-
 type ProgressFn = (percent: number, message: string) => void
 
-async function performCloudSyncWithProgress(credentials: Cloud, progress: ProgressFn) {
+function savePathOf(game: Game): string {
+  return expandPath(process.platform === 'win32' ? game.winPath : game.linPath);
+}
+
+function failureItem(game: string, failure: ServerFailure, filePath?: string): SyncFailureItem {
+  return {
+    game,
+    ...(filePath !== undefined ? { path: filePath } : {}),
+    ...(failure.status !== undefined ? { status: failure.status } : {}),
+    code: failure.code,
+    message: failure.message,
+  };
+}
+
+/** The first failure's status/code/message (server values unchanged) plus the full list. */
+function syncFailureResult(failures: SyncFailureItem[], backups?: RestoreBackupInfo[]): CloudSyncResult {
+  const first = failures[0];
+  return {
+    ok: false,
+    ...(first.status !== undefined ? { status: first.status } : {}),
+    code: first.code,
+    message: first.message,
+    failures,
+    ...(backups && backups.length > 0 ? { backups } : {}),
+  };
+}
+
+const PROTECTED_SAVE_PATH: ServerFailure = {
+  ok: false,
+  code: 'PROTECTED_SAVE_PATH',
+  message: 'The save path is a shared folder (home, Documents, AppData, ...); pick the game\'s own save folder.',
+};
+
+/** Backup-profile filter for a game; include-all when the server has none or is unreachable. */
+async function fetchBackupProfileFilter(cleanUrl: string, gameName: string): Promise<(rel: string) => boolean> {
+  try {
+    const res = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(gameName)}`, { headers: serverHeaders() });
+    if (res.data?.profile) return backupProfileFilter(res.data.profile);
+  } catch {
+    // Fall back to the full file set.
+  }
+  return () => true;
+}
+
+/**
+ * Push changed local saves. Shared by the manual sync (with progress) and the
+ * background auto-sync. DUN-067: deletions are planned from the unfiltered
+ * disk list, so an exclude rule never deletes anything on the server.
+ * Follow-up (c): status is committed by id on a fresh store read.
+ */
+async function performCloudSync(credentials: Cloud, progress: ProgressFn = () => {}): Promise<CloudSyncResult> {
   if (isCloudSyncing) {
-    return { success: false, message: 'Sync already in progress.' };
+    return { ok: false, code: 'SYNC_IN_PROGRESS', message: 'Sync already in progress.' };
   }
   isCloudSyncing = true;
 
@@ -443,171 +430,129 @@ async function performCloudSyncWithProgress(credentials: Cloud, progress: Progre
     progress(5, 'Connecting to Dune Server...')
     const cleanUrl = normalizeUrl(credentials.url)
     const games = (store.get('games') || []) as Game[]
-
-    const filesToUpload: { game: string, local: string, rel: string }[] = [];
+    const failures: SyncFailureItem[] = [];
+    const patches = new Map<number, GameStatusPatch>();
 
     progress(15, 'Scanning local files...')
+    const found: { game: Game; files: { local: string; rel: string }[] }[] = [];
     for (const game of games) {
-      const rawPath = process.platform === 'win32' ? game.winPath : game.linPath
-      const expanded = expandPath(rawPath)
-      if (expanded && fs.existsSync(expanded)) {
-        const stats = fs.statSync(expanded);
-        if (stats.isDirectory()) {
-          const findFiles = (dir: string, base: string) => {
-            const items = fs.readdirSync(dir, { withFileTypes: true });
-            for (const item of items) {
-              if (item.isSymbolicLink()) continue;
-              const fullPath = path.join(dir, item.name);
-              if (item.isDirectory()) {
-                findFiles(fullPath, base);
-              } else {
-                filesToUpload.push({ game: game.name, local: fullPath, rel: path.relative(base, fullPath) });
-              }
-            }
-          };
-          findFiles(expanded, expanded);
-        } else {
-          filesToUpload.push({ game: game.name, local: expanded, rel: path.basename(expanded) });
+      const expanded = savePathOf(game);
+      if (!expanded) continue;
+      const target = resolveSaveTarget(expanded);
+      if (!target.ok) {
+        if (target.reason === 'protected') {
+          failures.push(failureItem(game.name, PROTECTED_SAVE_PATH));
+          patches.set(game.id, { status: 'Error' });
         }
+        continue;
       }
+      found.push({ game, files: listSaveFiles(target.target) });
     }
 
-    if (filesToUpload.length === 0) {
+    if (found.every((f) => f.files.length === 0) && failures.length === 0) {
       progress(0, '')
-      return { success: false, message: 'No valid saves to sync. Check your game path mappings.' }
+      return { ok: false, code: 'NO_SAVES', message: 'No valid saves to sync. Check your game path mappings.' }
     }
 
-    // Group by game and keep only files that changed since the last push.
-    const byGame = new Map<string, { local: string; rel: string }[]>();
-    for (const f of filesToUpload) {
-      const list = byGame.get(f.game) || [];
-      list.push({ local: f.local, rel: f.rel });
-      byGame.set(f.game, list);
+    const plans: { game: Game; p: ReturnType<typeof planUpload>; fileCount: number }[] = [];
+    for (const { game, files } of found) {
+      const isIncluded = await fetchBackupProfileFilter(cleanUrl, game.name);
+      plans.push({ game, p: planUpload(game.name, files, getSyncState, isIncluded), fileCount: files.length });
     }
 
-    // Apply per-game backup profiles before planning uploads.
-    const profilesByGame = new Map<string, { includeGlobs: string[]; excludeGlobs: string[] }>();
-    for (const game of byGame.keys()) {
-      try {
-        const profileRes = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(game)}`, { headers: serverHeaders() });
-        if (profileRes.data?.success && profileRes.data.profile) {
-          profilesByGame.set(game, profileRes.data.profile);
-        }
-      } catch {
-        profilesByGame.set(game, { includeGlobs: ['**/*'], excludeGlobs: [] });
-      }
-    }
-    for (const [game, files] of Array.from(byGame.entries())) {
-      const profile = profilesByGame.get(game) || { includeGlobs: ['**/*'], excludeGlobs: [] };
-      const filtered = filterBackupFiles(files, profile);
-      if (filtered.length === 0) byGame.delete(game);
-      else byGame.set(game, filtered);
-    }
-
-    const plans = new Map<string, ReturnType<typeof planUpload>>();
-    for (const [game, files] of byGame) plans.set(game, planUpload(game, files, getSyncState));
-
-    const toUpload = [...plans.values()].flatMap(p => p.plan);
-    const deletions = [...plans.entries()].flatMap(([game, p]) =>
-      p.deleted.map(rel => ({ game, rel })),
-    );
-
+    const toUpload = plans.flatMap(({ game, p }) => p.plan.map((f) => ({ ...f, gameId: game.id })));
     const syncId = Date.now().toString();
     const CHUNK_SIZE = 5;
-    const failedByGame = new Map<string, string[]>();
+    const failedByGame = new Map<number, string[]>();
     const total = toUpload.length;
 
-    if (total > 0) {
-      progress(20, `Uploading ${total} changed file(s)...`);
-    }
+    if (total > 0) progress(20, `Uploading ${total} changed file(s)...`);
     for (let i = 0; i < total; i += CHUNK_SIZE) {
       const chunk = toUpload.slice(i, i + CHUNK_SIZE);
       const percent = 20 + Math.round((i / Math.max(1, total)) * 75);
       progress(percent, `Uploading: Batch ${Math.floor(i / CHUNK_SIZE) + 1} / ${Math.ceil(total / CHUNK_SIZE)}`);
-
       await Promise.all(chunk.map(async (file) => {
         try {
           await uploadFile(cleanUrl, file.game, file.local, file.rel, syncId);
         } catch (e) {
-          failedByGame.set(file.game, [...(failedByGame.get(file.game) || []), file.rel]);
-          console.error(`Sync error on ${file.rel}:`, errorMessage(e));
+          const failure = toServerFailure(e);
+          failedByGame.set(file.gameId, [...(failedByGame.get(file.gameId) || []), file.rel]);
+          failures.push(failureItem(file.game, failure, file.rel));
+          console.error(`Sync error on ${file.rel}: ${failure.code} ${failure.message}`);
         }
       }));
     }
 
-    // Mirror local deletions (best-effort; never fatal).
-    for (const { game, rel } of deletions) {
-      try {
-        await deleteRemoteFile(cleanUrl, game, rel);
-      } catch {
-        /* keep going */
+    for (const { game, p, fileCount } of plans) {
+      // Mirror files that really vanished from disk (best-effort; never fatal).
+      for (const rel of p.deleted) {
+        try {
+          await deleteRemoteFile(cleanUrl, game.name, rel);
+        } catch (e) {
+          const failure = toServerFailure(e);
+          if (failure.code !== 'FILE_NOT_FOUND') console.error(`Remote delete of ${rel} failed: ${failure.code} ${failure.message}`);
+        }
       }
+      const failed = failedByGame.get(game.id) || [];
+      commitUploaded(game.name, p.localManifest, failed, saveGameState);
+      if (p.plan.length > 0) {
+        try {
+          await refreshRemoteManifest(cleanUrl, game.name);
+        } catch {
+          /* non-fatal: a stale baseline only costs an extra download later */
+        }
+        if (failed.length === 0) {
+          try {
+            await axios.post(`${cleanUrl}/api/save-versions`, {
+              game: game.name,
+              deviceId: os.hostname(),
+              changeSummary: `Synced ${p.plan.length} changed file(s)`,
+            }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) });
+          } catch {
+            /* Version creation is non-fatal; sync already succeeded. */
+          }
+        }
+      }
+      // Never claim "In Sync" for a game whose changed files didn't all land.
+      if (failed.length > 0) patches.set(game.id, { status: 'Error' });
+      else if (fileCount > 0) patches.set(game.id, { status: 'In Sync', lastSync: new Date().toISOString() });
     }
 
-    // Persist exactly what landed, per game.
-    for (const [game, p] of plans) {
-      commitUploaded(game, p.localManifest, failedByGame.get(game) || [], saveGameState);
-    }
+    commitGameStatusPatches(store, patches);
 
-    // Refresh the server baseline for games we pushed to, so a later restore is
-    // a no-op rather than re-downloading files we just uploaded.
-    for (const [game, p] of plans) {
-      if (p.plan.length === 0) continue;
-      try {
-        await refreshRemoteManifest(cleanUrl, game);
-      } catch {
-        /* non-fatal: a stale baseline only costs an extra download later */
-      }
-    }
-
-    for (const [game, p] of plans) {
-      if (p.plan.length === 0 || (failedByGame.get(game) || []).length > 0) continue;
-      try {
-        await axios.post(`${cleanUrl}/api/save-versions`, {
-          game,
-          deviceId: os.hostname(),
-          changeSummary: `Synced ${p.plan.length} changed file(s)`,
-        }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) });
-      } catch {
-        /* Version creation is non-fatal; sync already succeeded. */
-      }
-    }
-
-    // Update status: "In Sync" only when every changed file for that game succeeded.
-    games.forEach((g: Game) => {
-      if (!plans.has(g.name)) return;
-      const failed = failedByGame.get(g.name)?.length ?? 0;
-      if (failed === 0) {
-        g.status = 'In Sync';
-        g.lastSync = new Date().toISOString();
-      } else {
-        g.status = 'Error';
-      }
-    });
-
-    store.set('games', games)
-
-    const failedTotal = [...failedByGame.values()].reduce((a, b) => a + b.length, 0);
-    if (failedTotal > 0) {
-      progress(100, `Sync finished with ${failedTotal} failed file(s)`);
-      return { success: false, message: `Sync completed with ${failedTotal} of ${total} changed file(s) failed.` };
+    if (failures.length > 0) {
+      progress(100, `Sync finished with ${failures.length} problem(s)`);
+      return syncFailureResult(failures);
     }
     progress(100, 'Sync complete! 🎉')
     return {
-      success: true,
+      ok: true,
+      uploaded: total,
       message: total === 0 ? 'Already up to date — no changed files.' : `Synced ${total} changed file(s).`,
     }
   } catch (err) {
     progress(0, '')
-    return { success: false, message: 'Sync failed: ' + (errorMessage(err) || String(err)) }
+    return toServerFailure(err)
   } finally {
     isCloudSyncing = false;
   }
 }
 
-async function performCloudRestoreWithProgress(credentials: Cloud, progress: ProgressFn) {
+function restoreBackupRoot(): string {
+  return path.join(app.getPath('userData'), 'restore-backups');
+}
+
+/**
+ * Restore every game from the server. Per game (DUN-066): validate each
+ * server path (DUN-060), find local files in conflict (newer or different
+ * from the last synced state), back them up to <userData>/restore-backups
+ * (exclusive copies; a failed backup writes nothing for that game), then
+ * write atomically and record the new synced state. One game's failure does
+ * not stop the others.
+ */
+async function performCloudRestore(credentials: Cloud, progress: ProgressFn = () => {}): Promise<CloudSyncResult> {
   if (isCloudSyncing) {
-    return { success: false, message: 'Sync already in progress.' };
+    return { ok: false, code: 'SYNC_IN_PROGRESS', message: 'Sync already in progress.' };
   }
   isCloudSyncing = true;
 
@@ -618,76 +563,136 @@ async function performCloudRestoreWithProgress(credentials: Cloud, progress: Pro
 
     let restoredCount = 0;
     const CHUNK_SIZE = 5;
+    const failures: SyncFailureItem[] = [];
+    const backups: RestoreBackupInfo[] = [];
+    const patches = new Map<number, GameStatusPatch>();
 
     for (let i = 0; i < games.length; i++) {
       const game = games[i];
-      const overallPercent = 10 + Math.round((i / games.length) * 85);
+      const overallPercent = 10 + Math.round((i / Math.max(1, games.length)) * 85);
       progress(overallPercent, `Checking server for: ${game.name}`);
+      try {
+        let files: { path: string; size: number; mtimeMs: number; hash: string }[];
+        try {
+          const manifestRes = await axios.get(
+            `${cleanUrl}/api/manifest?game=${encodeURIComponent(game.name)}`,
+            { headers: serverHeaders() },
+          );
+          files = manifestRes.data.files || [];
+        } catch (e) {
+          const failure = toServerFailure(e);
+          if (failure.code === 'GAME_NOT_FOUND') continue; // nothing on the server for this game
+          throw new ServerCallError(failure);
+        }
+        if (files.length === 0) continue;
 
-      const manifestRes = await axios.get(
-        `${cleanUrl}/api/manifest?game=${encodeURIComponent(game.name)}`,
-        { headers: serverHeaders() },
-      );
-      const files: { path: string; size: number; mtimeMs: number; hash: string }[] = manifestRes.data.files || [];
-
-      if (files.length > 0) {
-        const rawPath = process.platform === 'win32' ? game.winPath : game.linPath;
-        const expanded = expandPath(rawPath);
+        const expanded = savePathOf(game);
         if (!expanded) continue;
+        const saveTarget = resolveSaveTarget(expanded, {}, true);
+        if (!saveTarget.ok) {
+          if (saveTarget.reason === 'protected') {
+            failures.push(failureItem(game.name, PROTECTED_SAVE_PATH));
+            patches.set(game.id, { status: 'Error' });
+          }
+          continue;
+        }
+        const restoreBase = saveTarget.target.dir;
 
-        // If 'expanded' is a direct file path, 'restoreBase' is its parent; if it
-        // is (or will be) a directory, 'restoreBase' is the directory itself.
-        const exists = fs.existsSync(expanded);
-        const restoreBase = (exists && !fs.statSync(expanded).isDirectory()) || (!exists && path.extname(expanded))
-          ? path.dirname(expanded)
-          : expanded;
-
-        // Delta: download only files that are missing locally or whose server
-        // content changed since this client last pulled the manifest.
-        const known = getSyncState()[game.name]?.remote || {};
+        const state = getSyncState()[game.name] || {};
         const serverHashes: HashManifest = {};
-        const toDownload: typeof files = [];
+        const resolved: { file: (typeof files)[number]; target: string }[] = [];
+        let gameRejected = 0;
+        const skipFile = (r: RestoreRejection) => {
+          gameRejected++;
+          delete serverHashes[r.path];
+          failures.push({ game: game.name, path: r.path, code: 'RESTORE_PATH_REJECTED', message: r.reason });
+          console.error(`Restore: skipped unsafe server path for "${game.name}": ${JSON.stringify(r.path)} (${r.reason})`);
+        };
         for (const file of files) {
+          // DUN-065: a file / file-filter save path takes only its own files.
+          if (!acceptsRelativePath(saveTarget.target, String(file.path))) {
+            skipFile({ path: String(file.path), reason: 'not part of this game\'s save path' });
+            continue;
+          }
+          // DUN-060: never touch the disk for a path that fails validation.
+          const r = resolveRestoreTarget(restoreBase, file.path);
+          if (!r.ok) {
+            skipFile({ path: String(file.path), reason: r.reason });
+            continue;
+          }
           serverHashes[file.path] = file.hash;
-          const target = path.join(restoreBase, file.path);
-          if (!fs.existsSync(target) || known[file.path] !== file.hash) toDownload.push(file);
+          resolved.push({ file, target: r.target });
         }
 
-        progress(overallPercent, `Restoring ${game.name}: ${toDownload.length}/${files.length} file(s)`);
+        const plan = planRestore(resolved, state.uploaded || {}, state.remote || {});
+        progress(overallPercent, `Restoring ${game.name}: ${plan.download.length}/${files.length} file(s)`);
 
-        for (let j = 0; j < toDownload.length; j += CHUNK_SIZE) {
-          const chunk = toDownload.slice(j, j + CHUNK_SIZE);
-          await Promise.all(chunk.map(async (file) => {
-            const relPath = file.path;
-            const target = path.join(restoreBase, relPath);
-            const targetDir = path.dirname(target);
-            if (!fs.existsSync(targetDir)) {
-              fs.mkdirSync(targetDir, { recursive: true });
-            }
+        // DUN-066: back up conflicting local files first; on failure write nothing.
+        let backupDir: string | null;
+        try {
+          backupDir = backupLocalFiles(restoreBackupRoot(), game.id, plan.conflicts);
+        } catch (e) {
+          failures.push({ game: game.name, code: 'RESTORE_BACKUP_FAILED', message: `Could not back up local saves; nothing was restored for this game: ${errorMessage(e)}` });
+          patches.set(game.id, { status: 'Error' });
+          continue;
+        }
+        if (backupDir) backups.push({ game: game.name, dir: backupDir, files: plan.conflicts.map((c) => c.file.path) });
 
+        const relByTarget = new Map(plan.download.map((d) => [d.target, d.file.path]));
+        // Validates each path again, mkdirs only after validation and writes
+        // atomically (temp file + rename). See sync/restoreWrite.ts.
+        const written = await writeRestoreFiles(restoreBase, plan.download.map((d) => d.file), {
+          chunkSize: CHUNK_SIZE,
+          onReject: skipFile,
+          download: async (file) => {
             const response = await axios.get(
-              `${cleanUrl}/api/download-file?game=${encodeURIComponent(game.name)}&path=${encodeURIComponent(relPath)}`,
+              `${cleanUrl}/api/download-file?game=${encodeURIComponent(game.name)}&path=${encodeURIComponent(file.path)}`,
               { responseType: 'arraybuffer', headers: serverHeaders() }
             );
-            fs.writeFileSync(target, Buffer.from(response.data));
-          }));
-        }
+            return Buffer.from(response.data);
+          },
+        });
 
-        // Record the server state we just reconciled against.
+        // Record the server state we reconciled against, and mark written /
+        // identical files as synced so the next sync neither re-uploads them
+        // nor flags them as conflicts.
         saveGameState(game.name, { remote: serverHashes });
+        const uploaded = { ...(state.uploaded || {}) };
+        const synced = [
+          ...written.written.map((t) => ({ target: t, rel: relByTarget.get(t) })),
+          ...plan.identical.map((x) => ({ target: x.target, rel: x.file.path })),
+        ];
+        for (const { target, rel } of synced) {
+          const fp = rel ? fingerprintOf(target) : null;
+          if (rel && fp) uploaded[rel] = fp;
+        }
+        saveGameState(game.name, { uploaded });
 
-        game.status = 'In Sync';
-        game.lastSync = new Date().toISOString();
+        patches.set(game.id, { status: gameRejected > 0 ? 'Error' : 'In Sync', lastSync: new Date().toISOString() });
         restoredCount++;
+      } catch (e) {
+        failures.push(failureItem(game.name, toServerFailure(e)));
+        patches.set(game.id, { status: 'Error' });
       }
     }
 
-    store.set('games', games)
+    commitGameStatusPatches(store, patches);
+    if (failures.length > 0) {
+      progress(100, `Restore finished with ${failures.length} problem(s)`);
+      return syncFailureResult(failures, backups);
+    }
     progress(100, 'Restore complete! 🎉')
-    return { success: true, message: `Successfully restored ${restoredCount} game(s)!` }
+    const backedUp = backups.reduce((n, b) => n + b.files.length, 0);
+    return {
+      ok: true,
+      restored: restoredCount,
+      message: `Successfully restored ${restoredCount} game(s)!`
+        + (backedUp > 0 ? ` ${backedUp} changed local file(s) were backed up first.` : ''),
+      ...(backups.length > 0 ? { backups } : {}),
+    }
   } catch (err) {
     progress(0, '')
-    return { success: false, message: 'Restore failed: ' + (errorMessage(err) || String(err)) }
+    return toServerFailure(err)
   } finally {
     isCloudSyncing = false;
   }
@@ -700,7 +705,8 @@ async function performCloudRestoreWithProgress(credentials: Cloud, progress: Pro
 // fields, and normalize types before touching the store or fs.
 const ART_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'];
 
-ipcMain.handle('config:load', () => {
+ipcMain.handle('config:load', async () => {
+  await gameStoreMigration;
   return {
     games: store.get('games'),
     cloud: store.get('cloud'),
@@ -708,28 +714,21 @@ ipcMain.handle('config:load', () => {
   }
 })
 
-ipcMain.handle('config:save', (_event, config) => {
+ipcMain.handle('config:save', async (_event, config) => {
+  await gameStoreMigration;
   const cfg = (config ?? {}) as Record<string, unknown>;
   if (Array.isArray(cfg.games)) {
-    const clean: Game[] = [];
-    for (const g of cfg.games) {
-      try {
-        const raw = (g ?? {}) as Record<string, unknown>;
-        const id = Number(raw.id);
-        const now = new Date().toISOString();
-        clean.push({
-          ...sanitizeGame(g),
-          id: Number.isFinite(id) ? id : nextId(),
-          createdAt: asString(raw.createdAt, 64) || now,
-          updatedAt: asString(raw.updatedAt, 64) || now,
-        });
-      } catch { /* drop malformed entries rather than persisting them */ }
-    }
-    store.set('games', clean);
+    // DUN-061: merge by id. Only metadata comes from the renderer; launch
+    // fields stay as stored; unknown ids are dropped; nothing is removed
+    // (removal is game:remove only).
+    await saveRendererGames(gameSettingsDeps, cfg.games);
   }
   if (cfg.cloud && typeof cfg.cloud === 'object') {
-    store.set('cloud', { url: asString((cfg.cloud as Record<string, unknown>).url) });
-    void flushPlaytimeQueue();
+    const url = asString((cfg.cloud as Record<string, unknown>).url);
+    store.set('cloud', { url });
+    // DUN-045: never flush to a draft. The gate flushes once the saved URL
+    // has settled, is valid and differs from the previous saved URL.
+    playtimeFlushGate.onUrlSaved(url);
   }
   if (cfg.settings && typeof cfg.settings === 'object') {
     store.set('settings', sanitizeSettings(cfg.settings, store.get('settings')));
@@ -738,22 +737,31 @@ ipcMain.handle('config:save', (_event, config) => {
   return true;
 });
 
-ipcMain.handle('game:add', (_event, game) => {
-  const games = (store.get('games') || []) as Game[];
-  const now = new Date().toISOString();
-  games.push({ ...sanitizeGame(game), id: nextId(), createdAt: now, updatedAt: now });
-  store.set('games', games);
-  return games;
-});
+// DUN-061: launch fields are main-only. game:add takes metadata only; the
+// launch target, managed prefix and emulator are set by id through main's
+// own dialog / registries below.
+const gameSettingsDeps: GameSettingsDeps = {
+  getGames: async () => {
+    await gameStoreMigration;
+    return (store.get('games') || []) as Game[];
+  },
+  setGames: (games) => store.set('games', games),
+  showOpenDialog: async (options) => {
+    if (!mainWindow) throw new Error('No window for the file dialog');
+    return dialog.showOpenDialog(mainWindow, options);
+  },
+  listPrefixes: () => getPrefixRegistry().list(),
+  nextId,
+};
+const gameSettingsHandlers = createGameSettingsIpcHandlers(gameSettingsDeps);
+ipcMain.handle('game:add', gameSettingsHandlers.add);
+ipcMain.handle('game:pickLaunchTarget', gameSettingsHandlers.pickLaunchTarget);
+ipcMain.handle('game:setPrefix', gameSettingsHandlers.setPrefix);
+ipcMain.handle('emulators:list', gameSettingsHandlers.listEmulators);
+ipcMain.handle('game:setEmulator', gameSettingsHandlers.setEmulator);
 
-ipcMain.handle('game:remove', (_event, id) => {
-  const numericId = Number(id);
-  if (!Number.isFinite(numericId)) throw new Error('Invalid game id');
-  let games = (store.get('games') || []) as Game[];
-  games = games.filter((g: Game) => g.id !== numericId);
-  store.set('games', games);
-  return games;
-});
+// Follow-up (a): the only way a game leaves the store; config:save never removes.
+ipcMain.handle('game:remove', gameSettingsHandlers.remove);
 
 ipcMain.handle('dialog:selectDirectory', async () => {
   if (!mainWindow) return { success: false }
@@ -770,7 +778,14 @@ ipcMain.handle('dialog:selectDirectory', async () => {
 ipcMain.handle('games:autodetect', async (_event, customRoots) => {
   const storedRoots = (store.get('settings') as Settings | undefined)?.scanRoots || [];
   const roots = Array.isArray(customRoots) && customRoots.length > 0 ? customRoots : storedRoots;
-  const detected = [...(await autoDetectGames(roots)), ...getEmulatorGames()];
+  // Single scanner path: registry fullScan (launcher libraries with manifest
+  // save paths, plus manifest-only save matches), deduped across sources.
+  const scanned = await fullScan(roots, { includeManifestSaves: true });
+  const emulatorEnabled = gameRegistry.getSource('emulator')?.enabled === true;
+  const detected = [
+    ...scanned.filter((g) => g.sourceId !== 'manual'),
+    ...(emulatorEnabled ? [] : getEmulatorGames()),
+  ];
   const games = (store.get('games') || []) as Game[];
   let added = 0;
   for (const d of detected) {
@@ -824,7 +839,7 @@ ipcMain.handle('sync:cloud', async (_event, credentials) => {
       sender.send('sync:progress', { percent, message })
     }
   }
-  return await performCloudSyncWithProgress(credentials, sendProgress)
+  return await performCloudSync(credentials, sendProgress)
 })
 
 ipcMain.handle('sync:restore', async (_event, credentials) => {
@@ -835,23 +850,24 @@ ipcMain.handle('sync:restore', async (_event, credentials) => {
       sender.send('sync:progress', { percent, message })
     }
   }
-  return await performCloudRestoreWithProgress(credentials, sendProgress)
+  return await performCloudRestore(credentials, sendProgress)
 })
 
 ipcMain.handle('sync:test', async (_event, credentials) => {
   try {
     const cleanUrl = normalizeUrl(credentials.url)
     const res = await axios.get(`${cleanUrl}/api/saves`, { headers: serverHeaders() });
-    if (res.data.success) return { success: true, message: '✅ Connection to Dune Server successful!' }
-    else return { success: false, message: '❌ Server reached but returned an error response.' }
+    if (res.data?.success === false) return failureFromResponse(res.status, res.data)
+    return { ok: true as const, message: 'Connection to Dune Server successful!' }
   } catch (err) {
-    let msg = errorMessage(err) || String(err);
+    const failure = toServerFailure(err);
+    if (failure.code !== 'NETWORK') return failure;
     const code = typeof err === 'object' && err !== null && 'code' in err
       ? String((err as { code?: unknown }).code)
       : '';
-    if (code === 'ECONNREFUSED') msg = 'Connection refused. Is the server running?';
-    if (code === 'ENOTFOUND')    msg = 'Server address not found. Check your URL.';
-    return { success: false, message: '❌ ' + msg }
+    if (code === 'ECONNREFUSED') return { ...failure, message: 'Connection refused. Is the server running?' };
+    if (code === 'ENOTFOUND') return { ...failure, message: 'Server address not found. Check your URL.' };
+    return failure;
   }
 })
 
@@ -1006,7 +1022,7 @@ ipcMain.handle('game:fetchArt', async (_event, id, name) => {
 ipcMain.handle('playtime:record', async (_event, session: PlaytimeSessionPayload) => {
   try {
     const res = await postPlaytimeSession(session);
-    if (res.success) {
+    if (res.ok) {
       void flushPlaytimeQueue();
       mainWindow?.webContents.send('playtime:recorded', {
         game: session.game,
@@ -1015,544 +1031,554 @@ ipcMain.handle('playtime:record', async (_event, session: PlaytimeSessionPayload
     }
     return res;
   } catch (e) {
-    return { success: false, message: errorMessage(e) };
+    return toServerFailure(e);
   }
 })
 
 ipcMain.handle('playtime:summary', async (_event, game) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, summary: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = game ? `${cleanUrl}/api/playtime?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/playtime`
     const res = await axios.get(url, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), summary: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('playtime:recent', async (_event, limit) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, sessions: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = `${cleanUrl}/api/playtime/recent${limit ? `?limit=${limit}` : ''}`
     const res = await axios.get(url, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), sessions: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('playtime:total', async () => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, totalMinutes: 0 }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/playtime/total`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), totalMinutes: 0 }
+    return toServerFailure(e)
   }
 })
 ipcMain.handle('playtime:graph', async (_event, range, customRange) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', data: { line: [], bar: [], pie: [], heatmap: [], area: [] } }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const params = new URLSearchParams({ range: range || 'all' })
     if (customRange?.start) params.set('start', customRange.start)
     if (customRange?.end) params.set('end', customRange.end)
     const res = await axios.get(`${cleanUrl}/api/playtime/graph?${params.toString()}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), data: { line: [], bar: [], pie: [], heatmap: [], area: [] } }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('playtime:comparison', async (_event, range) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/playtime/comparison?range=${encodeURIComponent(range || 'week')}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('playtime:export', async (_event, format, range, customRange) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', data: '' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const params = new URLSearchParams({ format: format || 'json', range: range || 'all' })
     if (customRange?.start) params.set('start', customRange.start)
     if (customRange?.end) params.set('end', customRange.end)
     const res = await axios.get(`${cleanUrl}/api/playtime/export?${params.toString()}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), data: '' }
+    return toServerFailure(e)
   }
 })
 
 
 // Achievements
-async function importLocalAchievementsForGame(game: Game) {
+async function importLocalAchievementsForGame(game: Game): Promise<ImportLocalAchievementsResult> {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, count: 0, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
 
+  // The disk scan catches errors as plain messages; keep the server's
+  // failure (status/code/error) here so it reaches the renderer unchanged.
+  let serverFailure: ServerFailure | null = null
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const result = await importLocalAchievementsFromDisk(game, async (name, achievements) => {
-      const res = await axios.post(
-        `${cleanUrl}/api/achievements/import`,
-        { game: name, achievements },
-        { headers: serverHeaders({ 'Content-Type': 'application/json' }) },
-      )
-      return res.data
+      try {
+        const res = await axios.post(
+          `${cleanUrl}/api/achievements/import`,
+          { game: name, achievements },
+          { headers: serverHeaders({ 'Content-Type': 'application/json' }) },
+        )
+        return res.data
+      } catch (e) {
+        serverFailure = toServerFailure(e)
+        throw e
+      }
     })
-    if (result.success && result.count > 0) {
+    if (serverFailure) return serverFailure
+    if (!result.success) return { ok: false, code: 'IMPORT_FAILED', message: result.message || 'Import failed' }
+    if (result.count > 0) {
       mainWindow?.webContents.send('achievements:imported', { game: game.name, count: result.count })
     }
-    return result
+    return { ...result, ok: true }
   } catch (e) {
-    return { success: false, count: 0, message: errorMessage(e) }
+    return serverFailure ?? toServerFailure(e)
   }
 }
 
 ipcMain.handle('achievements:get', async (_event, game) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, achievements: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/achievements/${encodeURIComponent(game)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), achievements: [] }
+    return toServerFailure(e)
   }
 })
 ipcMain.handle('achievements:detail', async (_event, game: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', achievements: [], progress: null }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/achievements/detail/${encodeURIComponent(game)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), achievements: [], progress: null }
+    return toServerFailure(e)
   }
 })
 
 
 ipcMain.handle('achievements:summary', async (_event, game) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, summary: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = game ? `${cleanUrl}/api/achievements?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/achievements`
     const res = await axios.get(url, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), summary: [] }
+    return toServerFailure(e)
   }
 })
 
-ipcMain.handle('achievements:importLocal', async (_event, game: Game) => {
+// Follow-up (b): the renderer sends a game id; main reads the game from its store.
+ipcMain.handle('achievements:importLocal', async (_event, gameId: unknown): Promise<ImportLocalAchievementsResult> => {
+  const id = parseGameId(gameId)
+  if (id === null) return { ok: false, code: 'INVALID_GAME_ID', message: 'Invalid game id' }
+  await gameStoreMigration
+  const game = ((store.get('games') || []) as Game[]).find((g) => g.id === id)
+  if (!game) return { ok: false, code: 'GAME_NOT_FOUND', message: 'Game not found' }
   return importLocalAchievementsForGame(game)
 })
 
 ipcMain.handle('achievements:recent', async (_event, limit) => {  const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, unlocks: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = `${cleanUrl}/api/achievements/recent${limit ? `?limit=${limit}` : ''}`
     const res = await axios.get(url, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), unlocks: [] }
+    return toServerFailure(e)
   }
 })
 
 // HLTB
 ipcMain.handle('hltb:get', async (_event, gameName) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/hltb/${encodeURIComponent(gameName)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // Save versions
 ipcMain.handle('saves:listVersions', async (_event, game: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', versions: [] }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/save-versions?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), versions: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('saves:createVersion', async (_event, game: string, deviceId?: string, changeSummary?: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/save-versions`, { game, deviceId, changeSummary }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('saves:getVersion', async (_event, id: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/save-versions/${encodeURIComponent(id)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('saves:diff', async (_event, from: string, to: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/save-versions/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('saves:restore', async (_event, game: string, versionId: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/restore-version`, { game, versionId }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // Conflicts
 ipcMain.handle('conflicts:list', async (_event, game?: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', conflicts: [] }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const url = game ? `${cleanUrl}/api/conflicts?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/conflicts`
     const res = await axios.get(url, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), conflicts: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('conflicts:detect', async (_event, game: string, localVersionId: string, remoteVersionId: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/conflicts/detect`, { game, localVersionId, remoteVersionId }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('conflicts:resolve', async (_event, id: string, resolution: 'local' | 'remote' | 'both' | 'later') => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/conflicts/${encodeURIComponent(id)}/resolve`, { resolution }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // Backup profiles
 ipcMain.handle('backupProfile:get', async (_event, game: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('backupProfile:set', async (_event, profile: BackupProfile & { game?: string }) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/backup-profile`, profile, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // Storage
 ipcMain.handle('storage:get', async (_event, game: string) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', entry: null }
+  if (!cloud?.url) return noServerFailure()
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/storage?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), entry: null }
+    return toServerFailure(e)
   }
 })
 
-// Game launcher
-ipcMain.handle('game:launch', async (_event, game: Game, options?: Record<string, unknown>) => {
-  try {
-    const tracking = {
-      onExit: ({ startedAt, endedAt }: { startedAt: number; endedAt: number }) => {
-        void recordLaunchPlaytime(game.name, startedAt, endedAt);
-        // Give the game a moment to flush achievement files, then import
-        // whatever it left on disk. Import failures stay silent until the
-        // user opens the achievements view.
-        const timer = setTimeout(() => {
-          void importLocalAchievementsForGame(game);
-        }, 1500);
-        timer.unref?.();
-      },
-    };
-    const result = await launchGame(game, (options || {}) as LaunchOptions, tracking);
-    return result;
-  } catch (e) {
-    return { success: false, message: errorMessage(e) };
-  }
-});
+// Disk space: one DriveSpace per device. Defaults = Steam libraries, scan roots,
+// and each stored game's save + install folder. Never rejects (see system/diskSpace.ts).
+ipcMain.handle('system:diskSpace', (_event, paths?: unknown) =>
+  getDiskSpace(paths, () => buildDefaultDiskPaths({
+    games: (store.get('games') || []) as Game[],
+    scanRoots: (store.get('settings') as Settings | undefined)?.scanRoots || [],
+    steamLibraries: detectSteamLibraries(),
+    platform: process.platform,
+    expand: expandPath,
+  }))
+)
 
-ipcMain.handle('game:launchCommand', async (_event, game, options) => {
-  try {
-    return { success: true, command: getLaunchCommand(game, options || {}) };
-  } catch (e) {
-    return { success: false, message: errorMessage(e), command: null };
-  }
+// Game launcher (DUN-061): the renderer sends a game id only. Main reads the
+// executable, args, cwd, launcher and Wine/Proton prefix from its own store;
+// any other IPC argument (paths, args, env such as LD_PRELOAD) is dropped.
+const launchHandlers = createLaunchIpcHandlers({
+  getGames: async () => {
+    await gameStoreMigration;
+    return (store.get('games') || []) as Game[];
+  },
+  onExit: (game, { startedAt, endedAt }) => {
+    void recordLaunchPlaytime(game.name, startedAt, endedAt);
+    // Give the game a moment to flush achievement files, then import
+    // whatever it left on disk. Import failures stay silent until the
+    // user opens the achievements view.
+    const timer = setTimeout(() => {
+      void importLocalAchievementsForGame(game);
+    }, 1500);
+    timer.unref?.();
+  },
+  // A managed prefix is resolved at launch; one that is gone or outside the
+  // managed root makes the game not launchable.
+  resolveManagedPrefix: (prefixId) => {
+    const registry = getPrefixRegistry();
+    const entry = registry.list().find((p) => p.id === prefixId);
+    return entry && isStrictlyInside(entry.path, registry.managedRoot) ? entry.path : null;
+  },
 });
+ipcMain.handle('game:launch', launchHandlers.launch);
+ipcMain.handle('game:launchCommand', launchHandlers.launchCommand);
 
-// Prefix manager
-ipcMain.handle('prefix:list', async () => {
-  try {
-    return { success: true, prefixes: listPrefixes() };
-  } catch (e) {
-    return { success: false, message: errorMessage(e), prefixes: null };
-  }
-});
-
-ipcMain.handle('prefix:create', async (_event, prefixPath: string) => {
-  try {
-    return createWinePrefix(expandPath(prefixPath));
-  } catch (e) {
-    return { success: false, message: errorMessage(e) };
-  }
-});
-
-ipcMain.handle('prefix:delete', async (_event, prefixPath: string) => {
-  try {
-    return deleteWinePrefix(prefixPath);
-  } catch (e) {
-    return { success: false, message: errorMessage(e) };
-  }
-});
-
-ipcMain.handle('prefix:backup', async (_event, prefixPath: string) => {
-  try {
-    return backupWinePrefix(prefixPath);
-  } catch (e) {
-    return { success: false, message: errorMessage(e) };
-  }
-});
+// Prefix manager (DUN-062): only prefixes Dune created, under <userData>/prefixes.
+// The renderer sends a name (create) or a registry id (backup/delete), never a path.
+// Delete goes to the OS trash; nothing here rm's a folder.
+let prefixRegistry: PrefixRegistry | null = null;
+function getPrefixRegistry(): PrefixRegistry {
+  prefixRegistry ??= new PrefixRegistry(defaultPrefixRegistryPaths(app.getPath('userData'), os.homedir()), {
+    trashItem: (fullPath) => shell.trashItem(fullPath),
+  });
+  return prefixRegistry;
+}
+const prefixHandlers = createPrefixIpcHandlers(getPrefixRegistry);
+ipcMain.handle('prefix:list', prefixHandlers.list);
+ipcMain.handle('prefix:create', prefixHandlers.create);
+ipcMain.handle('prefix:backup', prefixHandlers.backup);
+ipcMain.handle('prefix:delete', prefixHandlers.delete);
 
 // AI Analysis
 ipcMain.handle('ai:analyze', async (_event, { gameName, files }) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/analyze-files-ai`, { gameName, files }, {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // SteamGridDB Art
 ipcMain.handle('art:search', async (_event, query) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/search-art?query=${encodeURIComponent(query)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('art:auto-match', async () => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/auto-match-all`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // Local Sync
 ipcMain.handle('local-sync:trigger', async () => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/local-sync`, {}, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('local-sources:get', async () => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, sources: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/local-sources`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), sources: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('local-sources:add', async (_event, sourcePath) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/local-sources`, { path: sourcePath }, {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('local-sources:remove', async (_event, id) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.delete(`${cleanUrl}/api/local-sources/${id}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // Remote Servers
 ipcMain.handle('remote-servers:get', async () => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, servers: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/remote-servers`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), servers: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('remote-servers:add', async (_event, url) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/remote-servers`, { url }, {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('remote-servers:remove', async (_event, id) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.delete(`${cleanUrl}/api/remote-servers/${id}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // API Keys
 ipcMain.handle('api-keys:get', async () => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, keys: [] }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/api-keys`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), keys: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('api-keys:add', async (_event, { description }) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
@@ -1560,49 +1586,49 @@ ipcMain.handle('api-keys:add', async (_event, { description }) => {
     const res = await axios.post(`${cleanUrl}/api/api-keys`, { description }, {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('api-keys:remove', async (_event, id) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false }
+  if (!cloud?.url) return noServerFailure()
   
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.delete(`${cleanUrl}/api/api-keys/${encodeURIComponent(id)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
 // Ollama
 ipcMain.handle('ollama:models', async (_event, endpoint) => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', models: [] }
+  if (!cloud?.url) return noServerFailure()
 
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/ollama-models?endpoint=${encodeURIComponent(endpoint)}`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e), models: [] }
+    return toServerFailure(e)
   }
 })
 
 ipcMain.handle('ollama:health', async () => {
   const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  if (!cloud?.url) return noServerFailure()
 
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/ollama-health`, { headers: serverHeaders() })
-    return res.data
+    return serverOk(res.data)
   } catch (e) {
-    return { success: false, message: errorMessage(e) }
+    return toServerFailure(e)
   }
 })
 
@@ -1615,6 +1641,24 @@ ipcMain.handle('server-key:set', (_event, key: string) => {
   saveServerKey(key);
   return { success: true };
 });
+
+// DUN-063: every webContents (the main window and anything it could spawn)
+// may only show the app itself. Off-origin navigation and redirects are
+// blocked, <webview> is refused, window.open always denied; http(s) links
+// open in the OS browser after URL parsing (security/navigation.ts).
+const navigationGuards = createNavigationGuards({
+  app: {
+    devServerUrl: process.env.VITE_DEV_SERVER_URL,
+    indexFileUrl: pathToFileURL(path.join(__dirname, '../dist/index.html')).toString(),
+  },
+  openExternal: (url) => shell.openExternal(url),
+})
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-navigate', navigationGuards.willNavigate)
+  contents.on('will-redirect', navigationGuards.willNavigate)
+  contents.on('will-attach-webview', navigationGuards.willAttachWebview)
+  contents.setWindowOpenHandler(navigationGuards.windowOpen)
+})
 
 function createWindow() {
   // Resolve the app/tray icon once. In dev it lives in `public/`; Vite copies
@@ -1644,6 +1688,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      // DUN-063: explicit, not left to defaults.
+      sandbox: true,
+      webviewTag: false,
     },
   })
 
@@ -1743,6 +1790,8 @@ if (!gotSingleInstanceLock) {
         }
       });
     });
+
+    gameStoreMigration = migrateLegacyGameStore();
 
     if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true });
 

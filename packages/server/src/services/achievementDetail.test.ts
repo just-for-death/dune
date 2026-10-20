@@ -4,13 +4,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-achdetail-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 
 const { upsertAchievements } = await import('./achievements.js');
 const { getAchievementDetails, getAchievementProgress, getRarityTier } = await import('./achievementDetail.js');
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   fs.rmSync(TMP, { recursive: true, force: true });
 });
 

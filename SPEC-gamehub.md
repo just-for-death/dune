@@ -5,7 +5,7 @@
 Transform Dune from a game-save sync tool into a **unified game hub** (like Playnite/Heroic) that:
 - **Discovers** games from Steam, Heroic, Lutris, and manual entries on Linux
 - **Launches** games via native executables, Steam protocol, Heroic, Lutris, Wine/Proton
-- **Tracks** achievements from Steam, RetroAchievements, GOG, Epic, and local files (Goldberg/CODEX)
+- **Tracks** achievements from Steam, RetroAchievements, GOG, Epic, and offline / local achievement files
 - **Syncs** saves to Dune Server (existing functionality, enhanced)
 - **Manages** Wine/Proton prefixes, Heroic/Lutris prefixes
 - **Integrates** with Steam (add non-Steam games), Heroic, Lutris
@@ -18,7 +18,7 @@ Transform Dune from a game-save sync tool into a **unified game hub** (like Play
 **Success criteria**:
 - [ ] Discovers games from Steam, Heroic, Lutris, manual entries
 - [ ] Launches games via appropriate method (native, Steam protocol, Heroic, Lutris, Wine/Proton)
-- [ ] Tracks Steam achievements + RetroAchievements + local achievement.ini (Goldberg/CODEX)
+- [ ] Tracks Steam achievements + RetroAchievements + offline / local achievement files (achievement.ini)
 - [ ] Syncs saves to Dune Server
 - [ ] Manages Wine/Proton prefixes, Heroic/Lutris prefixes
 - [ ] Adds non-Steam games to Steam automatically
@@ -145,7 +145,7 @@ dune/
 │   │   │   ├── preload.ts      # Preload script
 │   │   │   ├── scanner/        # GameScanner (Steam, Heroic, Lutris)
 │   │   │   ├── launcher/       # GameLauncher (Steam, Heroic, Lutris, Wine)
-│   │   │   ├── achievements/   # AchievementTracker (Steam, RetroAchievements, Local)
+│   │   │   ├── achievements/   # AchievementTracker (Steam, RetroAchievements, Local)  [SUPERSEDED 2026-10-20 for remote trackers: see Decision note below this tree]
 │   │   │   ├── hltb/           # HLTBService (scraping, caching, estimates)
 │   │   │   ├── playtime/       # PlaytimeAnalytics (session tracking, graphs, pie charts)
 │   │   │   ├── achievements/   # AchievementDetail (per-achievement progress, rarity, unlock dates)
@@ -176,6 +176,8 @@ dune/
 ├── deploy.sh
 └── package.json                # Workspace root
 ```
+
+> **Decision 2026-10-20 (monitor) — supersedes the `electron/achievements/` remote-tracker entry above:** remote achievement trackers (Steam, RetroAchievements, GOG, Epic) run on the server, not Electron, so API keys stay off clients. Per-user credentials go in a server-side `user_tracker_credentials` table; keys encrypted at rest with the server secret, write-only, masked in all responses. Local .ini import stays in Electron and feeds the server merge. Sync on play-session end and manual Sync now; optional background poll off by default, min interval 6h.
 
 ---
 
@@ -276,7 +278,7 @@ export function useGames() {
 11. **Graph types**: Line (time), bar (per-game), pie (distribution), heatmap (calendar)?
 
 ### Achievement Detail
-11. **Achievement Priority**: ✅ **Local .ini wins (cracked/offline)** — Local files win for cracked/offline; Steam API for legit
+11. **Achievement Priority**: ✅ **Local .ini wins (offline / local achievement files)** — Local files win when present; Steam API for games without them
 12. **Rarity Calculation**: ✅ **Steam global %** — Use Steam's global unlock percentage (standard)
 12. **Unlock Notifications**: ✅ **Toast + desktop + screenshot** — Full celebration: toast, notification, auto-screenshot
 13. **Rarity Tiers**: ✅ **Steam-standard (10/20/50/80/95/99%)** — Based on Steam's achievement rarity bands
@@ -303,7 +305,7 @@ export function useGames() {
 ## Decisions Made
 
 ### Core Architecture
-1. **Achievement Priority**: ✅ **Local .ini wins (cracked/offline)** — Local files win for cracked/offline; Steam API for legit games
+1. **Achievement Priority**: ✅ **Local .ini wins (offline / local achievement files)** — Local files win when present; Steam API for games without them
 2. **Prefix Management**: ✅ **Full lifecycle management** — Create/delete/backup/repair/version-switch Wine/Proton prefixes
 3. **Heroic/Lutris Depth**: ✅ **Read-only detection** — Only read game lists from Heroic/Lutris configs/DBs
 4. **Steam Integration**: ✅ **Yes, auto-add to Steam** — Create Steam shortcuts automatically for Heroic/Lutris/manual games
@@ -324,7 +326,7 @@ export function useGames() {
 11. **Graph Types**: ✅ **All 5 types** — Line, Bar, Pie, Heatmap, Area (cumulative)
 
 ### Achievement Detail
-11. **Achievement Priority**: ✅ **Local .ini wins (cracked/offline)** — Local files win for cracked/offline; Steam API for legit
+11. **Achievement Priority**: ✅ **Local .ini wins (offline / local achievement files)** — Local files win when present; Steam API for games without them
 12. **Rarity Calculation**: ✅ **Local user %** — Rarity relative to this user's library
 12. **Unlock Notifications**: ✅ **Toast + desktop + screenshot** — Full celebration: toast, notification, auto-screenshot
 13. **Rarity Tiers**: ✅ **Steam-standard (10/20/50/80/95/99%)** — Based on Steam's achievement rarity bands

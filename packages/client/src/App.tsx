@@ -1,5 +1,5 @@
 import '@fontsource/inter';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from 'react';
 import type {
   Cloud,
   Toast,
@@ -18,7 +18,9 @@ import type {
   ConflictRecord,
   StorageEntry,
   BackupProfile,
-  PrefixSummary,
+  ManagedPrefix,
+  EmulatorInfo,
+  ServerResult,
 } from '@dune/shared';
 import { nextId, RARITY_TIERS } from '@dune/shared';
 import { Icon } from './Icon';
@@ -31,6 +33,22 @@ import { StorageManager } from './components/saves/StorageManager';
 import { ExclusionEditor } from './components/saves/ExclusionEditor';
 import { BigPicture } from './components/BigPicture';
 import { HLTBView } from './components/HLTBView';
+import { GamePathInfo, SourceBadge } from './components/GamePathInfo';
+import { buildSearchIndex, searchIndex } from './services/search';
+import { createLatestGate } from './services/latest';
+import { createSaveQueue } from './services/saveQueue';
+import { validateApiKey, validateServerUrl } from './services/settingsValidation';
+import { normalizeServerUrl } from './services/serverUrl';
+import { checkGameTitle } from './services/gameTitle';
+import { MAX_PREFIX_NAME, prefixFailureMessage, validateNewPrefixName } from './services/prefixes';
+import { ConfirmDialog } from './components/settings/ConfirmDialog';
+import { WhereItRuns } from './components/settings/WhereItRuns';
+import { NoServerNotice } from './components/NoServerNotice';
+import { LaunchSettings } from './components/LaunchSettings';
+import { pickFailureMessage } from './services/launchSettings';
+import { DriveSpaceList } from './components/saves/DriveSpaceList';
+import { toDriveRows, type DriveRow } from './services/driveSpace';
+import { cloudSyncFailureMessage, serverFailureMessage } from './services/serverError';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
@@ -51,11 +69,14 @@ function formatMinutes(min: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+/** Plain wording for DUN-061 launch failures; the optional detail from main is appended, the code never is. */
+function launchFailureMessage(name: string, reason: string, detail?: string): string {
+  const base = reason === 'not-found'
+    ? `${name} is no longer in your library. Refresh and try again.`
+    : reason === 'not-launchable'
+      ? `Dune doesn't know how to start ${name} yet. Set how it launches first.`
+      : `Could not launch ${name}.`;
+  return detail?.trim() ? `${base} ${detail.trim()}` : base;
 }
 
 function rarityTier(rarity: number) {
@@ -73,15 +94,48 @@ function formatDate(iso: string): string {
 }
 
 function isValidUrl(url: string): boolean {
-  if (!url.trim()) return false;
-  try {
-    const normalized = /^https?:\/\//i.test(url) ? url : `http://${url}`;
-    const u = new URL(normalized);
-    return u.hostname.length > 0;
-  } catch {
-    return false;
-  }
+  // Exactly the main-process rule (electron/sync/serverUrl.ts normalizeServerUrl),
+  // mirrored in services/serverUrl.ts: absolute http(s) URL with a host only.
+  return normalizeServerUrl(url) !== null;
 }
+
+/** Debounce for auto-saved Settings fields (DUN-045). */
+const SETTINGS_SAVE_DELAY_MS = 500;
+
+type SettingsField = 'serverUrl' | 'serverKey' | 'steamGridDbKey';
+
+/** Snapshot of what the conflict dialog shows; resolve acts on exactly this. */
+interface ConflictDialogState {
+  conflict: ConflictRecord;
+  gameName: string;
+  local?: SaveVersion;
+  remote?: SaveVersion;
+}
+
+function conflictDialogFor(conflict: ConflictRecord, gameName: string, versions: SaveVersion[]): ConflictDialogState {
+  return {
+    conflict,
+    gameName,
+    local: versions.find(v => v.id === conflict.localVersionId),
+    remote: versions.find(v => v.id === conflict.remoteVersionId),
+  };
+}
+
+const DEFAULT_SETTINGS: Settings = {
+  runInBackground: false,
+  autoSyncEnabled: false,
+  autoSyncFreq: 'never',
+  steamGridDbKey: '',
+  scanRoots: [],
+  // Server-side settings from shared
+  maxVersions: 10,
+  steamGridApiKey: '',
+  ollamaEndpoint: 'http://localhost:11434',
+  ollamaModel: 'phi4-mini:latest',
+  apiKeys: [],
+  localSources: [],
+  remoteServers: [],
+};
 
 
 const DEMO_SAVE_VERSIONS = import.meta.env.DEV
@@ -111,38 +165,86 @@ const DEMO_STORAGE_ENTRIES = import.meta.env.DEV
   ? [{ gameId: 1, installBytes: 0, saveBytes: 47 * 1024 * 1024, cacheBytes: 412 * 1024 * 1024, lastPlayed: new Date().toISOString(), drive: 'D:\\' }]
   : [];
 
-const DEMO_BACKUP_PROFILE = {
-  gameId: 1,
-  includeGlobs: ['**/*'],
-  excludeGlobs: ['**/cache/**', '**/*.log'],
-  autoExcludeCache: true,
-  updatedAt: new Date().toISOString(),
-};
+// Demo-only fixtures: never shipped to production builds. Real drive and
+// file-breakdown data will come from an IPC source; until then prod shows an
+// explicit "unavailable" state instead of invented numbers.
+const DEMO_BACKUP_PROFILE: BackupProfile | null = import.meta.env.DEV
+  ? {
+      gameId: 1,
+      includeGlobs: ['**/*'],
+      excludeGlobs: ['**/cache/**', '**/*.log'],
+      autoExcludeCache: true,
+      updatedAt: new Date().toISOString(),
+    }
+  : null;
+
+const DEMO_EXCLUSION_FILES = import.meta.env.DEV
+  ? [
+      { path: 'saves/slot1.sav', size: 6.6 * 1024 * 1024, category: 'Save' as const },
+      { path: 'ShaderCache/file.bin', size: 412 * 1024 * 1024, category: 'Cache' as const },
+    ]
+  : [];
+
+const TOAST_DURATION_MS: Record<Toast['type'], number> = { success: 4000, info: 4000, error: 8000 };
+
+/** One toast with its own dismiss timer; the timer pauses on hover/focus. */
+function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number) => void }) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const remainingRef = useRef(TOAST_DURATION_MS[toast.type]);
+  const paused = hovered || focused;
+
+  useEffect(() => {
+    if (paused) return;
+    const startedAt = Date.now();
+    const timer = window.setTimeout(() => onDismiss(toast.id), remainingRef.current);
+    return () => {
+      window.clearTimeout(timer);
+      remainingRef.current = Math.max(1000, remainingRef.current - (Date.now() - startedAt));
+    };
+  }, [paused, toast.id, onDismiss]);
+
+  return (
+    <div
+      className={`toast toast-${toast.type}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
+    >
+      {toast.type === 'success' && <Icon name="check" size={16} />}
+      {toast.type === 'error' && <Icon name="alert" size={16} />}
+      {toast.type === 'info' && <Icon name="info" size={16} />}
+      <span className="toast-message">{toast.message}</span>
+      <button type="button" className="toast-close" aria-label="Dismiss notification" onClick={() => onDismiss(toast.id)}>
+        <Icon name="cancel" size={14} />
+      </button>
+    </div>
+  );
+}
 
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [games, setGames] = useState<Game[]>([]);
   const [cloud, setCloud] = useState<Cloud>({ url: '' });
-  const [settings, setSettings] = useState<Settings>({
-    runInBackground: false,
-    autoSyncEnabled: false,
-    autoSyncFreq: 'never',
-    steamGridDbKey: '',
-    scanRoots: [],
-    // Server-side settings from shared
-    maxVersions: 10,
-    steamGridApiKey: '',
-    ollamaEndpoint: 'http://localhost:11434',
-    ollamaModel: 'phi4-mini:latest',
-    apiKeys: [],
-    localSources: [],
-    remoteServers: [],
-  });
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // Latest settings incl. not-yet-rendered changes, so two quick changes merge
+  // instead of the second overwriting the first (DUN-045).
+  const settingsRef = useRef<Settings>(DEFAULT_SETTINGS);
+  // Drafts for auto-saved text fields; null = show the saved value.
+  const [serverUrlDraft, setServerUrlDraft] = useState<string | null>(null);
+  const [serverKeyDraft, setServerKeyDraft] = useState<string | null>(null);
+  const [steamGridDbKeyDraft, setSteamGridDbKeyDraft] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<SettingsField, string>>>({});
+  const commitTimers = useRef<Partial<Record<SettingsField, number>>>({});
 
   const [newGameName, setNewGameName] = useState('');
   const [newGameWin, setNewGameWin] = useState('');
   const [newGameLin, setNewGameLin] = useState('');
+  const [newGameNameError, setNewGameNameError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ percent: number; message: string; done: boolean; success: boolean } | null>(null);
@@ -150,7 +252,16 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [pendingRestore, setPendingRestore] = useState(false);
   const [pendingRemoveId, setPendingRemoveId] = useState<number | null>(null);
-  const [serverApiKey, setServerApiKey] = useState('');
+  // Only whether this PC has a key; the key value is never kept in renderer state.
+  const [serverKeySet, setServerKeySet] = useState(false);
+  const [serverConnectionVersion, setServerConnectionVersion] = useState(0);
+  const [confirmClearServerKey, setConfirmClearServerKey] = useState(false);
+  // DUN-042: real drive space from main (null = not read yet).
+  const [driveRows, setDriveRows] = useState<DriveRow[] | null>(null);
+  const [driveError, setDriveError] = useState(false);
+  // DUN-061 part 2: choices for the per-game launch selectors (null = loading).
+  const [launchPrefixes, setLaunchPrefixes] = useState<ManagedPrefix[] | null>(null);
+  const [emulators, setEmulators] = useState<EmulatorInfo[] | null>(null);
 
   // Playtime state
   const [playtimeSummary, setPlaytimeSummary] = useState<PlaytimeSummary[]>([]);
@@ -179,21 +290,36 @@ export default function App() {
   const [storageEntry, setStorageEntry] = useState<StorageEntry | null>(null);
   const [backupProfile, setBackupProfile] = useState<BackupProfile | null>(null);
   const [conflicts, setConflicts] = useState<ConflictRecord[]>([]);
-  const [showConflictModal, setShowConflictModal] = useState(false);
+  // Game the save data above belongs to; anything else is not shown (DUN-046).
+  const [savesGameId, setSavesGameId] = useState<number | null>(null);
+  const [conflictDialog, setConflictDialog] = useState<ConflictDialogState | null>(null);
+  const savesGate = useRef(createLatestGate<number>());
+  const achievementsGate = useRef(createLatestGate<string>());
+  // Conflict ids already auto-opened this session; later visits show a
+  // "Review conflict" banner instead of re-opening the modal.
+  const autoOpenedConflictIds = useRef<Set<string>>(new Set());
   const [selectedSaveGame, setSelectedSaveGame] = useState('');
 
   // Launcher and prefix state
   const [launchingGameId, setLaunchingGameId] = useState<number | null>(null);
-  const [prefixSummary, setPrefixSummary] = useState<PrefixSummary | null>(null);
+  // DUN-062: only prefixes Dune created (registry), addressed by id.
+  const [prefixes, setPrefixes] = useState<ManagedPrefix[] | null>(null);
+  const [prefixLoadError, setPrefixLoadError] = useState<string | null>(null);
   const [isLoadingPrefixes, setIsLoadingPrefixes] = useState(false);
-  const [newPrefixPath, setNewPrefixPath] = useState('');
-  const [pendingPrefixDelete, setPendingPrefixDelete] = useState<string | null>(null);
+  const [newPrefixName, setNewPrefixName] = useState('');
+  const [newPrefixError, setNewPrefixError] = useState<string | null>(null);
+  const [creatingPrefix, setCreatingPrefix] = useState(false);
+  const [prefixBusyId, setPrefixBusyId] = useState<string | null>(null);
+  const [prefixRowError, setPrefixRowError] = useState<{ id: string; message: string } | null>(null);
+  const [prefixToDelete, setPrefixToDelete] = useState<ManagedPrefix | null>(null);
+  const prefixListHeadingRef = useRef<HTMLHeadingElement>(null);
 
   // Keep the save screen pinned to a game that still exists without an effect
   // that would synchronously set state on every library change.
   const selectedSaveGameName = games.some(game => game.name === selectedSaveGame)
     ? selectedSaveGame
     : (games[0]?.name ?? '');
+  const selectedSaveGameId = games.find(game => game.name === selectedSaveGameName)?.id ?? null;
 
   const achievementImportGameName = games.some(game => game.name === achievementImportGame)
     ? achievementImportGame
@@ -202,7 +328,10 @@ export default function App() {
   const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
     const id = nextId();
     setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  }, []);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
   const loadConfig = useCallback(async () => {
@@ -212,11 +341,14 @@ export default function App() {
         if (config.games) setGames(config.games);
         if (config.cloud) setCloud(config.cloud);
         if (config.settings) {
-          setSettings(prev => ({
+          const prev = settingsRef.current;
+          const next = {
             ...prev,
             ...config.settings,
             scanRoots: config.settings.scanRoots ?? prev.scanRoots ?? []
-          }));
+          };
+          settingsRef.current = next;
+          setSettings(next);
         }
       }
       return config;
@@ -230,7 +362,8 @@ export default function App() {
     const initialize = async () => {
       await loadConfig();
       const res = await window.electronAPI.getServerKey();
-      if (res?.success && res.key) setServerApiKey(res.key);
+      // DUN-073 will replace getServerKey with a has-key check; until then only presence is read.
+      setServerKeySet(Boolean(res?.success && res.key));
     };
     initialize().catch(() => { /* key stays empty — server calls will 401 with a clear error */ });
   }, [loadConfig]);
@@ -271,27 +404,45 @@ export default function App() {
 
 
   useEffect(() => {
-    if (activeTab !== 'saves' || !selectedSaveGameName || !cloud.url) return;
+    if (activeTab !== 'saves' || selectedSaveGameId === null || !selectedSaveGameName || !cloud.url) return;
+    const gameId = selectedSaveGameId;
     const game = selectedSaveGameName;
+    const gate = savesGate.current;
+    // Latest wins: a slower reply for a previously selected game is dropped.
+    const ticket = gate.begin(gameId);
     const loadSaves = async () => {
-      try {
-        const versions = await window.electronAPI.getSaveVersions(game);
-        if (versions?.success) setSaveVersions(versions.versions ?? []);
-        const storage = await window.electronAPI.getStorage(game);
-        if (storage?.success) setStorageEntry(storage.entry ?? null);
-        const profile = await window.electronAPI.getBackupProfile(game);
-        if (profile?.success) setBackupProfile(profile.profile ?? null);
-        const conflictList = await window.electronAPI.getConflicts(game);
-        if (conflictList?.success) {
-          setConflicts(conflictList.conflicts ?? []);
-          setShowConflictModal((conflictList.conflicts ?? []).some((c: ConflictRecord) => !c.resolution));
+      const [versionsRes, storageRes, profileRes, conflictsRes] = await Promise.allSettled([
+        window.electronAPI.getSaveVersions(game),
+        window.electronAPI.getStorage(game),
+        window.electronAPI.getBackupProfile(game),
+        window.electronAPI.getConflicts(game),
+      ]);
+      if (!ticket.isLatest()) return;
+      const ok = <T extends object>(r: PromiseSettledResult<ServerResult<T>>): ({ ok: true } & T) | null =>
+        r.status === 'fulfilled' && r.value.ok ? r.value : null;
+      const versions = ok(versionsRes)?.versions ?? [];
+      const list = ok(conflictsRes)?.conflicts ?? [];
+      setSaveVersions(versions);
+      setStorageEntry(ok(storageRes)?.entry ?? null);
+      setBackupProfile(ok(profileRes)?.profile ?? null);
+      setConflicts(list);
+      setSavesGameId(gameId);
+
+      const unseen = list.filter((c: ConflictRecord) => !c.resolution && !autoOpenedConflictIds.current.has(c.id));
+      for (const c of unseen) autoOpenedConflictIds.current.add(c.id);
+      setConflictDialog(prev => {
+        // A dialog opened by the sync flow for this game gets its version details.
+        if (prev) {
+          return prev.gameName === game && !prev.local && !prev.remote
+            ? conflictDialogFor(prev.conflict, game, versions)
+            : prev;
         }
-      } catch {
-        // Keep the last known UI state when the server is unavailable.
-      }
+        return unseen.length > 0 ? conflictDialogFor(unseen[0], game, versions) : null;
+      });
     };
     loadSaves();
-  }, [activeTab, selectedSaveGameName, cloud.url]);
+    return () => gate.invalidate();
+  }, [activeTab, selectedSaveGameId, selectedSaveGameName, cloud.url]);
 
 
   useEffect(() => {
@@ -305,26 +456,88 @@ export default function App() {
     localStorage.setItem('dune:locale', locale);
   }, [locale]);
 
-  const saveSettings = async (newSettings: Partial<Settings>) => {
-    const s = { ...settings, ...newSettings };
-    setSettings(s);
-    await window.electronAPI.saveConfig({ settings: s });
+  const setFieldError = useCallback((field: SettingsField, message?: string) => {
+    setFieldErrors(prev => (prev[field] === message ? prev : { ...prev, [field]: message }));
+  }, []);
+
+  // One save at a time per target; a newer value queued during a save is
+  // written after it (intermediate values are skipped). Never logs values.
+  const settingsQueue = useMemo(() => createSaveQueue<Settings>({
+    save: (value) => window.electronAPI.saveConfig({ settings: value }),
+    onSaved: () => setFieldError('steamGridDbKey', undefined),
+    onError: () => {
+      showToast('Failed to save settings', 'error');
+      setFieldError('steamGridDbKey', 'Not saved. Check the connection and try again.');
+    },
+  }), [showToast, setFieldError]);
+
+  const cloudQueue = useMemo(() => createSaveQueue<Cloud>({
+    save: (value) => window.electronAPI.saveConfig({ cloud: value }),
+    onSaved: (value) => {
+      setCloud(value);
+      setServerUrlDraft(d => (d !== null && d.trim() === value.url ? null : d));
+      setFieldError('serverUrl', undefined);
+    },
+    onError: () => {
+      showToast('Failed to save the server address', 'error');
+      setFieldError('serverUrl', 'Not saved. Check the connection and try again.');
+    },
+  }), [showToast, setFieldError]);
+
+  const serverKeyQueue = useMemo(() => createSaveQueue<string>({
+    save: (value) => window.electronAPI.setServerKey(value).then(res => res?.success !== false),
+    onSaved: (value) => {
+      setServerKeySet(value !== '');
+      setServerConnectionVersion(v => v + 1);
+      setServerKeyDraft(d => (d !== null && d.trim() === value ? null : d));
+      setFieldError('serverKey', undefined);
+    },
+    onError: () => {
+      showToast('Failed to save server key', 'error');
+      setFieldError('serverKey', 'Not saved. Check the connection and try again.');
+    },
+  }), [showToast, setFieldError]);
+
+  const saveSettings = (newSettings: Partial<Settings>) => {
+    const next = { ...settingsRef.current, ...newSettings };
+    settingsRef.current = next;
+    setSettings(next);
+    settingsQueue.enqueue(next);
   };
 
-  const handleServerKeyChange = async (key: string) => {
-    setServerApiKey(key);
-    try {
-      await window.electronAPI.setServerKey(key);
-    } catch {
-      showToast('Failed to save server key', 'error');
+  useEffect(() => {
+    const timers = commitTimers.current;
+    return () => {
+      for (const id of Object.values(timers)) window.clearTimeout(id);
+    };
+  }, []);
+
+  /** Validate a draft and queue the save; invalid drafts are never written. */
+  const commitField = (field: SettingsField, raw: string) => {
+    window.clearTimeout(commitTimers.current[field]);
+    delete commitTimers.current[field];
+    const result = field === 'serverUrl' ? validateServerUrl(raw) : validateApiKey(raw);
+    if (!result.ok) {
+      setFieldError(field, result.error);
+      return;
+    }
+    setFieldError(field, undefined);
+    if (field === 'serverUrl') {
+      if (result.value !== cloud.url) cloudQueue.enqueue({ ...cloud, url: result.value });
+      else setServerUrlDraft(null);
+    } else if (field === 'serverKey') {
+      // An empty draft never clears the key; that needs the Clear button.
+      if (result.value) serverKeyQueue.enqueue(result.value);
+      else setServerKeyDraft(null);
+    } else {
+      setSteamGridDbKeyDraft(null);
+      if (result.value !== (settingsRef.current.steamGridDbKey ?? '')) saveSettings({ steamGridDbKey: result.value });
     }
   };
 
-  const saveCloud = async (partialCloud?: Partial<Cloud>) => {
-    const c = partialCloud ? { ...cloud, ...partialCloud } : cloud;
-    setCloud(c);
-    await window.electronAPI.saveConfig({ cloud: c });
-    return c;
+  const scheduleCommit = (field: SettingsField, raw: string) => {
+    window.clearTimeout(commitTimers.current[field]);
+    commitTimers.current[field] = window.setTimeout(() => commitField(field, raw), SETTINGS_SAVE_DELAY_MS);
   };
 
   const handleAddRoot = async () => {
@@ -345,33 +558,43 @@ export default function App() {
   };
 
   const handleAddGame = async () => {
-    if (!newGameName.trim()) {
-      showToast('Game title is required', 'error');
+    const title = checkGameTitle(newGameName);
+    if (!title.ok) {
+      setNewGameNameError(title.error);
+      document.getElementById('new-game-title')?.focus();
       return;
     }
+    setNewGameNameError(null);
     if (!newGameWin.trim() && !newGameLin.trim()) {
       showToast('At least one save path is required', 'error');
       return;
     }
-    if (games.some(g => g.name.toLowerCase() === newGameName.trim().toLowerCase())) {
+    if (games.some(g => g.name.toLowerCase() === title.value.toLowerCase())) {
       showToast('Game already tracked', 'error');
       return;
     }
     try {
-      const now = new Date().toISOString();
-      const added = await window.electronAPI.addGame({
-        name: newGameName.trim(),
+      // Main fills in id, status and timestamps (NewGameInput).
+      const res = await window.electronAPI.addGame({
+        name: title.value,
         winPath: newGameWin.trim(),
         linPath: newGameLin.trim(),
-        lastSync: 'Never',
-        status: 'Pending Upload',
-        thumbnail: '',
-        createdAt: now,
-        updatedAt: now
       });
-      setGames(added);
+      if (!res.ok) {
+        showToast(res.reason === 'invalid' ? 'Check the title and save folders, then try again.' : 'Failed to add game', 'error');
+        return;
+      }
+      setGames(res.games);
       setNewGameName(''); setNewGameWin(''); setNewGameLin('');
-      showToast(`Added ${newGameName.trim()}`, 'success');
+      // Main opens its own file dialog; the renderer never sends a path.
+      const picked = await window.electronAPI.pickLaunchTarget(res.game.id).catch(() => ({ ok: false as const, reason: 'error' as const }));
+      if (picked.ok) {
+        updateGame(picked.game);
+        showToast(`Added ${res.game.name}`, 'success');
+      } else {
+        const problem = pickFailureMessage(picked.reason);
+        showToast(problem ? `Added ${res.game.name}. ${problem}` : `Added ${res.game.name}. Choose its executable later.`, problem ? 'error' : 'info');
+      }
     } catch {
       showToast('Failed to add game', 'error');
     }
@@ -410,20 +633,22 @@ export default function App() {
     setSyncProgress({ percent: 1, message: 'Preparing sync...', done: false, success: false });
     try {
       const res = await window.electronAPI.syncCloud(cloud);
-      if (!res.success) {
-        setSyncProgress({ percent: 0, message: res.message, done: true, success: false });
+      if (!res.ok) {
+        setSyncProgress({ percent: 0, message: cloudSyncFailureMessage(res, 'Sync'), done: true, success: false });
         setIsSyncing(false);
         setTimeout(() => setSyncProgress(null), 4000);
       } else {
         const config = await loadConfig();
         const conflictRes = await window.electronAPI.getConflicts();
-        const unresolved = (conflictRes.conflicts ?? []).filter(c => !c.resolution);
-        if (conflictRes.success && unresolved.length > 0) {
-          setConflicts(conflictRes.conflicts ?? []);
+        const unresolved = conflictRes.ok ? (conflictRes.conflicts ?? []).filter(c => !c.resolution) : [];
+        if (unresolved.length > 0) {
           const conflictGame = (config?.games ?? games).find(g => g.id === unresolved[0].gameId);
           if (conflictGame) setSelectedSaveGame(conflictGame.name);
           setActiveTab('saves');
-          setShowConflictModal(true);
+          for (const c of unresolved) autoOpenedConflictIds.current.add(c.id);
+          // Bound to the conflict's own game; versions are filled in when that
+          // game's save data arrives.
+          setConflictDialog(conflictDialogFor(unresolved[0], conflictGame?.name ?? '', []));
           showToast(`Sync complete — ${unresolved.length} save conflict(s) need review`, 'error');
         } else {
           showToast('Sync complete', 'success');
@@ -452,8 +677,8 @@ export default function App() {
     setSyncProgress({ percent: 1, message: 'Preparing to restore...', done: false, success: false });
     try {
       const res = await window.electronAPI.restoreCloud(cloud);
-      if (!res.success) {
-        setSyncProgress({ percent: 0, message: res.message, done: true, success: false });
+      if (!res.ok) {
+        setSyncProgress({ percent: 0, message: cloudSyncFailureMessage(res, 'Restore'), done: true, success: false });
         setIsSyncing(false);
         setTimeout(() => setSyncProgress(null), 4000);
       } else {
@@ -474,7 +699,8 @@ export default function App() {
     }
     try {
       const res = await window.electronAPI.testCloud(cloud);
-      showToast(res.message, res.success ? 'success' : 'error');
+      if (res.ok) showToast(res.message, 'success');
+      else showToast(serverFailureMessage(res), 'error');
     } catch {
       showToast('Connection test failed', 'error');
     }
@@ -508,7 +734,12 @@ export default function App() {
 
   const handleRemoveGame = async (game: Game) => {
     try {
-      setGames(await window.electronAPI.removeGame(game.id));
+      const res = await window.electronAPI.removeGame(game.id);
+      if (!res.ok) {
+        showToast('Failed to remove game', 'error');
+        return;
+      }
+      setGames(res.games);
       setPendingRemoveId(null);
       showToast(`Removed ${game.name}`, 'info');
     } catch {
@@ -516,11 +747,9 @@ export default function App() {
     }
   };
 
+  // DUN-041: without a server these views show a calm notice instead of error toasts.
   const loadPlaytime = async () => {
-    if (!isValidUrl(cloud.url)) {
-      showToast('Configure Dune Server URL first', 'error');
-      return;
-    }
+    if (!isValidUrl(cloud.url)) return;
     setIsLoadingPlaytime(true);
     try {
       const [summaryRes, totalRes, graphRes, comparisonRes] = await Promise.all([
@@ -529,10 +758,10 @@ export default function App() {
         window.electronAPI.getPlaytimeGraphData('month'),
         window.electronAPI.getPlaytimeComparison('month')
       ]);
-      if (summaryRes.success) setPlaytimeSummary(summaryRes.summary);
-      if (totalRes.success) setTotalPlaytime(totalRes.totalMinutes);
-      if (graphRes.success) setPlaytimeGraph(graphRes.data);
-      if (comparisonRes.success) setPlaytimeComparison(comparisonRes.comparison);
+      if (summaryRes.ok) setPlaytimeSummary(summaryRes.summary);
+      if (totalRes.ok) setTotalPlaytime(totalRes.totalMinutes);
+      if (graphRes.ok) setPlaytimeGraph(graphRes.data);
+      if (comparisonRes.ok) setPlaytimeComparison(comparisonRes.comparison);
     } catch {
       showToast('Failed to load playtime', 'error');
     }
@@ -543,7 +772,11 @@ export default function App() {
   const handleExportPlaytime = async () => {
     try {
       const res = await window.electronAPI.exportPlaytimeData('csv', 'month');
-      if (!res.success || !res.data) {
+      if (!res.ok) {
+        showToast(serverFailureMessage(res), 'error');
+        return;
+      }
+      if (!res.data) {
         showToast(res.message || 'Playtime export failed', 'error');
         return;
       }
@@ -561,19 +794,16 @@ export default function App() {
   };
 
   const loadAchievements = async () => {
-    if (!isValidUrl(cloud.url)) {
-      showToast('Configure Dune Server URL first', 'error');
-      return;
-    }
+    if (!isValidUrl(cloud.url)) return;
     setIsLoadingAch(true);
     try {
       const [summaryRes, recentRes] = await Promise.all([
         window.electronAPI.getAchievementSummary(),
         window.electronAPI.getRecentUnlocks(5),
       ]);
-      if (summaryRes.success) setAchievementSummary(summaryRes.summary);
-      else showToast(summaryRes.message || 'Failed to load achievements', 'error');
-      if (recentRes.success) setRecentUnlocks(recentRes.unlocks);
+      if (summaryRes.ok) setAchievementSummary(summaryRes.summary);
+      else showToast(serverFailureMessage(summaryRes), 'error');
+      if (recentRes.ok) setRecentUnlocks(recentRes.unlocks);
     } catch {
       showToast('Failed to load achievements', 'error');
     }
@@ -582,20 +812,24 @@ export default function App() {
 
   const loadGameAchievements = async (gameName: string) => {
     if (!gameName) return;
+    // Latest wins: rapid "View" clicks only show the last game's details.
+    const ticket = achievementsGate.current.begin(gameName);
     setIsLoadingAch(true);
     try {
       const res = await window.electronAPI.getAchievementDetail(gameName);
-      if (res.success) {
+      if (!ticket.isLatest()) return;
+      if (res.ok) {
         setAchievements(res.achievements);
         setAchievementProgress(res.progress ?? null);
         setSelectedAchGame(gameName);
       } else {
-        showToast(res.message || 'No achievements found', 'info');
+        showToast(res.status === 404 ? 'No achievements found' : serverFailureMessage(res), 'info');
       }
     } catch {
-      showToast('Failed to load achievements', 'error');
+      if (ticket.isLatest()) showToast('Failed to load achievements', 'error');
+    } finally {
+      if (ticket.isLatest()) setIsLoadingAch(false);
     }
-    setIsLoadingAch(false);
   };
 
   const handleImportLocalAchievements = async () => {
@@ -607,13 +841,15 @@ export default function App() {
 
     setIsLoadingAch(true);
     try {
-      const res = await window.electronAPI.importLocalAchievements(game);
-      if (res.success && res.count > 0) {
+      const res = await window.electronAPI.importLocalAchievements(game.id);
+      if (!res.ok) {
+        showToast(serverFailureMessage(res), 'error');
+      } else if (res.count > 0) {
         showToast(`Imported ${res.count} local achievement(s)`, 'success');
         await loadAchievements();
         await loadGameAchievements(game.name);
       } else {
-        showToast(res.message || 'No local achievements found', res.success ? 'info' : 'error');
+        showToast(res.message || 'No local achievements found', 'info');
       }
     } catch {
       showToast('Failed to import local achievements', 'error');
@@ -623,15 +859,13 @@ export default function App() {
 
   const loadHLTB = async (gameName: string) => {
     if (hltbCache[gameName] || hltbLoading[gameName]) return;
-    if (!isValidUrl(cloud.url)) {
-      showToast('Configure Dune Server URL first', 'error');
-      return;
-    }
+    if (!isValidUrl(cloud.url)) return;
     setHltbLoading(prev => ({ ...prev, [gameName]: true }));
     try {
       const res = await window.electronAPI.getHLTBTimes(gameName);
-      if (res.success && res.times) {
-        setHltbCache(prev => ({ ...prev, [gameName]: res.times! }));
+      if (res.ok && res.times) {
+        const times = res.times;
+        setHltbCache(prev => ({ ...prev, [gameName]: times }));
       }
     } catch {
       // Silently ignore HLTB failures
@@ -643,92 +877,146 @@ export default function App() {
   const loadPrefixes = async () => {
     setIsLoadingPrefixes(true);
     try {
-      const res = await window.electronAPI.listPrefixes();
-      if (res.success && res.prefixes) {
-        setPrefixSummary(res.prefixes);
-      } else {
-        showToast(res.message || 'Failed to load prefixes', 'error');
-      }
+      const list = await window.electronAPI.listPrefixes();
+      setPrefixes(Array.isArray(list) ? list : []);
+      setPrefixLoadError(null);
     } catch {
-      showToast('Failed to load prefixes', 'error');
+      setPrefixLoadError('Could not load prefixes. Try again.');
     }
     setIsLoadingPrefixes(false);
   };
 
   const handleCreatePrefix = async () => {
-    const prefixPath = newPrefixPath.trim();
-    if (!prefixPath) {
-      showToast('Prefix path is required', 'error');
+    if (creatingPrefix) return;
+    const check = validateNewPrefixName(newPrefixName);
+    if (!check.ok) {
+      setNewPrefixError(check.error);
       return;
     }
+    setNewPrefixError(null);
+    setCreatingPrefix(true);
     try {
-      const res = await window.electronAPI.createPrefix(prefixPath);
-      showToast(res.message, res.success ? 'success' : 'error');
-      if (res.success) {
-        setNewPrefixPath('');
+      const res = await window.electronAPI.createPrefix(check.value);
+      if (res.ok) {
+        setNewPrefixName('');
+        showToast(`Created prefix ${res.prefix.name}`, 'success');
         await loadPrefixes();
+      } else {
+        setNewPrefixError(prefixFailureMessage('create', res.reason));
       }
     } catch {
-      showToast('Failed to create prefix', 'error');
+      setNewPrefixError(prefixFailureMessage('create', 'error'));
     }
+    setCreatingPrefix(false);
   };
 
-  const handleDeletePrefix = async (prefixPath: string) => {
-    if (pendingPrefixDelete !== prefixPath) {
-      setPendingPrefixDelete(prefixPath);
-      return;
-    }
-    setPendingPrefixDelete(null);
+  const handleDeletePrefix = async (prefix: ManagedPrefix) => {
+    setPrefixToDelete(null);
+    setPrefixRowError(null);
+    setPrefixBusyId(prefix.id);
     try {
-      const res = await window.electronAPI.deletePrefix(prefixPath);
-      showToast(res.message, res.success ? 'success' : 'error');
-      if (res.success) await loadPrefixes();
+      const res = await window.electronAPI.deletePrefix(prefix.id);
+      if (res.ok) {
+        showToast(`Moved ${prefix.name} to the Trash`, 'success');
+        await loadPrefixes();
+        prefixListHeadingRef.current?.focus();
+      } else {
+        setPrefixRowError({ id: prefix.id, message: prefixFailureMessage('delete', res.reason) });
+      }
     } catch {
-      showToast('Failed to delete prefix', 'error');
+      setPrefixRowError({ id: prefix.id, message: prefixFailureMessage('delete', 'error') });
     }
+    setPrefixBusyId(null);
   };
 
-  const handleBackupPrefix = async (prefixPath: string) => {
+  const handleBackupPrefix = async (prefix: ManagedPrefix) => {
+    if (prefixBusyId) return;
+    setPrefixRowError(null);
+    setPrefixBusyId(prefix.id);
     try {
-      const res = await window.electronAPI.backupPrefix(prefixPath);
-      showToast(res.backupPath ? `${res.message}: ${res.backupPath}` : res.message, res.success ? 'success' : 'error');
+      const res = await window.electronAPI.backupPrefix(prefix.id);
+      if (res.ok) showToast(`Backed up ${prefix.name} to ${res.backupPath}`, 'success');
+      else setPrefixRowError({ id: prefix.id, message: prefixFailureMessage('backup', res.reason) });
     } catch {
-      showToast('Failed to back up prefix', 'error');
+      setPrefixRowError({ id: prefix.id, message: prefixFailureMessage('backup', 'error') });
     }
+    setPrefixBusyId(null);
   };
+
+  const updateGame = (game: Game) => setGames(prev => prev.map(g => (g.id === game.id ? game : g)));
+
+  useEffect(() => {
+    if (activeTab !== 'mapping') return;
+    let live = true;
+    window.electronAPI.listPrefixes()
+      .then(list => { if (live) setLaunchPrefixes(Array.isArray(list) ? list : []); })
+      .catch(() => { if (live) setLaunchPrefixes([]); });
+    window.electronAPI.listEmulators()
+      .then(list => { if (live) setEmulators(Array.isArray(list) ? list : []); })
+      .catch(() => { if (live) setEmulators([]); });
+    return () => { live = false; };
+  }, [activeTab]);
+
+  const hasServer = isValidUrl(cloud.url);
+  const openServerSettings = () => {
+    setActiveTab('settings');
+    window.setTimeout(() => {
+      const field = document.getElementById('server-url');
+      field?.scrollIntoView({ block: 'center' });
+      field?.focus();
+    }, 0);
+  };
+
+  const loadDrives = useCallback(() => {
+    setDriveError(false);
+    setDriveRows(null);
+    window.electronAPI.getDiskSpace()
+      .then(drives => setDriveRows(toDriveRows(Array.isArray(drives) ? drives : [])))
+      .catch(() => setDriveError(true));
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'saves') return;
+    let live = true;
+    window.electronAPI.getDiskSpace()
+      .then(drives => { if (live) { setDriveError(false); setDriveRows(toDriveRows(Array.isArray(drives) ? drives : [])); } })
+      .catch(() => { if (live) setDriveError(true); });
+    return () => { live = false; };
+  }, [activeTab, games]);
 
   const handleLaunch = async (game: Game) => {
     if (launchingGameId !== null) return;
     setLaunchingGameId(game.id);
     try {
-      const options: Record<string, unknown> = {};
-      if (game.steamAppId) options.appId = game.steamAppId;
-      if (game.heroicId) options.heroicId = game.heroicId;
-      if (game.lutrisSlug) options.lutrisSlug = game.lutrisSlug;
-      if (game.winePrefix) options.winePrefix = game.winePrefix;
-      if (game.protonPath) options.protonPath = game.protonPath;
-      const res = await window.electronAPI.launchGame(game, options);
-      showToast(res.success ? `Launched ${game.name}` : res.message, res.success ? 'success' : 'error');
+      // Main resolves how to launch from its own record of the game (by id).
+      const res = await window.electronAPI.launchGame(game.id);
+      if (res.ok) showToast(`Launched ${game.name}`, 'success');
+      else showToast(launchFailureMessage(game.name, res.reason, res.message), 'error');
     } catch {
       showToast(`Failed to launch ${game.name}`, 'error');
     }
     setLaunchingGameId(null);
   };
 
-  const filteredGames = games.filter(g =>
-    g.name.toLowerCase().includes(searchTerm.toLowerCase())
+  // Index is rebuilt only when the games list changes; queries run against the
+  // deferred term so typing stays responsive on large libraries.
+  const librarySearchIndex = useMemo(() => buildSearchIndex(games), [games]);
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+  const filteredGames = useMemo(
+    () => searchIndex(librarySearchIndex, deferredSearchTerm).map(result => result.game),
+    [librarySearchIndex, deferredSearchTerm],
   );
+  const searchActive = deferredSearchTerm.trim().length > 0;
 
-  const prefixGroups: { label: string; entries: PrefixSummary['wine']; canManage: boolean }[] = prefixSummary
-    ? [
-        { label: 'Wine', entries: prefixSummary.wine, canManage: true },
-        { label: 'Proton', entries: prefixSummary.proton, canManage: false },
-        { label: 'Heroic', entries: prefixSummary.heroic, canManage: false },
-        { label: 'Lutris', entries: prefixSummary.lutris, canManage: false },
-      ]
-    : [];
-
-  const activeConflict = conflicts.find(c => !c.resolution) ?? null;
+  // Save data is only shown for the game it was loaded for (DUN-046).
+  const savesMatch = savesGameId !== null && savesGameId === selectedSaveGameId;
+  const visibleSaveVersions = savesMatch ? saveVersions : [];
+  const visibleStorageEntry = savesMatch ? storageEntry : null;
+  const visibleBackupProfile = savesMatch ? backupProfile : null;
+  // 'later' is a deferral, not a decision: keep it reviewable via the banner.
+  const activeConflict = savesMatch ? (conflicts.find(c => !c.resolution || c.resolution === 'later') ?? null) : null;
+  const storageEntries = visibleStorageEntry ? [visibleStorageEntry] : DEMO_STORAGE_ENTRIES;
+  const exclusionProfile = visibleBackupProfile ?? DEMO_BACKUP_PROFILE;
 
   const inSyncCount = games.filter(g => g.status === 'In Sync').length;
 
@@ -750,7 +1038,7 @@ export default function App() {
         </button>
         <button className={`nav-item ${activeTab === 'sync' ? 'active' : ''}`} onClick={() => setActiveTab('sync')}>
           <Icon name="sync" />
-          <span>Cloud Sync</span>
+          <span>Server Sync</span>
         </button>
         <button className={`nav-item ${activeTab === 'saves' ? 'active' : ''}`} onClick={() => setActiveTab('saves')}>
           <Icon name="sync" />
@@ -798,17 +1086,33 @@ export default function App() {
                 <p className="text-muted">Overview of your local and synchronized game saves.</p>
               </div>
               <div className="search-wrapper">
+                <label htmlFor="library-search" className="sr-only">Search games</label>
                 <Icon name="search" className="search-icon" />
                 <input
+                  id="library-search"
                   type="text"
                   className="search-input"
                   placeholder="Search games..."
-                  aria-label="Search games"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-describedby="library-search-count"
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape' && searchTerm) {
+                      e.preventDefault();
+                      setSearchTerm('');
+                    }
+                  }}
                 />
               </div>
             </div>
+            {/* Always mounted so the polite live region announces count changes. */}
+            <p id="library-search-count" className="search-count" role="status" aria-live="polite">
+              {searchActive
+                ? `${filteredGames.length} of ${games.length} game${games.length === 1 ? '' : 's'} match`
+                : ''}
+            </p>
 
             <div className="stats-row">
               <div className="card stat-card stat-accent">
@@ -843,12 +1147,16 @@ export default function App() {
                     <div className="game-cover-placeholder">No Cover Art</div>
                   )}
                   <div className="game-info">
-                    <div className="game-title" title={game.name}>{game.name}</div>
+                    <div className="game-title-row">
+                      <div className="game-title" title={game.name}>{game.name}</div>
+                      <SourceBadge game={game} />
+                    </div>
                     <div className={`game-status ${game.status === 'In Sync' ? 'status-synced' : 'status-pending'}`}>
                       <span className={`status-dot ${game.status === 'In Sync' ? 'synced' : 'pending'}`} aria-hidden="true" />
                       {game.status}
                       <span className="sync-time">· {formatDate(game.lastSync)}</span>
                     </div>
+                    <GamePathInfo game={game} compact />
                     {hltbCache[game.name] && (
                       <div className="hltb-info">
                         Main: {formatMinutes(hltbCache[game.name].mainStory)} |
@@ -863,7 +1171,7 @@ export default function App() {
                       </button>
                       <button className="btn btn-secondary" onClick={() => handleFetchArt(game)}>Auto Art</button>
                       <button className="btn btn-secondary" onClick={() => handleSetCustomArt(game)}>Set Art</button>
-                      <button className="btn btn-secondary" onClick={() => loadHLTB(game.name)} disabled={!!hltbCache[game.name] || !!hltbLoading[game.name]}>
+                      <button className="btn btn-secondary" onClick={() => loadHLTB(game.name)} disabled={!hasServer || !!hltbCache[game.name] || !!hltbLoading[game.name]} title={hasServer ? undefined : 'Connect a Dune server to load HowLongToBeat times'}>
                         {hltbLoading[game.name] ? '...' : hltbCache[game.name] ? 'HLTB ✓' : 'HLTB'}
                       </button>
                       <button className="btn btn-secondary btn-danger-full" onClick={() => pendingRemoveId === game.id ? handleRemoveGame(game) : setPendingRemoveId(game.id)}>
@@ -883,6 +1191,7 @@ export default function App() {
                   <>
                     <Icon name="search" size={28} />
                     <p>No games match &quot;{searchTerm}&quot;.</p>
+                    <p className="text-muted text-sm">Try a shorter name, a tag, or a source like &quot;steam&quot;. Press Escape to clear.</p>
                     <button className="btn btn-secondary" onClick={() => setSearchTerm('')}>Clear search</button>
                   </>
                 ) : (
@@ -915,16 +1224,30 @@ export default function App() {
               <h3 className="card-title"><Icon name="add" />Add New Custom Mapping</h3>
               <div className="form-group">
                 <label htmlFor="new-game-title">Game title</label>
-                <input id="new-game-title" type="text" value={newGameName} onChange={e => setNewGameName(e.target.value)} placeholder="e.g. Hades" />
+                <input
+                  id="new-game-title"
+                  type="text"
+                  autoComplete="off"
+                  className={newGameNameError ? 'input-error' : ''}
+                  aria-invalid={newGameNameError ? true : undefined}
+                  aria-describedby={newGameNameError ? 'new-game-title-error' : undefined}
+                  value={newGameName}
+                  onChange={e => { setNewGameName(e.target.value); if (newGameNameError) setNewGameNameError(null); }}
+                  placeholder="e.g. The Witcher 3: Wild Hunt"
+                />
+                {newGameNameError && <p id="new-game-title-error" className="error-text" role="alert">{newGameNameError}</p>}
               </div>
               <div className="form-group">
-                <label htmlFor="new-game-win">Windows origin path</label>
-                <input id="new-game-win" type="text" value={newGameWin} onChange={e => setNewGameWin(e.target.value)} placeholder="%USERPROFILE%\Documents\Saved Games\Hades" />
+                <label htmlFor="new-game-win">Windows save folder</label>
+                <input id="new-game-win" type="text" aria-describedby="save-folder-hint" value={newGameWin} onChange={e => setNewGameWin(e.target.value)} placeholder="%USERPROFILE%\Documents\Saved Games\Hades" />
               </div>
               <div className="form-group">
-                <label htmlFor="new-game-lin">Linux origin path</label>
-                <input id="new-game-lin" type="text" value={newGameLin} onChange={e => setNewGameLin(e.target.value)} placeholder="~/.local/share/Hades/Saves" />
+                <label htmlFor="new-game-lin">Linux save folder</label>
+                <input id="new-game-lin" type="text" aria-describedby="save-folder-hint" value={newGameLin} onChange={e => setNewGameLin(e.target.value)} placeholder="~/.local/share/Hades/Saves" />
               </div>
+              <p id="save-folder-hint" className="text-muted text-sm form-hint">
+                The folder where the game writes its save files, not where it is installed. Fill in at least one.
+              </p>
               <button className="btn btn-primary" onClick={handleAddGame}><Icon name="check" />Save Mapping</button>
             </div>
 
@@ -937,8 +1260,12 @@ export default function App() {
                   {games.map(g => (
                     <div key={g.id} className="path-row">
                       <div className="path-main">
-                        <strong>{g.name}</strong>
-                        <div className="path-sub">{g.linPath || g.winPath || 'No path set'}</div>
+                        <div className="path-name-row">
+                          <strong>{g.name}</strong>
+                          <SourceBadge game={g} />
+                        </div>
+                        <GamePathInfo game={g} />
+                        <LaunchSettings game={g} prefixes={launchPrefixes} emulators={emulators} onUpdated={updateGame} />
                       </div>
                       <button className="btn btn-secondary btn-sm" onClick={() => handleLaunch(g)} disabled={launchingGameId !== null}>
                         <Icon name="play" size={14} />{launchingGameId === g.id ? 'Launching...' : 'Launch'}
@@ -962,84 +1289,107 @@ export default function App() {
             <div className="section-header">
               <div>
                 <h2>Prefix &amp; Runtime Manager</h2>
-                <p className="text-muted">Wine, Proton, Heroic, and Lutris runtimes detected on this device.</p>
+                <p className="text-muted">Wine prefixes Dune created on this device.</p>
               </div>
               <button className="btn btn-secondary" onClick={loadPrefixes} disabled={isLoadingPrefixes}>
                 <Icon name="refresh" />
-                {isLoadingPrefixes ? 'Scanning...' : 'Rescan'}
+                {isLoadingPrefixes ? 'Loading…' : 'Refresh'}
               </button>
             </div>
 
             <div className="card">
               <h3 className="card-title"><Icon name="add" />Create Wine Prefix</h3>
-              <div className="form-group">
-                <label htmlFor="new-prefix-path">Prefix path</label>
-                <input
-                  id="new-prefix-path"
-                  type="text"
-                  value={newPrefixPath}
-                  onChange={e => setNewPrefixPath(e.target.value)}
-                  placeholder="~/.local/share/wineprefixes/MyGame"
-                />
-              </div>
-              <button className="btn btn-primary" onClick={handleCreatePrefix} disabled={!newPrefixPath.trim()}>
-                <Icon name="check" />Create Prefix
-              </button>
+              <form noValidate onSubmit={e => { e.preventDefault(); void handleCreatePrefix(); }}>
+                <div className="form-group">
+                  <label htmlFor="new-prefix-name">Prefix name</label>
+                  <input
+                    id="new-prefix-name"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    maxLength={MAX_PREFIX_NAME * 2}
+                    className={newPrefixError ? 'input-error' : ''}
+                    aria-invalid={newPrefixError ? true : undefined}
+                    aria-describedby={newPrefixError ? 'new-prefix-hint new-prefix-error' : 'new-prefix-hint'}
+                    value={newPrefixName}
+                    onChange={e => { setNewPrefixName(e.target.value); if (newPrefixError) setNewPrefixError(null); }}
+                    placeholder="e.g. Hades"
+                  />
+                  <p id="new-prefix-hint" className="form-hint">Dune creates the folder in its own prefix location.</p>
+                  {newPrefixError && <p id="new-prefix-error" className="error-text" role="alert">{newPrefixError}</p>}
+                </div>
+                <button type="submit" className="btn btn-primary" aria-disabled={creatingPrefix || undefined}>
+                  <Icon name="check" />{creatingPrefix ? 'Creating…' : 'Create Prefix'}
+                </button>
+              </form>
             </div>
 
             <div className="card">
-              <h3 className="card-title"><Icon name="folder" />Detected Runtimes</h3>
-              {!prefixSummary ? (
+              <h3 className="card-title" ref={prefixListHeadingRef} tabIndex={-1}><Icon name="folder" />Dune prefixes</h3>
+              {prefixLoadError ? (
+                <div className="inline-error" role="alert">
+                  <span>{prefixLoadError}</span>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={loadPrefixes}>Try again</button>
+                </div>
+              ) : !prefixes ? (
                 <div className="empty-state">
                   <Icon name="folder" size={28} />
-                  <p>{isLoadingPrefixes ? 'Scanning runtimes...' : 'Run a scan to discover installed runtimes.'}</p>
-                  {!isLoadingPrefixes && <button className="btn btn-secondary" onClick={loadPrefixes}>Scan now</button>}
+                  <p>{isLoadingPrefixes ? 'Loading prefixes…' : 'Load the prefixes Dune manages on this device.'}</p>
+                  {!isLoadingPrefixes && <button className="btn btn-secondary" onClick={loadPrefixes}>Load prefixes</button>}
                 </div>
+              ) : prefixes.length === 0 ? (
+                <p className="text-muted text-sm">No prefixes yet. Create one above.</p>
               ) : (
-                prefixGroups.map(group => (
-                  <div className="prefix-group" key={group.label}>
-                    <h4 className="section-subtitle">
-                      {group.label} <span className="badge">{group.entries.length}</span>
-                    </h4>
-                    {group.entries.length === 0 ? (
-                      <p className="text-muted text-sm">No {group.label} runtimes found.</p>
-                    ) : (
-                      <div className="path-list">
-                        {group.entries.map(entry => (
-                          <div className="path-row" key={entry.path}>
-                            <div className="path-main">
-                              <strong>{entry.name}</strong>
-                              <div className="path-sub">
-                                {entry.path}
-                                {entry.version ? ` · ${entry.version}` : ''}
-                                {typeof entry.sizeBytes === 'number' ? ` · ${formatBytes(entry.sizeBytes)}` : ''}
-                              </div>
-                            </div>
-                            {group.canManage && (
-                              <div className="prefix-actions">
-                                <button className="btn btn-secondary btn-sm" onClick={() => handleBackupPrefix(entry.path)}>Backup</button>
-                                <button className="btn btn-secondary btn-sm btn-danger-full" onClick={() => handleDeletePrefix(entry.path)}>
-                                  {pendingPrefixDelete === entry.path ? 'Confirm delete' : 'Delete'}
-                                </button>
-                                {pendingPrefixDelete === entry.path && (
-                                  <button className="btn btn-secondary btn-sm" onClick={() => setPendingPrefixDelete(null)}>Cancel</button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                <ul className="path-list prefix-list">
+                  {prefixes.map(prefix => (
+                    <li className="path-row" key={prefix.id}>
+                      <div className="path-main">
+                        <strong>{prefix.name}</strong>
+                        <div className="path-sub" title={prefix.path}>{prefix.path}</div>
+                        {prefixRowError?.id === prefix.id && <p className="error-text" role="alert">{prefixRowError.message}</p>}
                       </div>
-                    )}
-                  </div>
-                ))
+                      <div className="prefix-actions">
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          aria-label={`Backup ${prefix.name}`}
+                          aria-disabled={prefixBusyId === prefix.id || undefined}
+                          onClick={() => handleBackupPrefix(prefix)}
+                        >
+                          Backup
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          aria-label={`Delete ${prefix.name}`}
+                          aria-disabled={prefixBusyId === prefix.id || undefined}
+                          onClick={() => { if (!prefixBusyId) setPrefixToDelete(prefix); }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
+            <ConfirmDialog
+              open={prefixToDelete !== null}
+              title="Delete this prefix?"
+              confirmLabel="Move to Trash"
+              onCancel={() => setPrefixToDelete(null)}
+              onConfirm={() => { if (prefixToDelete) void handleDeletePrefix(prefixToDelete); }}
+            >
+              <p><strong>{prefixToDelete?.name}</strong></p>
+              <p className="path-value">{prefixToDelete?.path}</p>
+              <p className="muted">Moves the folder to the Trash.</p>
+            </ConfirmDialog>
           </div>
         )}
 
         {activeTab === 'sync' && (
           <div>
-            <h2 className="section-title"><Icon name="sync" size={20} />Cloud Sync &amp; Local Backup</h2>
+            <h2 className="section-title"><Icon name="sync" size={20} />Server Sync &amp; Local Backup</h2>
 
             {syncProgress && (
               <div className={`card sync-progress-card ${syncProgress.done ? (syncProgress.success ? 'sync-done' : 'sync-error') : 'sync-active'}`}>
@@ -1126,40 +1476,85 @@ export default function App() {
             )}
           </div>
         )}
+        {/* Stays mounted while the modal is open so focus can return to it. */}
+        {activeTab === 'saves' && activeConflict && (
+          <div className="conflict-banner" role="status">
+            <Icon name="warning" size={16} />
+            <span className="conflict-banner-text">A save conflict for this game is waiting for your decision.</span>
+            <button className="btn btn-primary btn-sm" onClick={() => setConflictDialog(conflictDialogFor(activeConflict, selectedSaveGameName, visibleSaveVersions))}>Review conflict</button>
+          </div>
+        )}
         {activeTab === 'saves' && (
           <div className="card">
             <h3 className="card-title">Save versions</h3>
-            <SaveVersionTimeline versions={saveVersions.length ? saveVersions : DEMO_SAVE_VERSIONS} onRestore={async (id) => { const res = await window.electronAPI.restoreSaveVersion(selectedSaveGameName, id); showToast(res?.message || 'Restore requested', res?.success ? 'success' : 'error'); }} />
+            <SaveVersionTimeline versions={visibleSaveVersions.length ? visibleSaveVersions : DEMO_SAVE_VERSIONS} onRestore={async (id) => { const res = await window.electronAPI.restoreSaveVersion(selectedSaveGameName, id); if (res.ok) showToast(res.message || 'Restore requested', 'success'); else showToast(serverFailureMessage(res), 'error'); }} />
           </div>
         )}
         {activeTab === 'saves' && (
           <div className="card">
             <h3 className="card-title">Storage manager</h3>
-            <StorageManager drives={[{ name: storageEntry?.drive ?? 'D:\\', totalBytes: 2 * 1024 * 1024 * 1024 * 1024, freeBytes: 690 * 1024 * 1024 * 1024 }]} entries={storageEntry ? [storageEntry] : DEMO_STORAGE_ENTRIES} />
+            <DriveSpaceList rows={driveRows} error={driveError} onRetry={loadDrives} />
+            {storageEntries.length > 0 && (
+              <StorageManager drives={[]} entries={storageEntries} />
+            )}
           </div>
         )}
         {activeTab === 'saves' && (
           <div className="card">
             <h3 className="card-title">Smart exclusions</h3>
-            <ExclusionEditor profile={backupProfile ?? DEMO_BACKUP_PROFILE} files={[{ path: 'saves/slot1.sav', size: 6.6 * 1024 * 1024, category: 'Save' }, { path: 'ShaderCache/file.bin', size: 412 * 1024 * 1024, category: 'Cache' }]} onChange={async (profile) => { if (selectedSaveGameName) { const res = await window.electronAPI.setBackupProfile({ ...profile, game: selectedSaveGameName }); if (res?.success && res.profile) setBackupProfile(res.profile); showToast(res?.message || 'Backup profile updated', res?.success ? 'success' : 'error'); } }} />
+            {!exclusionProfile ? (
+              <p className="text-muted text-sm">No backup profile for this game yet. Exclusions appear after the first backup.</p>
+            ) : (
+            <ExclusionEditor key={`${selectedSaveGameName}:${exclusionProfile.gameId}`} profile={exclusionProfile} files={DEMO_EXCLUSION_FILES} onChange={async (profile) => { if (selectedSaveGameName && selectedSaveGameId !== null) { const gameId = selectedSaveGameId; const res = await window.electronAPI.setBackupProfile({ ...profile, game: selectedSaveGameName }); if (!res.ok) { showToast(serverFailureMessage(res), 'error'); return; } if (res.profile && savesGate.current.currentKey() === gameId) setBackupProfile(res.profile); showToast(res.message || 'Backup profile updated', 'success'); } }} />
+            )}
           </div>
         )}
-        <ConflictModal conflict={activeConflict} localVersion={saveVersions.find(v => v.id === activeConflict?.localVersionId)} remoteVersion={saveVersions.find(v => v.id === activeConflict?.remoteVersionId)} open={showConflictModal} onClose={() => setShowConflictModal(false)} onResolve={async (resolution) => { if (activeConflict) { const res = await window.electronAPI.resolveConflict(activeConflict.id, resolution); if (res?.success) { setConflicts((prev) => prev.map((c) => c.id === activeConflict.id ? { ...c, resolution, resolvedAt: new Date().toISOString() } : c)); setShowConflictModal(false); showToast('Conflict resolved', 'success'); } else showToast(res?.message || 'Failed to resolve conflict', 'error'); } }} />
+        <ConflictModal conflict={conflictDialog?.conflict ?? null} localVersion={conflictDialog?.local} remoteVersion={conflictDialog?.remote} open={conflictDialog !== null} onClose={() => setConflictDialog(null)} onResolve={async (resolution) => {
+          // Always acts on the conflict the dialog is showing, whatever game is selected now.
+          const target = conflictDialog?.conflict;
+          if (!target) return;
+          // "Decide later" (also Escape) always dismisses; the banner keeps it reachable.
+          if (resolution === 'later') setConflictDialog(null);
+          try {
+            const res = await window.electronAPI.resolveConflict(target.id, resolution);
+            if (res.ok) {
+              setConflicts((prev) => prev.map((c) => c.id === target.id ? { ...c, resolution, resolvedAt: new Date().toISOString() } : c));
+              setConflictDialog(prev => (prev?.conflict.id === target.id ? null : prev));
+              showToast(resolution === 'later' ? 'Conflict saved for later' : 'Conflict resolved', resolution === 'later' ? 'info' : 'success');
+            } else showToast(serverFailureMessage(res), 'error');
+          } catch {
+            showToast('Failed to resolve conflict', 'error');
+          }
+        }} />
         {activeTab === 'bigpicture' && (
           <BigPicture games={games} onLaunch={handleLaunch} />
         )}
         {activeTab === 'hltb' && (
-          <HLTBView games={games} cache={hltbCache} loading={hltbLoading} onLoad={loadHLTB} />
+          hasServer ? (
+            <HLTBView games={games} cache={hltbCache} loading={hltbLoading} onLoad={loadHLTB} />
+          ) : (
+            <div>
+              <div className="section-header">
+                <h2>HowLongToBeat</h2>
+                <p className="text-muted">Estimated completion times for tracked games.</p>
+              </div>
+              <NoServerNotice what="load HowLongToBeat times" onOpenSettings={openServerSettings} />
+            </div>
+          )
         )}
         {activeTab === 'playtime' && (
           <div>
             <div className="section-header">
               <h2>Playtime Tracking</h2>
-              <button className="btn btn-secondary" onClick={loadPlaytime} disabled={isLoadingPlaytime}>
+              <button className="btn btn-secondary" onClick={loadPlaytime} disabled={!hasServer || isLoadingPlaytime}>
                 <Icon name="refresh" />
                 {isLoadingPlaytime ? 'Loading...' : 'Refresh'}
               </button>
             </div>
+            {!hasServer ? (
+              <NoServerNotice what="see playtime across your devices" onOpenSettings={openServerSettings} />
+            ) : (
+              <>
             <div className="stats-row">
               <div className="card stat-card stat-accent">
                 <div className="stat-value">{formatMinutes(totalPlaytime)}</div>
@@ -1204,6 +1599,8 @@ export default function App() {
                 </div>
               )}
             </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1211,11 +1608,15 @@ export default function App() {
           <div>
             <div className="section-header">
               <h2>Achievements</h2>
-              <button className="btn btn-secondary" onClick={loadAchievements} disabled={isLoadingAch}>
+              <button className="btn btn-secondary" onClick={loadAchievements} disabled={!hasServer || isLoadingAch}>
                 <Icon name="refresh" />
                 {isLoadingAch ? 'Loading...' : 'Refresh'}
               </button>
             </div>
+            {!hasServer ? (
+              <NoServerNotice what="see and import achievements" onOpenSettings={openServerSettings} />
+            ) : (
+              <>
             {games.length > 0 && (
               <div className="card">
                 <h3 className="card-title"><Icon name="scan" />Local Achievement Import</h3>
@@ -1323,6 +1724,8 @@ export default function App() {
                 </div>
               </div>
             )}
+              </>
+            )}
           </div>
         )}
 
@@ -1346,12 +1749,25 @@ export default function App() {
               <p className="text-muted text-sm">
                 Provide an API key from SteamGridDB to enable automatic game thumbnail fetching.
               </p>
+              <label htmlFor="steamgriddb-key">SteamGridDB API key</label>
               <input
-                type="password"
-                value={settings.steamGridDbKey || ''}
-                onChange={e => saveSettings({ steamGridDbKey: e.target.value })}
+                id="steamgriddb-key"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                data-1p-ignore
+                data-lpignore="true"
+                className="masked-input"
+                aria-invalid={fieldErrors.steamGridDbKey ? true : undefined}
+                aria-describedby={fieldErrors.steamGridDbKey ? 'steamgriddb-key-error' : undefined}
+                value={steamGridDbKeyDraft ?? settings.steamGridDbKey ?? ''}
+                onChange={e => { setSteamGridDbKeyDraft(e.target.value); scheduleCommit('steamGridDbKey', e.target.value); }}
+                onBlur={e => { if (steamGridDbKeyDraft !== null) commitField('steamGridDbKey', e.target.value); }}
                 placeholder="Paste API Key here"
               />
+              {fieldErrors.steamGridDbKey && (
+                <p id="steamgriddb-key-error" className="error-text" role="alert">{fieldErrors.steamGridDbKey}</p>
+              )}
             </div>
 
             <div className="card">
@@ -1378,29 +1794,71 @@ export default function App() {
                 <input
                   id="server-url"
                   type="text"
-                  className={!cloud.url || isValidUrl(cloud.url) ? '' : 'input-error'}
+                  inputMode="url"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className={fieldErrors.serverUrl ? 'input-error' : ''}
+                  aria-invalid={fieldErrors.serverUrl ? true : undefined}
+                  aria-describedby={fieldErrors.serverUrl ? 'server-url-error' : undefined}
                   placeholder="e.g. http://192.168.1.100:3030"
-                  value={cloud.url}
-                  onChange={e => saveCloud({ url: e.target.value })}
+                  value={serverUrlDraft ?? cloud.url}
+                  onChange={e => { setServerUrlDraft(e.target.value); scheduleCommit('serverUrl', e.target.value); }}
+                  onBlur={e => { if (serverUrlDraft !== null) commitField('serverUrl', e.target.value); }}
                 />
-                {cloud.url && !isValidUrl(cloud.url) && (
-                  <p className="error-text">Invalid URL format</p>
+                {fieldErrors.serverUrl && (
+                  <p id="server-url-error" className="error-text" role="alert">{fieldErrors.serverUrl}</p>
                 )}
               </div>
 
               <div className="form-group">
-                <label htmlFor="server-api-key">Server API key</label>
-                <input
-                  id="server-api-key"
-                  type="password"
-                  placeholder="Paste a key from the server (required for sync)"
-                  value={serverApiKey}
-                  onChange={e => handleServerKeyChange(e.target.value)}
-                />
-                {!serverApiKey && (
-                  <p className="error-text">No key set — server features will be rejected (401).</p>
+                <label htmlFor="server-api-key">Server API key on this PC</label>
+                <p id="server-api-key-status" className="key-status-line" role="status" aria-live="polite">
+                  Key on this PC: <span className={serverKeySet ? 'key-status key-status-set' : 'key-status'}>{serverKeySet ? 'Set' : 'Not set'}</span>
+                </p>
+                <div className="key-input-row">
+                  <input
+                    id="server-api-key"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    data-1p-ignore
+                    data-lpignore="true"
+                    className={`masked-input${fieldErrors.serverKey ? ' input-error' : ''}`}
+                    aria-invalid={fieldErrors.serverKey ? true : undefined}
+                    aria-describedby={fieldErrors.serverKey ? 'server-api-key-status server-api-key-error' : 'server-api-key-status server-api-key-hint'}
+                    placeholder={serverKeySet ? 'Paste a new key to replace it' : 'Paste a key from the server (required for sync)'}
+                    value={serverKeyDraft ?? ''}
+                    onChange={e => { setServerKeyDraft(e.target.value); scheduleCommit('serverKey', e.target.value); }}
+                    onBlur={e => { if (serverKeyDraft !== null) commitField('serverKey', e.target.value); }}
+                  />
+                  {serverKeySet && (
+                    <button type="button" className="btn btn-secondary" onClick={() => setConfirmClearServerKey(true)}>Clear key</button>
+                  )}
+                </div>
+                {fieldErrors.serverKey ? (
+                  <p id="server-api-key-error" className="error-text" role="alert">{fieldErrors.serverKey}</p>
+                ) : (
+                  <p id="server-api-key-hint" className={serverKeySet ? 'form-hint' : 'error-text'}>
+                    {serverKeySet
+                      ? 'The saved key is never shown. Saves automatically when you stop typing.'
+                      : 'No key set. The server will reject sync and settings requests.'}
+                  </p>
                 )}
               </div>
+              <ConfirmDialog
+                open={confirmClearServerKey}
+                title="Clear this PC's server key?"
+                confirmLabel="Clear key"
+                onCancel={() => setConfirmClearServerKey(false)}
+                onConfirm={() => {
+                  setConfirmClearServerKey(false);
+                  setServerKeyDraft(null);
+                  serverKeyQueue.enqueue('');
+                }}
+              >
+                <p className="muted">This PC stops sending a key, so the Dune server rejects its requests until you paste a new one.</p>
+              </ConfirmDialog>
 
               <div className="btn-row">
                 <button className="btn btn-primary" onClick={handleTestCloud}><Icon name="plug" />Test Server Connection</button>
@@ -1422,8 +1880,9 @@ export default function App() {
                 Enable automatic background sync
               </label>
 
-              <label>Sync Frequency</label>
+              <label htmlFor="auto-sync-freq">Sync Frequency</label>
               <select
+                id="auto-sync-freq"
                 value={settings.autoSyncFreq}
                 onChange={e => saveSettings({ autoSyncFreq: e.target.value })}
                 disabled={!settings.autoSyncEnabled}
@@ -1435,16 +1894,24 @@ export default function App() {
               </select>
             </div>
 
+            <WhereItRuns
+              serverUrl={cloud.url}
+              serverKeySet={serverKeySet}
+              connectionVersion={serverConnectionVersion}
+              serverUrlFieldId="server-url"
+              serverKeyFieldId="server-api-key"
+            />
+
             <div className="card">
               <h3 className="card-title"><Icon name="settings" />Appearance and Language</h3>
-              <label>Theme</label>
-              <select value={themeId} onChange={(e) => setThemeId(e.target.value)}>
+              <label htmlFor="theme-select">Theme</label>
+              <select id="theme-select" value={themeId} onChange={(e) => setThemeId(e.target.value)}>
                 {loadThemes().map((theme) => (
                   <option key={theme.id} value={theme.id}>{theme.name}</option>
                 ))}
               </select>
-              <label>{t(locale, 'settings.language')}</label>
-              <select value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
+              <label htmlFor="locale-select">{t(locale, 'settings.language')}</label>
+              <select id="locale-select" value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
                 {availableLocales.map((item) => (
                   <option key={item} value={item}>{item}</option>
                 ))}
@@ -1456,14 +1923,17 @@ export default function App() {
       </div>
 
       <div className="toast-container">
-        {toasts.map(t => (
-          <div key={t.id} className={`toast toast-${t.type}`}>
-            {t.type === 'success' && <Icon name="check" size={16} />}
-            {t.type === 'error' && <Icon name="alert" size={16} />}
-            {t.type === 'info' && <Icon name="info" size={16} />}
-            <span>{t.message}</span>
-          </div>
-        ))}
+        {/* Live regions stay mounted so screen readers announce new toasts. */}
+        <div className="toast-region" role="status" aria-live="polite">
+          {toasts.filter(t => t.type !== 'error').map(t => (
+            <ToastItem key={t.id} toast={t} onDismiss={dismissToast} />
+          ))}
+        </div>
+        <div className="toast-region" role="alert">
+          {toasts.filter(t => t.type === 'error').map(t => (
+            <ToastItem key={t.id} toast={t} onDismiss={dismissToast} />
+          ))}
+        </div>
       </div>
     </div>
   );

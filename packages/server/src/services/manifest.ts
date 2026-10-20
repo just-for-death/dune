@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { FileFingerprint } from '@dune/shared';
-import { getGameRoot } from '../utils/path.js';
+import { getGameRoot, resolveGameFile } from '../utils/path.js';
 import { logger } from '../middleware/logging.js';
 
 export interface ManifestEntry extends FileFingerprint {
@@ -34,13 +34,13 @@ function fingerprint(absPath: string): (FileFingerprint & { hash: string }) | nu
 }
 
 /**
- * Walk a game's save tree (anything under `data/saves/<game>`, excluding the
+ * Walk a game's save tree (anything under `saves/<ownerId>/<gameId>`, excluding the
  * `.versions` history and symlinks) and fingerprint every file. Paths are
  * relative to the game root and use the platform separator, matching the
  * `x-path` values the client uploads with.
  */
-export function manifestForGame(gameName: string, ownerId?: string): ManifestEntry[] {
-  const root = getGameRoot(gameName, ownerId);
+export function manifestForGame(gameId: number, ownerId: string): ManifestEntry[] {
+  const root = getGameRoot(gameId, ownerId);
   if (!fs.existsSync(root)) return [];
 
   const entries: ManifestEntry[] = [];
@@ -73,8 +73,13 @@ export function manifestForGame(gameName: string, ownerId?: string): ManifestEnt
  * whole subtree so zip extraction (which can restore original mtimes) can't
  * leave a stale entry behind.
  */
-export function invalidateGame(gameName: string, ownerId?: string): void {
-  const prefix = getGameRoot(gameName, ownerId) + path.sep;
+export function invalidateGame(gameId: number, ownerId: string): void {
+  let prefix: string;
+  try {
+    prefix = getGameRoot(gameId, ownerId) + path.sep;
+  } catch {
+    return; // invalid id/owner: no folder, so nothing can be cached for it
+  }
   for (const key of hashCache.keys()) {
     if (key.startsWith(prefix)) hashCache.delete(key);
   }
@@ -86,19 +91,23 @@ export function clearManifestCache(): void {
 }
 
 /**
- * Delete a single file inside a game's save tree. `relPath` is validated by the
- * caller (`validateGamePath`); this only performs the unlink + cache drop.
+ * Delete a single file inside a game's save tree (DUN-086). `relPath` is the
+ * raw client value: it is validated here (shared lexical rules, no symlinks,
+ * strictly inside the game root) and only the validated absolute path is
+ * used. Throws PathRuleError for a rejected path (callers answer 400);
+ * returns false when the file does not exist or is not a regular file.
  */
-export function removeGameFile(gameName: string, relPath: string, ownerId?: string): boolean {
-  const abs = path.join(getGameRoot(gameName, ownerId), relPath);
+export function removeGameFile(gameId: number, relPath: string, ownerId: string): boolean {
+  const { abs, rel } = resolveGameFile(gameId, relPath, ownerId);
   try {
-    if (!fs.existsSync(abs)) return false;
+    const st = fs.lstatSync(abs, { throwIfNoEntry: false });
+    if (!st || !st.isFile()) return false;
     fs.rmSync(abs);
     hashCache.delete(abs);
-    logger.info({ game: gameName, path: relPath }, 'Removed save file');
+    logger.info({ gameId, path: rel }, 'Removed save file');
     return true;
   } catch (err) {
-    logger.warn({ err, game: gameName, path: relPath }, 'Failed to remove save file');
+    logger.warn({ err, gameId, path: rel }, 'Failed to remove save file');
     return false;
   }
 }

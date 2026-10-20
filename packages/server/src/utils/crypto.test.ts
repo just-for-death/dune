@@ -5,13 +5,14 @@ import * as path from 'node:path';
 import { hashApiKey, looksHashed, isValidApiKey, getServerSecret } from './crypto.js';
 
 const FIXED_SECRET = 'test-secret-0123456789abcdef-test-secret';
-const ORIGINAL_DATA_DIR = process.env.DATA_DIR;
+// Temp dir from src/test/setup.ts (DUN-005): never unset it, or the
+// secret lookups below would fall back to the real data/.api-secret.
+const SETUP_DATA_DIR = process.env.DATA_DIR as string;
 
 afterEach(() => {
   delete process.env.API_KEY_SECRET;
   delete process.env.API_KEY_SALT;
-  if (ORIGINAL_DATA_DIR === undefined) delete process.env.DATA_DIR;
-  else process.env.DATA_DIR = ORIGINAL_DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR;
 });
 
 describe('hashApiKey', () => {

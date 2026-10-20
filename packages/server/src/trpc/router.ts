@@ -2,7 +2,6 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { router, publicProcedure, authedProcedure, adminProcedure } from './trpc.js';
 import { database } from '../db/index.js';
-import { nextId } from '@dune/shared';
 import { handleLocalSync } from '../services/sync.js';
 import { manifestForGame, removeGameFile } from '../services/manifest.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from '../services/ollama.js';
@@ -10,31 +9,62 @@ import { getHLTBTimes, bulkFetchHLTB } from '../services/hltb.js';
 import { searchArt, autoMatchAll } from '../services/steamGridDB.js';
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from '../services/playtime.js';
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from '../services/achievements.js';
-import { normalizeUrl, getGameRoot, listFilesInDir, validateGamePath } from '../utils/path.js';
-import type { User } from '../types/index.js';
+import {
+  normalizeUrl, getGameRoot, listFilesInDir, resolveGameSubdir, requireGameTitle, PathRuleError,
+} from '../utils/path.js';
+
+/** Upload snapshot folder ids: digits only (see sync.ts safeVersionId). */
+const UPLOAD_VERSION_ID = /^\d{1,20}$/;
+import { gameNotFound, findLaunchFields, LaunchFieldError } from '../utils/apiError.js';
+import { validateRelativeSavePath } from '@dune/shared/pathRules';
+import { VERSION_DIR_ID } from '../services/saveVersions.js';
+import type { Game, User } from '../types/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
 
-const gameInput = z.object({
+// DUN-061: launch/exec fields (executable, args, env, cwd, wine*/proton*...)
+// are device-local. Zod would silently strip unknown keys, so they are
+// rejected explicitly before parsing: BAD_REQUEST, data.code LAUNCH_FIELD_NOT_ALLOWED.
+// winPath/linPath are no longer accepted (the server never stores them).
+const gameInput = z.unknown().superRefine((raw, ctx) => {
+  const found = findLaunchFields(raw);
+  if (found.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: new LaunchFieldError(found).message, params: { code: 'LAUNCH_FIELD_NOT_ALLOWED' } });
+  }
+}).pipe(z.object({
   name: z.string().min(1),
-  winPath: z.string().optional(),
-  linPath: z.string().optional(),
   status: z.enum(['In Sync', 'Pending Upload', 'Error']).optional(),
   lastSync: z.string().optional(),
   thumbnail: z.string().optional(),
-});
+}).strict());
 
 const userRole = z.enum(['admin', 'member']);
 
-/** Members may only touch their own games; admins may touch anything. */
-function assertGameAccess(user: User, gameName: string): string {
-  const name = path.basename(gameName);
-  if (!database.canAccessGame(user, name)) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'No access to this game' });
-  }
-  return name;
+/**
+ * DUN-087/088: the caller's own game with this title (validated,
+ * case-insensitive). Admins address another user's game only with an explicit
+ * `owner`. Unknown / other users' titles are NOT_FOUND (GAME_NOT_FOUND).
+ */
+function requireGame(user: User, rawTitle: string, owner?: string): Game {
+  const game = findGameOrNull(user, rawTitle, owner);
+  if (!game) throw new TRPCError({ code: 'NOT_FOUND', message: 'Game not found', cause: gameNotFound() });
+  return game;
 }
+
+/** Like requireGame, but an unknown title (in the target namespace) is null. */
+function findGameOrNull(user: User, rawTitle: string, owner?: string): Game | null {
+  const title = requireGameTitle(rawTitle);
+  let ownerId = user.id;
+  if (owner && owner !== user.id) {
+    if (user.role !== 'admin') throw new TRPCError({ code: 'FORBIDDEN', message: 'Only admins may target another owner' });
+    if (!database.getUserById(owner)) throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
+    ownerId = owner;
+  }
+  return database.findGame(ownerId, title) ?? null;
+}
+
+const gameRef = z.object({ game: z.string(), owner: z.string().optional() });
 
 /** `undefined` = all owners (admin view); otherwise scope to that user. */
 function ownerScope(user: User): string | undefined {
@@ -63,26 +93,37 @@ export const appRouter = router({
     add: authedProcedure
       .input(gameInput)
       .mutation(async ({ ctx, input }) => {
-        const games = await database.upsertGame({
-          ...input,
+        // DUN-086/093: shared title rules; stored name is the trimmed title.
+        const name = requireGameTitle(input.name);
+        const game = database.upsertGame({
+          name,
           ownerId: ctx.user.id,
-          id: nextId(),
           status: input.status || 'Pending Upload',
           lastSync: input.lastSync || 'Never',
-          // undefined preserves an existing game's cover art on re-add;
-          // upsertGame defaults it to '' for brand-new rows.
+          // undefined preserves an existing game's cover art on re-add.
           thumbnail: input.thumbnail,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
         });
-        return { success: true, games };
+        // `games` (the row) kept for the existing client contract.
+        return { success: true, games: game };
+      }),
+
+    rename: authedProcedure
+      .input(z.object({ id: z.number().int().positive(), name: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        // Files stay in saves/<owner>/<gameId>; only the row changes.
+        const r = database.renameGame(input.id, ctx.user.id, requireGameTitle(input.name));
+        if (r === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Game not found', cause: gameNotFound() });
+        if (r === 'conflict') throw new TRPCError({ code: 'CONFLICT', message: 'A game with this name already exists' });
+        return { success: true };
       }),
 
     remove: authedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const deleted = database.deleteGame(input.id, ownerScope(ctx.user));
-        if (!deleted) throw new TRPCError({ code: 'NOT_FOUND', message: 'Game not found' });
+        // DUN-087: callers delete only their own games.
+        const deleted = database.deleteGame(input.id, ctx.user.id);
+        if (!deleted) throw new TRPCError({ code: 'NOT_FOUND', message: 'Game not found', cause: gameNotFound() });
+        fs.rmSync(getGameRoot(input.id, ctx.user.id), { recursive: true, force: true });
         return { success: true };
       }),
   },
@@ -108,34 +149,35 @@ export const appRouter = router({
     }),
 
     manifest: authedProcedure
-      .input(z.object({ game: z.string() }))
+      .input(gameRef)
       .query(async ({ ctx, input }) => {
-        const gameName = assertGameAccess(ctx.user, input.game);
-        return { success: true, files: manifestForGame(gameName, ctx.user.id) };
+        const g = findGameOrNull(ctx.user, input.game, input.owner);
+        return { success: true, files: g ? manifestForGame(g.id, g.ownerId) : [] };
       }),
   },
 
   files: {
     list: authedProcedure
-      .input(z.object({ game: z.string() }))
+      .input(gameRef)
       .query(async ({ ctx, input }) => {
-        const gameName = assertGameAccess(ctx.user, input.game);
-        const gameDir = getGameRoot(gameName, ctx.user.id);
+        const g = findGameOrNull(ctx.user, input.game, input.owner);
+        if (!g) return { success: true, files: [] };
+        const gameDir = getGameRoot(g.id, g.ownerId);
         if (!fs.existsSync(gameDir)) return { success: true, files: [] };
         const files = listFilesInDir(gameDir);
         return { success: true, files };
       }),
 
     remove: authedProcedure
-      .input(z.object({ game: z.string(), path: z.string() }))
+      .input(gameRef.extend({ path: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const gameName = assertGameAccess(ctx.user, input.game);
-        try {
-          validateGamePath(gameName, input.path, ctx.user.id);
-        } catch {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid path' });
-        }
-        if (!removeGameFile(gameName, input.path, ctx.user.id)) {
+        // DUN-086/087: own game only; removeGameFile validates the path
+        // (shared rules, no symlinks, strictly inside saves/<owner>/<gameId>).
+        // Rejects -> BAD_REQUEST with data.code (e.g. DOT_SEGMENT, OUTSIDE_ROOT).
+        const rel = validateRelativeSavePath(input.path);
+        if (!rel.ok) throw new PathRuleError(rel.code, rel.message);
+        const g = requireGame(ctx.user, input.game, input.owner);
+        if (!removeGameFile(g.id, input.path, g.ownerId)) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'File not found' });
         }
         return { success: true };
@@ -143,12 +185,13 @@ export const appRouter = router({
 
     versions: {
       list: authedProcedure
-        .input(z.object({ game: z.string() }))
+        .input(gameRef)
         .query(async ({ ctx, input }) => {
-          const gameName = assertGameAccess(ctx.user, input.game);
-          const versionsRoot = path.join(getGameRoot(gameName, ctx.user.id), '.versions');
+          const g = findGameOrNull(ctx.user, input.game, input.owner);
+          if (!g) return { success: true, versions: [] };
+          const versionsRoot = path.join(getGameRoot(g.id, g.ownerId), '.versions');
           if (!fs.existsSync(versionsRoot)) return { success: true, versions: [] };
-          const folders = fs.readdirSync(versionsRoot).filter(f => !isNaN(Number(f)));
+          const folders = fs.readdirSync(versionsRoot).filter(f => UPLOAD_VERSION_ID.test(f));
           const versions = folders.map(f => ({
             id: f,
             timestamp: new Date(parseInt(f)).toISOString()
@@ -157,13 +200,19 @@ export const appRouter = router({
         }),
 
       files: authedProcedure
-        .input(z.object({ game: z.string(), versionId: z.string().regex(/^\d+$/) }))
+        .input(gameRef.extend({ versionId: z.string() }))
         .query(async ({ ctx, input }) => {
-          const gameName = assertGameAccess(ctx.user, input.game);
-          const versionDir = path.join(getGameRoot(gameName, ctx.user.id), '.versions', input.versionId);
+          // DUN-125: stored snapshot ids only (digits from uploads, UUIDs
+          // from directory snapshots); anything else is BAD_REQUEST INVALID_VERSION_ID, then the same
+          // containment rules as file paths.
+          if (!VERSION_DIR_ID.test(input.versionId)) {
+            throw new PathRuleError('INVALID_VERSION_ID', 'Invalid version id');
+          }
+          const g = findGameOrNull(ctx.user, input.game, input.owner);
+          if (!g) return { success: true, files: [] };
+          const versionDir = resolveGameSubdir(g.id, `.versions/${input.versionId}`, g.ownerId);
           if (!fs.existsSync(versionDir)) return { success: true, files: [] };
-          const files = listFilesInDir(versionDir);
-          return { success: true, files };
+          return { success: true, files: listFilesInDir(versionDir) };
         }),
     },
   },
@@ -198,10 +247,8 @@ export const appRouter = router({
     set: authedProcedure
       .input(z.object({ gameName: z.string(), url: z.string().url() }))
       .mutation(async ({ ctx, input }) => {
-        const game = database.getGamesForUser(ctx.user).find(g => g.name === input.gameName);
-        if (!game) throw new TRPCError({ code: 'NOT_FOUND', message: 'Game not found' });
-        game.thumbnail = input.url;
-        database.upsertGame(game);
+        const game = requireGame(ctx.user, input.gameName);
+        database.upsertGame({ ...game, thumbnail: input.url });
         return { success: true };
       }),
   },
@@ -218,12 +265,8 @@ export const appRouter = router({
         const model = settings.ollamaModel || 'phi4-mini:latest';
         const result = await analyzeFilesAI(endpoint, model, input.gameName, input.files);
         if (result.success && result.analysis) {
-          const games = database.getGamesForUser(ctx.user);
-          const gameIdx = games.findIndex(g => g.name.toLowerCase() === input.gameName.toLowerCase());
-          if (gameIdx !== -1) {
-            games[gameIdx].analysis = result.analysis;
-            database.upsertGame(games[gameIdx]);
-          }
+          const game = database.findGame(ctx.user.id, requireGameTitle(input.gameName));
+          if (game) database.upsertGame({ ...game, analysis: result.analysis });
         }
         return result;
       }),

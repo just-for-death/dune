@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import request from 'supertest';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-integration-sync-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'integration-secret-0123456789abcdef';
 
@@ -15,7 +16,7 @@ const AUTH_KEY = 'integration-test-auth-key-01234';
 database.addApiKey(AUTH_KEY, 'Integration test key');
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });

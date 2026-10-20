@@ -5,7 +5,12 @@
   --bg: #0e0f13;
   --panel: #15171d;
   --panel-2: #1b1e26;
-  --line: #262b36;
+  --line: #262b36; /* subtle dividers and card edges */
+  /* Borders of interactive controls (inputs, selects, secondary buttons).
+     #666f84 = 3.81:1 on --bg, 3.56:1 on --panel, 3.31:1 on --panel-2 (WCAG 1.4.11). */
+  --control-border: #666f84;
+  /* Placeholder text: 6.21:1 on --bg (input background). */
+  --placeholder: #8a93a6;
   --text: #e9ebf1;
   --muted: #98a1b3;
   --sand: #e8b44a;
@@ -35,11 +40,32 @@ body {
   box-sizing: border-box;
 }
 
+/* Outline follows each element's own border-radius; no radius override, so
+   focusing a control never changes its shape. */
 :focus-visible {
   outline: 2px solid var(--sand);
   outline-offset: 2px;
-  border-radius: 4px;
 }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+button:focus-visible,
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--sand);
+  outline-offset: 2px;
+}
+
 
 .layout {
   display: flex;
@@ -161,7 +187,7 @@ body {
 
 .btn-secondary {
   background: var(--panel-2);
-  border-color: var(--line);
+  border-color: var(--control-border);
   color: var(--text);
 }
 
@@ -169,27 +195,34 @@ body {
   border-color: var(--muted);
 }
 
-input, select {
+input, select, textarea {
   width: 100%;
   padding: 10px 12px;
   border-radius: var(--radius-control);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-border);
   background-color: var(--bg);
   color: var(--text);
   font-family: inherit;
   font-size: 13.5px;
   margin-bottom: 12px;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-input:focus, select:focus {
+/* Text-like fields swap the outline for a 2px sand ring (border + shadow).
+   Checkboxes, radios and buttons keep the :focus-visible outline above. */
+input:not([type]):focus,
+input:is([type="text"], [type="password"], [type="search"], [type="email"], [type="url"], [type="number"], [type="tel"]):focus,
+select:focus,
+textarea:focus {
   outline: none;
   border-color: var(--sand);
+  box-shadow: 0 0 0 1px var(--sand);
 }
 
-input::placeholder {
-  color: var(--muted);
-  opacity: 0.7;
+input::placeholder,
+textarea::placeholder {
+  color: var(--placeholder);
+  opacity: 1;
 }
 
 label {
@@ -534,13 +567,27 @@ label {
   display: flex; flex-direction: column; gap: 8px; z-index: 9999;
   max-width: min(420px, 90vw);
 }
+.toast-region { display: flex; flex-direction: column; gap: 8px; }
+.toast-region:not(:empty) + .toast-region:not(:empty) { margin-top: 8px; }
 .toast {
-  padding: 11px 14px; border-radius: var(--radius-control); font-size: 13.5px;
+  padding: 11px 10px 11px 14px; border-radius: var(--radius-control); font-size: 13.5px;
   background: var(--panel-2); border: 1px solid var(--line);
   color: var(--text);
   animation: toast-in 0.2s ease-out;
   word-break: break-word;
+  display: flex; align-items: flex-start; gap: 10px;
 }
+.toast > .icon { flex-shrink: 0; margin-top: 2px; }
+.toast-message { flex: 1; min-width: 0; }
+.toast-close {
+  flex-shrink: 0;
+  display: grid; place-items: center;
+  width: 24px; height: 24px; margin: -2px 0;
+  padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted);
+  cursor: pointer;
+}
+.toast-close:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .toast-success { border-left: 3px solid var(--green); }
 .toast-error { border-left: 3px solid var(--red); }
 .toast-info { border-left: 3px solid var(--sand); }
@@ -577,6 +624,49 @@ label {
   color: var(--muted); pointer-events: none;
 }
 .search-input { padding-left: 36px; margin-bottom: 0; }
+
+.search-count { margin: -8px 0 16px; font-size: 13px; color: var(--muted); min-height: 0; }
+.search-count:empty { margin: 0; }
+
+/* ── Game paths & source badges ── */
+.game-title-row, .path-name-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 6px;
+}
+.game-title-row .game-title { margin-bottom: 0; min-width: 0; flex: 1; }
+.path-name-row strong { min-width: 0; overflow-wrap: anywhere; }
+.source-badge { flex-shrink: 0; background: var(--panel-2); line-height: 1.4; }
+/* Text colours on --panel-2: Steam 8.78:1, Heroic 8.84:1, Lutris 9.82:1, External 6.41:1, Manual 13.98:1. */
+.source-steam { color: #7cc4f5; border-color: rgba(124, 196, 245, 0.45); }
+.source-heroic { color: #c9b0ff; border-color: rgba(201, 176, 255, 0.45); }
+.source-lutris { color: #ffb878; border-color: rgba(255, 184, 120, 0.45); }
+.source-external { color: var(--muted); }
+.source-manual { color: var(--text); }
+
+.path-info { margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.path-main .path-info { margin-bottom: 0; }
+.path-info-row { min-width: 0; }
+.path-info dt { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.path-info dd { margin: 0; min-width: 0; }
+.path-value {
+  display: block;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+/* On library cards keep long paths to two lines; the title attribute and a
+   selection (triple-click copies the full text) still expose the whole path. */
+.path-info-compact .path-value {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.path-missing { font-size: 12px; color: var(--muted); font-style: italic; }
+.form-hint { margin: -4px 0 14px; }
 
 /* ── Card title with icon ── */
 .card-title { display: flex; align-items: center; gap: 8px; }
@@ -770,25 +860,41 @@ label {
 .status-partial { background: rgba(232, 180, 74, 0.15); color: var(--sand); }
 .status-restored { background: rgba(152, 161, 179, 0.15); color: var(--muted); }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  padding: 24px;
-}
-
 .modal-card {
-  width: min(760px, 100%);
+  width: min(760px, calc(100% - 32px));
+  max-height: 90vh;
+  overflow: auto;
   background: var(--panel);
+  color: var(--text);
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   padding: 24px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
 }
+
+dialog.modal-card {
+  max-width: 760px;
+}
+
+dialog.modal-card::backdrop {
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.conflict-title { margin-top: 0; }
+
+.conflict-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--sand);
+  border-radius: var(--radius-control);
+  background: rgba(232, 180, 74, 0.08);
+}
+.conflict-banner > .icon { color: var(--sand); flex-shrink: 0; }
+.conflict-banner-text { flex: 1; min-width: 200px; }
 
 .conflict-grid {
   display: grid;
@@ -894,8 +1000,12 @@ label {
   cursor: pointer;
 }
 
+.exclusion-row-disabled { cursor: default; }
+.exclusion-note { margin: 0; font-size: 13px; }
+
 .exclusion-row-main {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -940,8 +1050,13 @@ label {
 }
 
 .big-picture-card {
+  font: inherit;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-card);
   padding: 12px;
   text-align: left;
@@ -949,13 +1064,17 @@ label {
   transition: transform 0.15s ease, border-color 0.15s ease;
 }
 
-.big-picture-card:hover {
+.big-picture-card:hover,
+.big-picture-card:focus-visible {
   transform: translateY(-2px);
   border-color: var(--sand);
 }
 
 .big-picture-cover {
+  display: block;
+  width: 100%;
   aspect-ratio: 3 / 4;
+  object-fit: cover;
   background: var(--cover);
   border-radius: var(--radius-control);
   margin-bottom: 10px;
@@ -964,9 +1083,90 @@ label {
 .big-picture-title {
   font-weight: 600;
   margin-bottom: 4px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .big-picture-meta {
   color: var(--muted);
   font-size: 12.5px;
 }
+
+/* ── Confirm dialog (native <dialog>) ── */
+dialog.confirm-dialog { max-width: 480px; }
+.confirm-body { margin-bottom: 18px; overflow-wrap: anywhere; }
+.confirm-body p { margin: 0 0 8px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+/* Dark ink on --red: 5.71:1 (AA). White on --red is only 3.44:1. */
+.btn-danger-solid { background: var(--red); color: #1a0504; border-color: var(--red); }
+.btn-danger-solid:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* Buttons that stay focusable while busy (aria-disabled) look disabled. */
+.btn[aria-disabled="true"] { opacity: 0.6; cursor: progress; }
+
+/* Key fields: masked without type=password so browsers don't autofill or offer to save them. */
+.masked-input { -webkit-text-security: disc; }
+.key-input-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.key-input-row input { flex: 1 1 260px; min-width: 0; }
+.key-status-line { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+.key-status { font-weight: 600; color: var(--text); }
+.key-status-set { color: var(--green); }
+
+/* ── Where it runs (DUN-032) ── */
+.where-heading { margin: 28px 0 12px; font-size: 16px; }
+.admin-card .card-title:focus { outline: none; }
+.admin-card .card-title:focus-visible { outline: 2px solid var(--sand); outline-offset: 2px; }
+.admin-subtitle { margin: 18px 0 8px; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.admin-subtitle:first-of-type { margin-top: 4px; }
+.admin-list { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.admin-row {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 8px 12px; padding: 10px 12px; min-width: 0;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-control);
+}
+.admin-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 240px; }
+.admin-row-value { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.admin-row-meta { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.admin-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.admin-row .error-text { margin: 4px 0 0; }
+.admin-row a.btn { text-decoration: none; }
+.admin-form { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 8px; }
+.admin-form .form-group { width: 100%; margin-bottom: 4px; }
+.admin-form input { margin-bottom: 4px; }
+.section-status { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); min-height: 1em; }
+.no-server { margin: 0; padding: 12px 14px; border: 1px dashed var(--control-border); border-radius: var(--radius-control); color: var(--text); }
+.text-link { color: var(--sand); text-decoration: underline; }
+.inline-error {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--red);
+  border-radius: var(--radius-control); background: rgba(240, 85, 72, 0.08); color: var(--text); font-size: 13px;
+}
+.issued-key { margin: 8px 0 12px; padding: 12px; border: 1px solid var(--sand); border-radius: var(--radius-control); background: rgba(232, 180, 74, 0.06); }
+.issued-key-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.issued-key-value { flex: 1 1 260px; min-width: 0; margin-bottom: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.prefix-list { list-style: none; margin: 0; padding: 0; }
+.prefix-list .path-row { flex-wrap: wrap; }
+.prefix-list .path-sub { white-space: normal; overflow-wrap: anywhere; }
+
+/* ── Launch setup per game (DUN-061 part 2) ── */
+.launch-settings { margin-top: 8px; }
+.launch-status { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+.launch-status-missing { color: var(--sand); font-weight: 600; }
+.launch-controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+.launch-field { display: flex; flex-direction: column; min-width: 180px; flex: 0 1 240px; }
+.launch-field label { font-size: 12px; margin-bottom: 4px; }
+.launch-field select { margin-bottom: 0; padding: 6px 10px; }
+.path-row .launch-settings .error-text { margin-top: 6px; }
+
+/* ── Calm no-server notice (DUN-041) ── */
+.no-server-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.no-server-text { margin: 0; flex: 1 1 280px; color: var(--text); }
+
+/* ── Drive space (DUN-042) ── */
+.drive-list { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.drive-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-reason { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }

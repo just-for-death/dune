@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -8,6 +8,7 @@ import { listProtonVersions } from './proton.js';
 import { listHeroicPrefixes } from './heroic.js';
 import { listLutrisPrefixes } from './lutris.js';
 import { listPrefixes } from './manager.js';
+import { PrefixRegistry, defaultPrefixRegistryPaths } from './registry.js';
 
 describe('prefix manager', () => {
   const tempDirs: string[] = [];
@@ -27,7 +28,7 @@ describe('prefix manager', () => {
     delete process.env.LUTRIS_PREFIX_ROOTS;
   });
 
-  it('detects and manages Wine prefixes', () => {
+  it('detects Wine prefixes', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-wine-'));
     tempDirs.push(root);
     const prefix = path.join(root, 'prefix');
@@ -35,13 +36,33 @@ describe('prefix manager', () => {
     process.env.WINE_PREFIX_ROOTS = root;
     expect(isWinePrefix(prefix)).toBe(true);
     expect(listWinePrefixes()).toHaveLength(1);
+  });
 
-    const created = path.join(root, 'created');
-    expect(createWinePrefix(created).success).toBe(true);
-    expect(fs.existsSync(path.join(created, 'drive_c'))).toBe(true);
-    expect(backupWinePrefix(created).success).toBe(true);
-    expect(deleteWinePrefix(created).success).toBe(true);
-    expect(fs.existsSync(created)).toBe(false);
+  it('manages Wine prefixes only through the registry (DUN-062)', async () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-wine-managed-'));
+    tempDirs.push(userData);
+    const trashItem = vi.fn(async (_p: string) => {});
+    const registry = new PrefixRegistry(defaultPrefixRegistryPaths(userData, os.homedir()), { trashItem, log: () => {} });
+
+    const created = createWinePrefix(registry, 'created');
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.prefix.path).toBe(path.join(fs.realpathSync(userData), 'prefixes', 'created'));
+    expect(isWinePrefix(created.prefix.path)).toBe(true);
+
+    const backup = backupWinePrefix(registry, created.prefix.id);
+    expect(backup.ok).toBe(true);
+    if (backup.ok) expect(path.dirname(backup.backupPath)).toBe(path.join(fs.realpathSync(userData), 'prefix-backups'));
+
+    expect(await deleteWinePrefix(registry, created.prefix.id)).toEqual({ ok: true, trashedPath: created.prefix.path });
+    expect(trashItem).toHaveBeenCalledExactlyOnceWith(created.prefix.path);
+    expect(registry.list()).toEqual([]);
+
+    // The old path-taking calls are gone: a path is not a valid name or id.
+    expect(createWinePrefix(registry, path.join(userData, 'elsewhere'))).toEqual({ ok: false, reason: 'invalid-name' });
+    expect(await deleteWinePrefix(registry, created.prefix.path)).toEqual({ ok: false, reason: 'not-found' });
+    expect(backupWinePrefix(registry, created.prefix.path)).toEqual({ ok: false, reason: 'not-found' });
+    expect(trashItem).toHaveBeenCalledTimes(1);
   });
 
   it('lists Proton, Heroic, and Lutris prefixes', () => {

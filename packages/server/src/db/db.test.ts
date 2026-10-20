@@ -7,13 +7,15 @@ import { nextId } from '@dune/shared';
 
 // Isolate ALL filesystem side effects (DB, secret) to a temp dir.
 // Must precede the dynamic import below (static imports hoist).
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-db-test-'));
 process.env.API_KEY_SECRET = 'db-test-secret-0123456789abcdef';
 
-const { database, writeDB, withDbLock, closeDbForTests, runBootMigrations } = await import('../db/index.js');
+const { database, withDbLock, closeDbForTests, runBootMigrations } = await import('../db/index.js');
 const { hashApiKey } = await import('../utils/crypto.js');
 
 const TMP = process.env.DATA_DIR as string;
+const OWNER = database.createUser(`db-owner-${Date.now()}`, 'member').id;
 
 function mkGame(name: string) {
   const ts = new Date().toISOString();
@@ -32,7 +34,7 @@ function mkGame(name: string) {
 
 afterAll(() => {
   closeDbForTests();
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
@@ -42,9 +44,8 @@ describe('concurrent writes', () => {
     await Promise.all(
       Array.from({ length: 50 }, (_, i) =>
         withDbLock(() => {
-          const games = database.getGames();
-          games.push(mkGame(`LockGame ${i}`));
-          writeDB({ games, settings: database.getSettings() });
+          // DUN-085: per-row write by key (writeDB's bulk rewrite is gone).
+          database.ensureGame(OWNER, `LockGame ${i}`);
         }),
       ),
     );
@@ -65,11 +66,50 @@ describe('concurrent writes', () => {
   });
 });
 
+describe('game rows: find/ensure/markGameSynced/rename (DUN-085/087/088)', () => {
+  it('ensureGame finds case-insensitively; markGameSynced updates by id, keeping other fields', () => {
+    const first = database.ensureGame(OWNER, 'Keyed Game');
+    database.upsertGame({ name: 'Keyed Game', ownerId: OWNER, status: 'Pending Upload', lastSync: 'Never', thumbnail: 'http://art/k.png' });
+    expect(database.ensureGame(OWNER, 'keyed game').id).toBe(first.id);
+    expect(database.markGameSynced(first.id, '2021-01-01T00:00:00.000Z')).toBe(true);
+
+    const rows = database.getGames(OWNER).filter(g => g.name.toLowerCase() === 'keyed game');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: first.id, name: 'Keyed Game', status: 'In Sync',
+      lastSync: '2021-01-01T00:00:00.000Z', updatedAt: '2021-01-01T00:00:00.000Z', thumbnail: 'http://art/k.png',
+    });
+  });
+
+  it('scopes by owner: the same title for another owner is its own row, invisible to the first', () => {
+    const other = database.createUser(`mgs-owner-${Date.now()}`, 'member');
+    const mine = database.ensureGame(OWNER, 'Shared Title');
+    const theirs = database.ensureGame(other.id, 'Shared Title');
+    expect(theirs.id).not.toBe(mine.id);
+    expect(database.findGame(other.id, 'shared title')?.id).toBe(theirs.id);
+    expect(database.getGameByName('Shared Title', OWNER)?.id).toBe(mine.id);
+    expect(database.getGames(other.id).map(g => g.name)).toEqual(['Shared Title']);
+    expect(database.getOwnedGame(theirs.id, OWNER)).toBeUndefined();
+    expect(database.deleteGame(theirs.id, OWNER)).toBe(false);
+    expect(database.getGameById(theirs.id)).toBeDefined();
+  });
+
+  it('renameGame changes only the row, refuses clashes and other owners', () => {
+    const a = database.ensureGame(OWNER, 'Rename Me');
+    database.ensureGame(OWNER, 'Taken');
+    expect(database.renameGame(a.id, OWNER, 'TAKEN')).toBe('conflict');
+    expect(database.renameGame(a.id, 'usr_nobody', 'X')).toBe('not_found');
+    expect(database.renameGame(a.id, OWNER, 'Renamed')).toBe('ok');
+    expect(database.getGameById(a.id)?.name).toBe('Renamed');
+  });
+});
+
 describe('upsertGame field preservation', () => {
   it('keeps analysis and thumbnail when a status-only update omits them', () => {
     const name = 'Preserve Game';
     database.upsertGame({
       name,
+      ownerId: OWNER,
       status: 'In Sync',
       lastSync: '2020-01-01T00:00:00.000Z',
       thumbnail: 'http://art/cover.png',
@@ -77,7 +117,7 @@ describe('upsertGame field preservation', () => {
     });
 
     // A bare status update (what local sync issues) must not wipe them.
-    database.upsertGame({ name, status: 'Pending Upload', lastSync: '2021-01-01T00:00:00.000Z' });
+    database.upsertGame({ name, ownerId: OWNER, status: 'Pending Upload', lastSync: '2021-01-01T00:00:00.000Z' });
 
     const after = database.getGames().find(g => g.name === name);
     expect(after?.thumbnail).toBe('http://art/cover.png');

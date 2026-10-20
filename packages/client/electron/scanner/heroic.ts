@@ -4,6 +4,7 @@ import * as os from 'os';
 import { app } from 'electron';
 import { nextId } from '@dune/shared';
 import type { Game } from '@dune/shared';
+import { toSaveFields, type SaveResolver } from './savePaths.js';
 
 export interface HeroicGame {
   id: string;
@@ -108,40 +109,57 @@ export function getHeroicConfig(): HeroicConfig | null {
   }
 }
 
+/** Install folder for a Heroic game on this platform (never used as a save path). */
+export function getHeroicInstallPath(game: HeroicGame, platform: NodeJS.Platform = process.platform): string {
+  const platformPath = platform === 'win32' ? game.installPathWindows : game.installPathLinux;
+  return game.installPathOverride || platformPath || game.installPath || '';
+}
+
 /**
- * Get all games from Heroic configuration.
+ * Get all installed games from Heroic configuration.
+ *
+ * winPath/linPath are save paths resolved from the Ludusavi manifest (empty
+ * when no resolver is given or nothing matches); the install folder goes to
+ * installPath.
  */
-export function getHeroicGames(): Game[] {
-  const config = getHeroicConfig();
+export function getHeroicGames(resolver: SaveResolver | null = null, config: HeroicConfig | null = getHeroicConfig()): Game[] {
   if (!config || !config.games) return [];
+  const platform = resolver?.platform ?? process.platform;
 
   return config.games
     .filter(g => g.isInstalled)
-    .map(game => ({
-      id: nextId(),
-      name: game.title,
-      winPath: game.installPathWindows || '',
-      linPath: game.installPathLinux || game.installPath || '',
-      lastSync: game.lastPlayed || 'Never',
-      status: 'In Sync' as const,
-      thumbnail: game.artwork?.cover || '',
-      platform: game.platform,
-      source: 'heroic',
-      heroicId: game.id,
-      executable: game.executable,
-      installPathOverride: game.installPathOverride,
-      prefixPath: game.prefixPath,
-      winePrefix: game.prefixPath,
-      wineVersion: game.wineVersion,
-      useSystemWine: game.useSystemWine,
-      envVars: game.envVars,
-      launchOptions: game.launchOptions,
-      lastPlayed: game.lastPlayed,
-      playtime: game.playtime,
-      artwork: game.artwork,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }));
+    .map(game => {
+      const installPath = getHeroicInstallPath(game, platform);
+      const savePath = resolver
+        ? resolver.resolve({ name: game.title, installPath: installPath || undefined, winePrefix: game.prefixPath })
+        : '';
+      return {
+        id: nextId(),
+        name: game.title,
+        ...toSaveFields(savePath, platform),
+        installPath,
+        lastSync: game.lastPlayed || 'Never',
+        status: 'In Sync' as const,
+        thumbnail: game.artwork?.cover || '',
+        platform: game.platform,
+        source: 'heroic' as const,
+        sourceId: 'heroic',
+        heroicId: game.id,
+        executable: game.executable,
+        installPathOverride: game.installPathOverride,
+        prefixPath: game.prefixPath,
+        winePrefix: game.prefixPath,
+        wineVersion: game.wineVersion,
+        useSystemWine: game.useSystemWine,
+        envVars: game.envVars,
+        launchOptions: game.launchOptions,
+        lastPlayed: game.lastPlayed,
+        playtime: game.playtime,
+        artwork: game.artwork,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    });
 }
 
 /**

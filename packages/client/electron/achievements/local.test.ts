@@ -27,7 +27,7 @@ describe('local achievement import', () => {
     return dir;
   }
 
-  it('parses Goldberg/CODEX style INI state', () => {
+  it('parses local achievement file format INI state', () => {
     const parsed = parseAchievementIni(`
       ; comment
       [ACHIEVEMENTS]
@@ -102,8 +102,6 @@ describe('local achievement import', () => {
     const prefix = path.join(root, 'prefix');
 
     const roots = getAchievementRoots({
-      linPath: exe,
-      winPath: '',
       executable: exe,
       winePrefix: prefix,
     });

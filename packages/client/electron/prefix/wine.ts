@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { BackupPrefixResult, CreatePrefixResult, DeletePrefixResult } from '@dune/shared';
+import type { PrefixRegistry } from './registry.js';
 
 export interface WinePrefix {
   name: string;
@@ -77,34 +79,23 @@ export function listWinePrefixes(roots: string[] = getWinePrefixRoots()): WinePr
   return prefixes;
 }
 
-export function createWinePrefix(prefixPath: string): { success: boolean; message: string } {
-  if (!prefixPath) return { success: false, message: 'Prefix path required' };
-  try {
-    fs.mkdirSync(prefixPath, { recursive: true });
-    fs.mkdirSync(path.join(prefixPath, 'drive_c'), { recursive: true });
-    return { success: true, message: 'Prefix created' };
-  } catch (error) {
-    return { success: false, message: error instanceof Error ? error.message : 'Failed to create prefix' };
-  }
+// DUN-062: the old path-taking create/delete/backup (a forced recursive rmSync
+// on whatever path the renderer sent) are gone. Writes and deletes only go
+// through the prefix registry, which takes a validated name or a registry id
+// and builds/checks every path under the managed root itself. These wrappers
+// keep the names manager.ts re-exports; none of them accepts a path.
+
+/** Create a Dune-managed prefix named `name` under the registry's managed root. */
+export function createWinePrefix(registry: PrefixRegistry, name: string): CreatePrefixResult {
+  return registry.create(name);
 }
 
-export function deleteWinePrefix(prefixPath: string): { success: boolean; message: string } {
-  if (!prefixPath || !fs.existsSync(prefixPath)) return { success: false, message: 'Prefix not found' };
-  try {
-    fs.rmSync(prefixPath, { recursive: true, force: true });
-    return { success: true, message: 'Prefix deleted' };
-  } catch (error) {
-    return { success: false, message: error instanceof Error ? error.message : 'Failed to delete prefix' };
-  }
+/** Move the Dune-managed prefix `id` to the OS trash. */
+export function deleteWinePrefix(registry: PrefixRegistry, id: string): Promise<DeletePrefixResult> {
+  return registry.delete(id);
 }
 
-export function backupWinePrefix(prefixPath: string): { success: boolean; message: string; backupPath?: string } {
-  if (!prefixPath || !fs.existsSync(prefixPath)) return { success: false, message: 'Prefix not found' };
-  const backupPath = `${prefixPath}.backup-${Date.now()}`;
-  try {
-    fs.cpSync(prefixPath, backupPath, { recursive: true });
-    return { success: true, message: 'Prefix backed up', backupPath };
-  } catch (error) {
-    return { success: false, message: error instanceof Error ? error.message : 'Failed to back up prefix' };
-  }
+/** Back up the Dune-managed prefix `id` into the registry's backups folder. */
+export function backupWinePrefix(registry: PrefixRegistry, id: string): BackupPrefixResult {
+  return registry.backup(id);
 }

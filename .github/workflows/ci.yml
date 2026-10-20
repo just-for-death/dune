@@ -28,8 +28,14 @@ jobs:
       - name: Lint server
         run: npm run lint
 
+      - name: Test shared
+        run: npm run test --workspace=@dune/shared
+
       - name: Test server (with coverage gate)
         run: npm run test:coverage --workspace=@dune/server
+
+      - name: Test client (unit)
+        run: npm run test --workspace=@dune/client
 
       - name: Build client (vite only, no packaging)
         run: npm run build:client

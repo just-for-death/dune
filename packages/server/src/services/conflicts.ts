@@ -31,20 +31,15 @@ export function recordConflict(gameId: number, localVersionId: string, remoteVer
   };
 }
 
-export function listConflicts(gameId?: number): ConflictRecord[] {
+/** Conflicts for one game, or (no gameId) across games; `ownerId` scopes to that owner's games (DUN-087). */
+export function listConflicts(gameId?: number, ownerId?: string): ConflictRecord[] {
   const db = getDb();
-  const rows = (gameId == null
-    ? db.prepare(`
-        SELECT id, gameId, localVersionId, remoteVersionId, detectedAt, resolution, resolvedAt
-        FROM conflict_records
-        ORDER BY detectedAt DESC
-      `).all()
-    : db.prepare(`
-        SELECT id, gameId, localVersionId, remoteVersionId, detectedAt, resolution, resolvedAt
-        FROM conflict_records
-        WHERE gameId = ?
-        ORDER BY detectedAt DESC
-      `).all(gameId)) as Array<Record<string, unknown>>;
+  const cols = 'c.id, c.gameId, c.localVersionId, c.remoteVersionId, c.detectedAt, c.resolution, c.resolvedAt';
+  const rows = (gameId != null
+    ? db.prepare(`SELECT ${cols} FROM conflict_records c WHERE c.gameId = ? ORDER BY c.detectedAt DESC`).all(gameId)
+    : ownerId
+      ? db.prepare(`SELECT ${cols} FROM conflict_records c JOIN games g ON g.id = c.gameId WHERE g.ownerId = ? ORDER BY c.detectedAt DESC`).all(ownerId)
+      : db.prepare(`SELECT ${cols} FROM conflict_records c ORDER BY c.detectedAt DESC`).all()) as Array<Record<string, unknown>>;
 
   return rows.map((row) => ({
     id: String(row.id),

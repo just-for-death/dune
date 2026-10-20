@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { LaunchCommand, LaunchStrategy } from './types.js';
+import { isKnownEmulator } from '../emulators.js';
 
 const DEFAULT_EMULATOR = 'retroarch';
 
@@ -17,7 +18,9 @@ export const emulatorStrategy: LaunchStrategy = {
       return null;
     }
 
+    // DUN-061: only an emulator from the known list is ever spawned.
     const emulator = game.emulator || DEFAULT_EMULATOR;
+    if (!isKnownEmulator(emulator)) return null;
     return {
       command: emulator,
       args: [romPath],

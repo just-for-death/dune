@@ -14,7 +14,7 @@
     "build:shared": "npm run build --workspace=@dune/shared",
     "build:server": "npm run build --workspace=@dune/server",
     "build:client": "npm run build --workspace=@dune/client",
-    "test": "npm run test --workspace=@dune/server",
+    "test": "npm run test --workspace=@dune/shared && npm run test --workspace=@dune/server",
     "test:all": "npm run test --workspaces --if-present",
     "dev:server": "npm run dev --workspace=@dune/server",
     "dev:client": "npm run dev --workspace=@dune/client",

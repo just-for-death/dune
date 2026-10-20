@@ -158,7 +158,7 @@ export function getVersionDiff(fromVersionId: string, toVersionId: string): {
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { getGameRoot } from '../utils/path.js';
+import { getGameRoot, resolveGameSubdir, assertStrictlyInside, PathRuleError } from '../utils/path.js';
 import { getBackupProfile, filterBackupFiles } from './backupProfiles.js';
 
 function hashFile(filePath: string): string {
@@ -207,14 +207,13 @@ function walkFiles(root: string): Array<{ path: string; size: number; hash: stri
 
 export function createVersionFromDirectory(input: {
   gameId: number;
-  gameName: string;
-  ownerId?: string;
+  ownerId: string;
   deviceId?: string;
   changeSummary?: string;
   parentVersionId?: string;
   profileGameId?: number;
 }): SaveVersion {
-  const gameRoot = getGameRoot(input.gameName, input.ownerId);
+  const gameRoot = getGameRoot(input.gameId, input.ownerId);
   const profile = getBackupProfile(input.profileGameId ?? input.gameId);
   const allFiles = walkFiles(gameRoot);
   const { included } = filterBackupFiles(allFiles.map((file) => ({ path: file.path, size: file.size })), profile);
@@ -246,12 +245,30 @@ export function createVersionFromDirectory(input: {
   return version;
 }
 
-export function restoreVersion(gameName: string, versionId: string, ownerId?: string): { success: boolean; message: string; restoredFiles: number } {
-  const detail = getSaveVersion(versionId);
-  if (!detail) return { success: false, message: 'Version not found', restoredFiles: 0 };
+/** Save-version ids are minted by createSaveVersion with crypto.randomUUID(). */
+export const SAVE_VERSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Any folder name allowed under `.versions/`: upload snapshots use the
+ * digits-only sync id (sync.ts safeVersionId), directory snapshots use the
+ * UUID version id. Used for reads (download-version-file, files.versions.files).
+ */
+export const VERSION_DIR_ID = /^(?:\d{1,20}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
-  const gameRoot = getGameRoot(gameName, ownerId);
-  const snapshotDir = path.join(gameRoot, '.versions', versionId);
+export function restoreVersion(gameId: number, versionId: string, ownerId: string): { success: boolean; message: string; restoredFiles: number } {
+  // DUN-125: versionId becomes a directory name; accept only the stored id
+  // format (crypto.randomUUID), then resolve it with the same containment
+  // rules as file paths. Malformed ids are a 400 (INVALID_VERSION_ID).
+  if (!SAVE_VERSION_ID.test(versionId)) {
+    throw new PathRuleError('INVALID_VERSION_ID', 'Invalid version id');
+  }
+  const detail = getSaveVersion(versionId);
+  // DUN-087: a version of another game (or another user's game) is "not found".
+  if (!detail || detail.version.gameId !== gameId) {
+    return { success: false, message: 'Version not found', restoredFiles: 0 };
+  }
+
+  const gameRoot = getGameRoot(gameId, ownerId);
+  const snapshotDir = resolveGameSubdir(gameId, `.versions/${versionId}`, ownerId);
   if (!fs.existsSync(snapshotDir)) {
     return { success: false, message: 'Version snapshot files not found', restoredFiles: 0 };
   }
@@ -261,17 +278,19 @@ export function restoreVersion(gameName: string, versionId: string, ownerId?: st
   while (stack.length > 0) {
     const dir = stack.pop() as string;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      // DUN-128: never follow a symlink inside a snapshot (it could point
+      // anywhere); only real files and directories are restored.
+      if (entry.isSymbolicLink()) {
+        logger.warn({ gameId, versionId, entry: entry.name }, 'Skipped symlink in version snapshot');
+        continue;
+      }
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
-      } else {
+      } else if (entry.isFile()) {
         const rel = path.relative(snapshotDir, full);
         const dest = path.join(gameRoot, rel);
-        const resolvedDest = path.resolve(dest);
-        const resolvedRoot = path.resolve(gameRoot);
-        if (resolvedDest !== resolvedRoot && !resolvedDest.startsWith(resolvedRoot + path.sep)) {
-          return { success: false, message: 'Unsafe restore path detected', restoredFiles };
-        }
+        assertStrictlyInside(dest, gameRoot, 'Restore target');
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.copyFileSync(full, dest);
         restoredFiles += 1;

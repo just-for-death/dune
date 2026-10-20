@@ -7,6 +7,7 @@ vi.mock('axios');
 import axios from 'axios';
 
 // Isolate ALL side effects BEFORE importing app modules (static imports hoist).
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-router-test-'));
 process.env.API_KEY_SECRET = 'router-test-secret-0123456789abcdef';
 
@@ -40,7 +41,7 @@ beforeEach(() => {
 const TMP = process.env.DATA_DIR as string;
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
@@ -327,7 +328,11 @@ describe('multi-user scoping', () => {
     expect(adminNames).toContain('AliceGame');
 
     // File access: no cross-user reads.
-    await expect(aliceCaller.files.list({ game: 'AdminOnly' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    // DUN-087/088: titles resolve in the caller's namespace only.
+    await expect(aliceCaller.files.list({ game: 'AdminOnly' })).resolves.toEqual({ success: true, files: [] });
+    await expect(aliceCaller.files.remove({ game: 'AdminOnly', path: 'x.sav' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const adminOwner = (await admin.games.list()).games.find(g => g.name === 'AdminOnly')!.ownerId;
+    await expect(aliceCaller.files.list({ game: 'AdminOnly', owner: adminOwner })).rejects.toMatchObject({ code: 'FORBIDDEN' });
     await expect(aliceCaller.files.list({ game: 'AliceGame' })).resolves.toMatchObject({ success: true });
 
     // Delete is owner-scoped: a member cannot remove another user's game.
@@ -380,7 +385,7 @@ describe('remaining router procedures', () => {
     const c = appRouter.createCaller(ctx());
     const added = await c.games.add({ name: 'Router File Game' });
     const gameId = (added.games as { id: number }).id;
-    const gameDir = path.join(TMP, 'saves', ADMIN.id, 'Router File Game');
+    const gameDir = path.join(TMP, 'saves', ADMIN.id, String(gameId)); // saves/<owner>/<gameId>
     fs.mkdirSync(path.join(gameDir, '.versions', '1700000000000'), { recursive: true });
     fs.writeFileSync(path.join(gameDir, 'slot1.sav'), 'router');
     fs.writeFileSync(path.join(gameDir, '.versions', '1700000000000', 'slot1.sav'), 'older');

@@ -9,6 +9,7 @@ import request from 'supertest';
 // this file deliberately covers the dashboard/admin REST contract that the
 // shared rest-shims file has no budget left for.
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-restdash-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'restdash-secret-0123456789abcdef';
 
@@ -34,7 +35,7 @@ const upload = (game: string, file = 's.sav', body = 'x') =>
   ).send(Buffer.from(body));
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });

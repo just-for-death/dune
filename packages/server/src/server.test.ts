@@ -7,6 +7,7 @@ import request from 'supertest';
 // Isolate ALL side effects BEFORE importing the app module
 // (static imports hoist, so the app itself is imported dynamically).
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-server-test-'));
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = TMP;
 process.env.API_KEY_SECRET = 'server-test-secret-0123456789abcdef';
 
@@ -17,7 +18,7 @@ const AUTH_KEY = 'roundtrip-key-0123456789abcdef';
 database.addApiKey(AUTH_KEY);
 
 afterAll(() => {
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
@@ -66,7 +67,7 @@ describe('auth enforcement (regression guards)', () => {
   it('rejects REST file routes without a key', async () => {
     const res = await request(app).get('/api/download-file?game=x&path=y');
     expect(res.status).toBe(401);
-    expect(res.body.success).toBe(false);
+    expect(res.body).toEqual({ error: 'API key required', code: 'UNAUTHORIZED' });
   });
 
   it('rejects tRPC procedures without a key', async () => {
@@ -88,8 +89,8 @@ describe('path traversal guards (Task 1.1)', () => {
     const res = await request(app)
       .get('/api/download-file?game=x&path=' + encodeURIComponent('../../etc/passwd'))
       .set('x-api-key', AUTH_KEY);
-    expect([400, 404]).toContain(res.status);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'DOT_SEGMENT' });
   });
 
   it('rejects download-version-file with non-numeric versionId', async () => {
@@ -97,7 +98,7 @@ describe('path traversal guards (Task 1.1)', () => {
       .get('/api/download-version-file?game=x&versionId=' + encodeURIComponent('../..') + '&path=y')
       .set('x-api-key', AUTH_KEY);
     expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
+    expect(res.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
   });
 });
 

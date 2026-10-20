@@ -106,7 +106,28 @@ export function asString(v: unknown, max = 2000): string {
   return '';
 }
 
-/** Sanitize game input from the renderer. Pure function. */
+const GAME_SOURCES = ['steam', 'heroic', 'lutris', 'manual', 'epic', 'gog', 'ubisoft', 'ea', 'battlenet', 'xbox', 'minecraft', 'emulator'] as const;
+type GameSourceName = typeof GAME_SOURCES[number];
+
+/** Optional scanner/launcher metadata preserved through renderer round-trips. */
+const OPTIONAL_GAME_STRINGS = [
+  'sourceId', 'steamAppId', 'heroicId', 'lutrisSlug', 'winePrefix', 'protonPath',
+  'executable', 'installPath', 'emulator', 'romPath',
+] as const;
+type OptionalGameString = typeof OPTIONAL_GAME_STRINGS[number];
+
+/**
+ * Sanitize game input from the renderer. Pure function.
+ *
+ * Besides the core fields, the optional launcher metadata (source, installPath,
+ * steamAppId, ...) is kept when it is a string, so a config save from the
+ * renderer no longer strips what the scanners and the DUN-001 store migration
+ * wrote. Unknown/invalid values are dropped, never coerced.
+ *
+ * DUN-061: NOT for renderer or server input any more. It keeps launch fields,
+ * so main no longer calls it from `config:save` / `game:add`; those go
+ * through `launcher/launchFields.ts` (metadata only, merged by id).
+ */
 export function sanitizeGame(input: unknown): {
   name: string;
   winPath: string;
@@ -114,11 +135,18 @@ export function sanitizeGame(input: unknown): {
   lastSync: string;
   status: 'In Sync' | 'Pending Upload' | 'Error';
   thumbnail: string;
-} {
+  source?: GameSourceName;
+} & Partial<Record<OptionalGameString, string>> {
   const g = (input ?? {}) as Record<string, unknown>;
   const name = asString(g.name, 200).trim();
   if (!name) throw new Error('Game title is required');
   const status = asString(g.status, 32);
+  const optional: Partial<Record<OptionalGameString, string>> = {};
+  for (const key of OPTIONAL_GAME_STRINGS) {
+    const value = asString(g[key]);
+    if (value) optional[key] = value;
+  }
+  const source = asString(g.source, 32);
   return {
     name,
     winPath: asString(g.winPath),
@@ -128,6 +156,8 @@ export function sanitizeGame(input: unknown): {
       ? status as 'In Sync' | 'Pending Upload' | 'Error'
       : 'Pending Upload',
     thumbnail: asString(g.thumbnail),
+    ...((GAME_SOURCES as readonly string[]).includes(source) ? { source: source as GameSourceName } : {}),
+    ...optional,
   };
 }
 
@@ -178,19 +208,34 @@ export function buildLocalManifest(
 type SyncStateRecord = Record<string, { uploaded?: FileManifest }>;
 type UploadPlan = { plan: { game: string; rel: string; local: string }[]; localManifest: FileManifest; deleted: string[] };
 
-/** Plan an upload by diffing local files against the last uploaded manifest. */
+/**
+ * Plan an upload by diffing local files against the last uploaded manifest.
+ *
+ * DUN-067: `diskFiles` is the UNFILTERED list of what is on disk; `isIncluded`
+ * is the backup-profile filter. Uploads cover only included files that
+ * changed. A deletion is planned only for a file that was uploaded before, is
+ * really gone from disk, and is still included: adding an exclude rule only
+ * stops future syncing and never deletes anything on the server. `deleted`
+ * stays empty when the disk list is empty (an unmounted folder never wipes
+ * the server copy).
+ */
 export function planUpload(
   game: string,
-  files: { local: string; rel: string }[],
-  getSyncStateFn: () => SyncStateRecord
+  diskFiles: { local: string; rel: string }[],
+  getSyncStateFn: () => SyncStateRecord,
+  isIncluded: (rel: string) => boolean = () => true,
 ): UploadPlan {
-  const localManifest = buildLocalManifest(files);
-  const delta = diffFingerprints(getSyncStateFn()[game]?.uploaded || {}, localManifest);
-  const wanted = new Set(changedPaths(delta));
-  const plan = files
+  const included = diskFiles.filter(f => isIncluded(toPosix(f.rel)));
+  const localManifest = buildLocalManifest(included);
+  const previous = getSyncStateFn()[game]?.uploaded || {};
+  const wanted = new Set(changedPaths(diffFingerprints(previous, localManifest)));
+  const plan = included
     .map(f => ({ game, rel: toPosix(f.rel), local: f.local }))
     .filter(f => wanted.has(f.rel));
-  const deleted = files.length > 0 ? diffFingerprints(getSyncStateFn()[game]?.uploaded || {}, localManifest).deleted : [];
+  const onDisk = new Set(diskFiles.map(f => toPosix(f.rel)));
+  const deleted = diskFiles.length > 0
+    ? Object.keys(previous).filter(rel => !onDisk.has(rel) && isIncluded(rel))
+    : [];
   return { plan, localManifest, deleted };
 }
 
@@ -222,6 +267,14 @@ export function matchesBackupGlob(relPath: string, pattern: string): boolean {
     .replace(/\*/g, '[^/]*')
     .replace(/\?/g, '[^/]');
   return new RegExp(`^${regex}$`, 'i').test(normalizedPath);
+}
+
+/** The backup-profile filter as a predicate on a POSIX relative path. */
+export function backupProfileFilter(profile: { includeGlobs: string[]; excludeGlobs: string[] } | null | undefined): (rel: string) => boolean {
+  if (!profile) return () => true;
+  const include = Array.isArray(profile.includeGlobs) ? profile.includeGlobs : [];
+  const exclude = Array.isArray(profile.excludeGlobs) ? profile.excludeGlobs : [];
+  return (rel) => include.some((g) => matchesBackupGlob(rel, g)) && !exclude.some((g) => matchesBackupGlob(rel, g));
 }
 
 export function filterBackupFiles<T extends { rel: string }>(

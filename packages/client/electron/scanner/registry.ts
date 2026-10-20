@@ -1,11 +1,14 @@
 import { nextId } from '@dune/shared';
 import type { Game } from '@dune/shared';
-import { autoDetectGames as steamAutoDetect } from './steam.js';
+import { getSteamLibraryGames } from './steam.js';
+import { createSaveResolver, loadManifest, toSaveFields } from './savePaths.js';
+import type { LoadManifestOptions, LudusaviManifest, SaveResolver } from './savePaths.js';
 import { getHeroicGames } from './heroic.js';
 import { getLutrisGames } from './lutris.js';
 import type { LutrisGame } from './lutris.js';
 import { getEpicGames, getGogGames, getUbisoftGames, getEaGames, getBattleNetGames, getXboxGames, getMinecraftGames } from './external.js';
 import { getEmulatorGames } from '../emulators/roms.js';
+import { dedupeGames } from './dedupe.js';
 
 export interface GameSource {
   id: string;
@@ -76,29 +79,21 @@ class GameRegistryImpl implements GameRegistry {
 
 export const gameRegistry = new GameRegistryImpl();
 
-/** Fill in the metadata required by the shared Game shape for scanner results. */
-function withGameMetadata(
-  game: Omit<Game, 'thumbnail' | 'createdAt' | 'updatedAt' | 'sourceId'>,
-  sourceId: string,
-): Game {
+/**
+ * Project a Lutris database row onto the shared Game shape. install_path goes
+ * to installPath; linPath/winPath are manifest save paths or empty.
+ */
+export function fromLutris(game: LutrisGame, resolver: SaveResolver | null = null): Game {
   const now = new Date().toISOString();
-  return {
-    ...game,
-    thumbnail: '',
-    sourceId,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-/** Project a Lutris database row onto the shared Game shape. */
-function fromLutris(game: LutrisGame): Game {
-  const now = new Date().toISOString();
+  const installPath = game.install_path || '';
+  const savePath = resolver
+    ? resolver.resolve({ name: game.name, installPath: installPath || undefined, winePrefix: game.wine_prefix })
+    : '';
   return {
     id: game.id,
     name: game.name,
-    winPath: '',
-    linPath: game.install_path || game.executable || '',
+    ...toSaveFields(savePath, resolver?.platform ?? process.platform),
+    installPath,
     lastSync: typeof game.last_played === 'string' ? game.last_played : 'Never',
     status: 'In Sync',
     thumbnail: game.cover_url || '',
@@ -110,6 +105,78 @@ function fromLutris(game: LutrisGame): Game {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+export interface ScanOptions extends LoadManifestOptions {
+  /** Pre-parsed manifest (skips loading). `null` means "no manifest available". */
+  manifest?: LudusaviManifest | null;
+  /** Pre-built resolver (skips manifest loading entirely). */
+  resolver?: SaveResolver | null;
+  /** Override Steam install detection (tests). */
+  steamPath?: string | null;
+  /**
+   * Also add every manifest game whose save folder exists on disk (the legacy
+   * "autodetect" behaviour). These entries have no source and only fill in
+   * save paths for, or sit behind, the launcher-specific entries after dedupe.
+   */
+  includeManifestSaves?: boolean;
+}
+
+/** Games found only through the save manifest (no launcher knows about them). */
+function manifestSaveGames(resolver: SaveResolver): Game[] {
+  const now = new Date().toISOString();
+  return resolver.discoverAll().map(({ name, path: savePath }) => ({
+    id: nextId(),
+    name,
+    ...toSaveFields(savePath, resolver.platform),
+    lastSync: 'Never',
+    status: 'Pending Upload' as const,
+    thumbnail: '',
+    createdAt: now,
+    updatedAt: now,
+  }));
+}
+
+/** Sources whose games need manifest save-path resolution. */
+const MANIFEST_SOURCE_TYPES = new Set<GameSource['type']>([
+  'steam', 'heroic', 'lutris', 'epic', 'gog', 'ubisoft', 'ea', 'battlenet', 'xbox', 'minecraft',
+]);
+
+async function buildResolver(customRoots: string[], options: ScanOptions): Promise<SaveResolver | null> {
+  if (options.resolver !== undefined) return options.resolver;
+  const manifest = options.manifest !== undefined ? options.manifest : await loadManifest(options);
+  return manifest ? createSaveResolver(manifest, { customRoots }) : null;
+}
+
+function scanSourceGames(source: GameSource, resolver: SaveResolver | null, options: ScanOptions): Game[] {
+  switch (source.type) {
+    case 'steam':
+      return getSteamLibraryGames(resolver, options.steamPath !== undefined ? options.steamPath : undefined);
+    case 'heroic':
+      return getHeroicGames(resolver);
+    case 'lutris':
+      return getLutrisGames().map(g => fromLutris(g, resolver));
+    case 'epic':
+      return getEpicGames(undefined, resolver);
+    case 'gog':
+      return getGogGames(undefined, resolver);
+    case 'ubisoft':
+      return getUbisoftGames(undefined, resolver);
+    case 'ea':
+      return getEaGames(undefined, resolver);
+    case 'battlenet':
+      return getBattleNetGames(undefined, resolver);
+    case 'xbox':
+      return getXboxGames(undefined, resolver);
+    case 'minecraft':
+      return getMinecraftGames(undefined, resolver);
+    case 'emulator':
+      // emulators/roms.ts already sets real save paths.
+      return getEmulatorGames().map(g => ({ ...g, sourceId: 'emulator' } as Game));
+    case 'manual':
+      return Array.from(gameRegistry.games.values()).filter(g => g.sourceId === 'manual');
+  }
+  return [];
 }
 
 // Initialize default sources
@@ -203,113 +270,57 @@ function initializeSources() {
 initializeSources();
 
 /**
- * Perform a full scan across all enabled sources.
+ * Perform a full scan across all enabled sources. The save manifest is loaded
+ * at most once per scan and shared by every source.
  */
-export async function fullScan(_customRoots: string[] = []): Promise<Game[]> {
+export async function fullScan(customRoots: string[] = [], options: ScanOptions = {}): Promise<Game[]> {
   const allGames: Game[] = [];
-  const sources = gameRegistry.getAllSources();
+  const sources = gameRegistry.getAllSources().filter(s => s.enabled);
+  const needsManifest = Boolean(options.includeManifestSaves) || sources.some(s => MANIFEST_SOURCE_TYPES.has(s.type));
+  const resolver = needsManifest ? await buildResolver(customRoots, options) : null;
 
   for (const source of sources) {
-    if (!source.enabled) continue;
-
-    let games: Game[] = [];
     try {
-      switch (source.type) {
-        case 'steam':
-          games = (await steamAutoDetect([])).map(g => withGameMetadata(g, 'steam'));
-          break;
-        case 'heroic':
-          games = getHeroicGames().map(g => ({ ...g, sourceId: 'heroic' } as Game));
-          break;
-        case 'lutris':
-          games = getLutrisGames().map(fromLutris);
-          break;
-        case 'epic':
-          games = getEpicGames().map(g => ({ ...g, sourceId: 'epic' } as Game));
-          break;
-        case 'gog':
-          games = getGogGames().map(g => ({ ...g, sourceId: 'gog' } as Game));
-          break;
-        case 'ubisoft':
-          games = getUbisoftGames().map(g => ({ ...g, sourceId: 'ubisoft' } as Game));
-          break;
-        case 'ea':
-          games = getEaGames().map(g => ({ ...g, sourceId: 'ea' } as Game));
-          break;
-        case 'battlenet':
-          games = getBattleNetGames().map(g => ({ ...g, sourceId: 'battlenet' } as Game));
-          break;
-        case 'xbox':
-          games = getXboxGames().map(g => ({ ...g, sourceId: 'xbox' } as Game));
-          break;
-        case 'minecraft':
-          games = getMinecraftGames().map(g => ({ ...g, sourceId: 'minecraft' } as Game));
-          break;
-        case 'emulator':
-          games = getEmulatorGames().map(g => ({ ...g, sourceId: 'emulator' } as Game));
-          break;
-        case 'manual':
-          // Manual games are already in registry
-          games = Array.from(gameRegistry.games.values()).filter(g => g.sourceId === 'manual');
-          break;
-      }
-
-      // Update source game count
-      const src = gameRegistry.getSource(source.id);
-      if (src) {
-        src.gameCount = games.length;
-      }
-
+      const games = scanSourceGames(source, resolver, options);
+      source.gameCount = games.length;
       allGames.push(...games);
     } catch (error) {
       console.error(`Failed to scan ${source.name}:`, error);
     }
   }
 
-  // Update registry
-  gameRegistry.clear();
-  for (const game of allGames) {
+  if (options.includeManifestSaves && resolver) {
+    try {
+      allGames.push(...manifestSaveGames(resolver));
+    } catch (error) {
+      console.error('Failed to scan save manifest:', error);
+    }
+  }
+
+  const deduped = dedupeGames(allGames);
+
+  // Update registry (sources are kept; only the game list is replaced)
+  gameRegistry.games.clear();
+  for (const game of deduped) {
     gameRegistry.addGame(game);
   }
   gameRegistry.setLastScan(new Date().toISOString());
 
-  return allGames;
+  return deduped;
 }
 
 /**
  * Scan a specific source only.
  */
-export async function scanSource(sourceId: string): Promise<Game[]> {
+export async function scanSource(sourceId: string, options: ScanOptions & { customRoots?: string[] } = {}): Promise<Game[]> {
   const source = gameRegistry.getSource(sourceId);
   if (!source || !source.enabled) return [];
 
   try {
-    switch (source.type) {
-      case 'steam':
-        return (await steamAutoDetect([])).map(g => withGameMetadata(g, 'steam'));
-      case 'heroic':
-        return getHeroicGames().map(g => ({ ...g, sourceId: 'heroic' } as Game));
-      case 'lutris':
-        return getLutrisGames().map(fromLutris);
-      case 'epic':
-        return getEpicGames().map(g => ({ ...g, sourceId: 'epic' } as Game));
-      case 'gog':
-        return getGogGames().map(g => ({ ...g, sourceId: 'gog' } as Game));
-      case 'ubisoft':
-        return getUbisoftGames().map(g => ({ ...g, sourceId: 'ubisoft' } as Game));
-      case 'ea':
-        return getEaGames().map(g => ({ ...g, sourceId: 'ea' } as Game));
-      case 'battlenet':
-        return getBattleNetGames().map(g => ({ ...g, sourceId: 'battlenet' } as Game));
-      case 'xbox':
-        return getXboxGames().map(g => ({ ...g, sourceId: 'xbox' } as Game));
-      case 'minecraft':
-        return getMinecraftGames().map(g => ({ ...g, sourceId: 'minecraft' } as Game));
-      case 'emulator':
-        return getEmulatorGames().map(g => ({ ...g, sourceId: 'emulator' } as Game));
-      case 'manual':
-        return Array.from(gameRegistry.games.values()).filter(g => g.sourceId === 'manual');
-    }
+    const resolver = MANIFEST_SOURCE_TYPES.has(source.type)
+      ? await buildResolver(options.customRoots ?? [], options)
+      : null;
+    return scanSourceGames(source, resolver, options);
   } catch (error) {
     console.error(`Failed to scan ${source.name}:`, error);
   }

@@ -3,25 +3,27 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-saveversions-test-'));
 process.env.API_KEY_SECRET = 'saveversions-test-secret-0123456789abcdef';
 
 const { createSaveVersion, listSaveVersions, getSaveVersion, getVersionDiff } = await import('./saveVersions.js');
 const { database } = await import('../db/index.js');
+const OWNER = database.createUser(`owner-${Date.now()}`, 'member').id;
 const { closeDbForTests } = await import('../db/sqlite.js');
 
 const TMP = process.env.DATA_DIR as string;
 
 afterAll(() => {
   closeDbForTests();
-  delete process.env.DATA_DIR;
+  process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
   delete process.env.API_KEY_SECRET;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
 
 describe('saveVersions service', () => {
   it('creates and lists versions', () => {
-    const game = database.upsertGame({ name: 'Version Game', status: 'In Sync', lastSync: 'Never' });
+    const game = database.upsertGame({ name: 'Version Game', status: 'In Sync', lastSync: 'Never', ownerId: OWNER });
     const version = createSaveVersion({
       gameId: game.id,
       files: [{ path: 'slot1.sav', size: 10, hash: 'abc', mtime: '2026-01-01T00:00:00.000Z' }],
@@ -33,7 +35,7 @@ describe('saveVersions service', () => {
   });
 
   it('returns version files and diffs', () => {
-    const game = database.upsertGame({ name: 'Diff Game', status: 'In Sync', lastSync: 'Never' });
+    const game = database.upsertGame({ name: 'Diff Game', status: 'In Sync', lastSync: 'Never', ownerId: OWNER });
     const v1 = createSaveVersion({
       gameId: game.id,
       files: [
