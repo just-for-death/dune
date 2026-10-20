@@ -13,6 +13,10 @@ import type {
 } from '@dune/shared';
 import { nextId } from '@dune/shared';
 import { Icon } from './Icon';
+import { SaveVersionTimeline } from './components/saves/SaveVersionTimeline';
+import { ConflictModal } from './components/saves/ConflictModal';
+import { StorageManager } from './components/saves/StorageManager';
+import { ExclusionEditor } from './components/saves/ExclusionEditor';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
@@ -24,7 +28,7 @@ declare global {
   }
 }
 
-type Tab = 'dashboard' | 'mapping' | 'sync' | 'playtime' | 'achievements' | 'settings';
+type Tab = 'dashboard' | 'mapping' | 'sync' | 'saves' | 'playtime' | 'achievements' | 'settings';
 
 function formatMinutes(min: number): string {
   if (min < 60) return `${min}m`;
@@ -52,6 +56,44 @@ function isValidUrl(url: string): boolean {
     return false;
   }
 }
+
+
+const DEMO_SAVE_VERSIONS = import.meta.env.DEV
+  ? [
+      {
+        id: '1',
+        gameId: 1,
+        createdAt: new Date().toISOString(),
+        sizeBytes: 88 * 1024 * 1024,
+        fileCount: 3,
+        changeSummary: '+0 ~3 -0',
+        status: 'complete' as const,
+      },
+      {
+        id: '2',
+        gameId: 1,
+        createdAt: new Date(Date.now() - 3600000).toISOString(),
+        sizeBytes: 87 * 1024 * 1024,
+        fileCount: 3,
+        changeSummary: '+1 ~2 -0',
+        status: 'complete' as const,
+      },
+    ]
+  : [];
+
+const DEMO_STORAGE_ENTRIES = import.meta.env.DEV
+  ? [{ gameId: 1, installBytes: 0, saveBytes: 47 * 1024 * 1024, cacheBytes: 412 * 1024 * 1024, lastPlayed: new Date().toISOString(), drive: 'D:\\' }]
+  : [];
+
+const DEMO_BACKUP_PROFILE = {
+  gameId: 1,
+  includeGlobs: ['**/*'],
+  excludeGlobs: ['**/cache/**', '**/*.log'],
+  autoExcludeCache: true,
+  updatedAt: new Date().toISOString(),
+};
+
+const DEMO_CONFLICT = null;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -445,6 +487,10 @@ export default function App() {
           <Icon name="sync" />
           <span>Cloud Sync</span>
         </button>
+        <button className={`nav-item ${activeTab === 'saves' ? 'active' : ''}`} onClick={() => setActiveTab('saves')}>
+          <Icon name="sync" />
+          <span>Saves</span>
+        </button>
         <button className={`nav-item ${activeTab === 'playtime' ? 'active' : ''}`} onClick={() => { setActiveTab('playtime'); loadPlaytime(); }}>
           <Icon name="playtime" />
           <span>Playtime</span>
@@ -698,6 +744,25 @@ export default function App() {
           </div>
         )}
 
+        {activeTab === 'saves' && (
+          <div className="card">
+            <h3 className="card-title">Save versions</h3>
+            <SaveVersionTimeline versions={DEMO_SAVE_VERSIONS} onRestore={(id) => showToast(`Restore requested: ${id}`, 'info')} />
+          </div>
+        )}
+        {activeTab === 'saves' && (
+          <div className="card">
+            <h3 className="card-title">Storage manager</h3>
+            <StorageManager drives={[{ name: 'D:\\', totalBytes: 2 * 1024 * 1024 * 1024 * 1024, freeBytes: 690 * 1024 * 1024 * 1024 }]} entries={DEMO_STORAGE_ENTRIES} />
+          </div>
+        )}
+        {activeTab === 'saves' && (
+          <div className="card">
+            <h3 className="card-title">Smart exclusions</h3>
+            <ExclusionEditor profile={DEMO_BACKUP_PROFILE} files={[{ path: 'saves/slot1.sav', size: 6.6 * 1024 * 1024, category: 'Save' }, { path: 'ShaderCache/file.bin', size: 412 * 1024 * 1024, category: 'Cache' }]} onChange={() => showToast('Backup profile updated', 'success')} />
+          </div>
+        )}
+        <ConflictModal conflict={DEMO_CONFLICT} open={false} onClose={() => {}} onResolve={() => {}} />
         {activeTab === 'playtime' && (
           <div>
             <div className="section-header">

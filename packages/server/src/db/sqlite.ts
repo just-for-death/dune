@@ -88,7 +88,7 @@ function openSchema(file: string): DatabaseSync {
     // until the ALTER runs.
     handle.exec('CREATE INDEX IF NOT EXISTS idx_games_owner ON games(ownerId);');
 
-    // Save versioning (Arcane-inspired)
+    // Save versioning (Dune)
     handle.exec(`
       CREATE TABLE IF NOT EXISTS save_versions (
         id TEXT PRIMARY KEY,
