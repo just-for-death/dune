@@ -24,6 +24,7 @@ import { ConflictModal } from './components/saves/ConflictModal';
 import { StorageManager } from './components/saves/StorageManager';
 import { ExclusionEditor } from './components/saves/ExclusionEditor';
 import { BigPicture } from './components/BigPicture';
+import { HLTBView } from './components/HLTBView';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
@@ -35,7 +36,7 @@ declare global {
   }
 }
 
-type Tab = 'dashboard' | 'mapping' | 'sync' | 'saves' | 'bigpicture' | 'playtime' | 'achievements' | 'settings';
+type Tab = 'dashboard' | 'mapping' | 'sync' | 'saves' | 'bigpicture' | 'hltb' | 'playtime' | 'achievements' | 'settings';
 
 function formatMinutes(min: number): string {
   if (min < 60) return `${min}m`;
@@ -516,6 +517,7 @@ export default function App() {
     setHltbLoading(prev => ({ ...prev, [gameName]: false }));
   };
 
+
   const filteredGames = games.filter(g =>
     g.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -545,6 +547,10 @@ export default function App() {
         <button className={`nav-item ${activeTab === 'bigpicture' ? 'active' : ''}`} onClick={() => setActiveTab('bigpicture')}>
           <Icon name="game" />
           <span>Big Picture</span>
+        </button>
+        <button className={`nav-item ${activeTab === 'hltb' ? 'active' : ''}`} onClick={() => setActiveTab('hltb')}>
+          <Icon name="playtime" />
+          <span>HLTB</span>
         </button>
         <button className={`nav-item ${activeTab === 'playtime' ? 'active' : ''}`} onClick={() => { setActiveTab('playtime'); loadPlaytime(); }}>
           <Icon name="playtime" />
@@ -820,6 +826,9 @@ export default function App() {
         <ConflictModal conflict={conflicts.find((c) => !c.resolution) ?? null} localVersion={saveVersions[1]} remoteVersion={saveVersions[0]} open={showConflictModal} onClose={() => setShowConflictModal(false)} onResolve={async (resolution) => { const conflict = conflicts.find((c) => !c.resolution); if (conflict) { const res = await window.electronAPI.resolveConflict(conflict.id, resolution); if (res?.success) { setConflicts((prev) => prev.map((c) => c.id === conflict.id ? { ...c, resolution, resolvedAt: new Date().toISOString() } : c)); setShowConflictModal(false); showToast('Conflict resolved', 'success'); } else showToast(res?.message || 'Failed to resolve conflict', 'error'); } }} />
         {activeTab === 'bigpicture' && (
           <BigPicture games={games} onLaunch={(game) => showToast(`Launch requested: ${game.name}`, 'info')} />
+        )}
+        {activeTab === 'hltb' && (
+          <HLTBView games={games} cache={hltbCache} loading={hltbLoading} onLoad={loadHLTB} />
         )}
         {activeTab === 'playtime' && (
           <div>
