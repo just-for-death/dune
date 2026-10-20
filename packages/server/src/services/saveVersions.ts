@@ -221,6 +221,9 @@ export function createVersionFromDirectory(input: {
   const includedSet = new Set(included.map((file) => file.path));
   const files = allFiles.filter((file) => includedSet.has(file.path));
 
+  const latest = listSaveVersions(input.gameId, 1)[0];
+  const parentVersionId = input.parentVersionId ?? latest?.id;
+
   // Store a restorable snapshot directory, matching the DB version id.
   const version = createSaveVersion({
     gameId: input.gameId,
@@ -228,7 +231,7 @@ export function createVersionFromDirectory(input: {
     deviceId: input.deviceId,
     files,
     changeSummary: input.changeSummary ?? 'directory snapshot',
-    parentVersionId: input.parentVersionId,
+    parentVersionId,
   });
 
   const snapshotDir = path.join(gameRoot, '.versions', version.id);
