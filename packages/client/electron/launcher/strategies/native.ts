@@ -3,7 +3,7 @@ import type { LaunchCommand, LaunchStrategy } from './types.js';
 
 export const nativeStrategy: LaunchStrategy = {
   canLaunch(game) {
-    return Boolean(game.executable || game.linPath) && (game.source === undefined || game.source === 'manual');
+    return Boolean(game.executable || game.linPath) && game.source !== 'emulator';
   },
   getCommand(game): LaunchCommand | null {
     const executable = game.executable || game.linPath;

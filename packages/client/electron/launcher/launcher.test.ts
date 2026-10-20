@@ -33,6 +33,11 @@ describe('launcher strategies', () => {
     expect(command?.args[0]).toBe('steam://run/12345');
   });
 
+  it('falls back to a native executable for non-manual sources', () => {
+    const game = { ...baseGame, source: 'epic' as const };
+    expect(getLaunchCommand(game)?.command).toBe(tempFile);
+  });
+
   it('uses scanner metadata when launch options are omitted', () => {
     const steamGame = { ...baseGame, sourceId: 'steam', steamAppId: '67890' };
     expect(getLaunchCommand(steamGame)?.args[0]).toBe('steam://run/67890');
