@@ -1,5 +1,6 @@
 export { autoDetectGames } from './steam.js';
 export { getHeroicGames, getHeroicExecutable, getHeroicWinePrefix, getHeroicWineVersion, getHeroicGameLaunchCommand, isHeroicAvailable } from './heroic.js';
+export { getEpicGames, getGogGames, getUbisoftGames, getEaGames, getBattleNetGames, getXboxGames, getMinecraftGames } from './external.js';
 export { getLutrisGames, getLutrisExecutable, getLutrisWinePrefix, getLutrisWineVersion, getLutrisGameLaunchCommand, isLutrisAvailable, getLutrisGameBySlug, getLutrisGameById, isLutrisGameInstalled, getLutrisGamePath, getLutrisGameExecutable, getLutrisPrefixes, getLutrisWineVersions } from './lutris.js';
 export { 
   gameRegistry, 

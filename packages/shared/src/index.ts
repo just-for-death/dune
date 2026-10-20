@@ -15,8 +15,8 @@ export interface Game {
   analysis?: Record<string, FileAnalysis>;
   createdAt: string;
   updatedAt: string;
-  sourceId?: string; // 'steam' | 'heroic' | 'lutris' | 'manual'
-  source?: 'steam' | 'heroic' | 'lutris' | 'manual';
+  sourceId?: string; // 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft'
+  source?: 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft';
 }
 
 // File analysis from AI

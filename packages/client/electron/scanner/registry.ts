@@ -3,11 +3,12 @@ import type { Game } from '@dune/shared';
 import { autoDetectGames as steamAutoDetect } from './steam.js';
 import { getHeroicGames } from './heroic.js';
 import { getLutrisGames } from './lutris.js';
+import { getEpicGames, getGogGames, getUbisoftGames, getEaGames, getBattleNetGames, getXboxGames, getMinecraftGames } from './external.js';
 
 export interface GameSource {
   id: string;
   name: string;
-  type: 'steam' | 'heroic' | 'lutris' | 'manual';
+  type: 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft';
   enabled: boolean;
   lastScan?: string;
   gameCount: number;
@@ -97,6 +98,55 @@ function initializeSources() {
     gameCount: 0,
   });
   gameRegistry.registerSource({
+    id: 'epic',
+    name: 'Epic Games',
+    type: 'manual',
+    enabled: false,
+    gameCount: 0,
+  });
+  gameRegistry.registerSource({
+    id: 'gog',
+    name: 'GOG',
+    type: 'manual',
+    enabled: false,
+    gameCount: 0,
+  });
+  gameRegistry.registerSource({
+    id: 'ubisoft',
+    name: 'Ubisoft Connect',
+    type: 'manual',
+    enabled: false,
+    gameCount: 0,
+  });
+  gameRegistry.registerSource({
+    id: 'ea',
+    name: 'EA App',
+    type: 'manual',
+    enabled: false,
+    gameCount: 0,
+  });
+  gameRegistry.registerSource({
+    id: 'battlenet',
+    name: 'Battle.net',
+    type: 'manual',
+    enabled: false,
+    gameCount: 0,
+  });
+  gameRegistry.registerSource({
+    id: 'xbox',
+    name: 'Xbox',
+    type: 'manual',
+    enabled: false,
+    gameCount: 0,
+  });
+  gameRegistry.registerSource({
+    id: 'minecraft',
+    name: 'Minecraft',
+    type: 'manual',
+    enabled: false,
+    gameCount: 0,
+  });
+  gameRegistry.registerSource({
     id: 'manual',
     name: 'Manual Entry',
     type: 'manual',
@@ -128,6 +178,27 @@ export async function fullScan(_customRoots: string[] = []): Promise<Game[]> {
           break;
         case 'lutris':
           games = getLutrisGames().map(g => ({ ...g, sourceId: 'lutris' } as Game));
+          break;
+        case 'epic':
+          games = getEpicGames().map(g => ({ ...g, sourceId: 'epic' } as Game));
+          break;
+        case 'gog':
+          games = getGogGames().map(g => ({ ...g, sourceId: 'gog' } as Game));
+          break;
+        case 'ubisoft':
+          games = getUbisoftGames().map(g => ({ ...g, sourceId: 'ubisoft' } as Game));
+          break;
+        case 'ea':
+          games = getEaGames().map(g => ({ ...g, sourceId: 'ea' } as Game));
+          break;
+        case 'battlenet':
+          games = getBattleNetGames().map(g => ({ ...g, sourceId: 'battlenet' } as Game));
+          break;
+        case 'xbox':
+          games = getXboxGames().map(g => ({ ...g, sourceId: 'xbox' } as Game));
+          break;
+        case 'minecraft':
+          games = getMinecraftGames().map(g => ({ ...g, sourceId: 'minecraft' } as Game));
           break;
         case 'manual':
           // Manual games are already in registry
@@ -172,6 +243,20 @@ export async function scanSource(sourceId: string): Promise<Game[]> {
         return getHeroicGames().map(g => ({ ...g, sourceId: 'heroic' } as Game));
       case 'lutris':
         return getLutrisGames().map(g => ({ ...g, sourceId: 'lutris' } as Game));
+      case 'epic':
+        return getEpicGames().map(g => ({ ...g, sourceId: 'epic' } as Game));
+      case 'gog':
+        return getGogGames().map(g => ({ ...g, sourceId: 'gog' } as Game));
+      case 'ubisoft':
+        return getUbisoftGames().map(g => ({ ...g, sourceId: 'ubisoft' } as Game));
+      case 'ea':
+        return getEaGames().map(g => ({ ...g, sourceId: 'ea' } as Game));
+      case 'battlenet':
+        return getBattleNetGames().map(g => ({ ...g, sourceId: 'battlenet' } as Game));
+      case 'xbox':
+        return getXboxGames().map(g => ({ ...g, sourceId: 'xbox' } as Game));
+      case 'minecraft':
+        return getMinecraftGames().map(g => ({ ...g, sourceId: 'minecraft' } as Game));
       case 'manual':
         return Array.from(gameRegistry.games.values()).filter(g => (g as any).sourceId === 'manual');
     }
