@@ -44,6 +44,9 @@ describe('REST shims auth gate', () => {
     ['get', '/api/playtime'],
     ['get', '/api/playtime/recent'],
     ['get', '/api/playtime/total'],
+    ['get', '/api/playtime/graph'],
+    ['get', '/api/playtime/comparison'],
+    ['get', '/api/playtime/export'],
     ['get', '/api/achievements/recent'],
     ['get', '/api/achievements/Bob'],
     ['get', '/api/achievements'],
@@ -118,6 +121,42 @@ describe('REST shims happy paths', () => {
 
     const total = await api(request(app).get('/api/playtime/total'));
     expect(total.body.totalMinutes).toBeGreaterThanOrEqual(60);
+  });
+
+  it('playtime graph, comparison, and export return range-scoped data', async () => {
+    const rec = await api(request(app).post('/api/playtime')).send({
+      game: 'Graph Shim Game',
+      platform: 'test',
+      sessionStart: '2024-01-01T10:00:00.000Z',
+      sessionEnd: '2024-01-01T11:00:00.000Z',
+    });
+    expect(rec.body.success).toBe(true);
+
+    const graph = await api(request(app).get('/api/playtime/graph?range=all'));
+    expect(graph.body.success).toBe(true);
+    expect(graph.body.data.line.length).toBeGreaterThan(0);
+    expect(graph.body.data.heatmap.length).toBe(graph.body.data.line.length);
+    expect(graph.body.data.bar).toContainEqual({ game: 'Graph Shim Game', minutes: 60 });
+    expect(graph.body.data.pie).toEqual(
+      expect.arrayContaining([expect.objectContaining({ game: 'Graph Shim Game', minutes: 60 })]),
+    );
+
+    const comparison = await api(request(app).get('/api/playtime/comparison?range=year'));
+    expect(comparison.body.success).toBe(true);
+    expect(comparison.body.comparison.current.period).toBe('last year');
+    expect(comparison.body.comparison.previous.period).toBe('previous year');
+    expect(typeof comparison.body.comparison.difference.percentage).toBe('number');
+
+    const json = await api(request(app).get('/api/playtime/export?format=json&range=all'));
+    expect(json.body.success).toBe(true);
+    expect(JSON.parse(json.body.data)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ game: 'Graph Shim Game', durationMinutes: 60 })]),
+    );
+
+    const csv = await api(request(app).get('/api/playtime/export?format=csv&range=all'));
+    expect(csv.body.success).toBe(true);
+    expect(csv.body.data).toContain('game,platform,sessionStart,sessionEnd,durationMinutes');
+    expect(csv.body.data).toContain('"Graph Shim Game","test"');
   });
 
   it('achievements get/summary/recent shapes', async () => {

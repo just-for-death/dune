@@ -102,6 +102,21 @@ describe('getHLTBTimes', () => {
     const result = await getHLTBTimes('Any Game');
     expect(result.success).toBe(false);
   });
+
+  it('should fall back to stale cache when the network fails', async () => {
+    const times = { mainStory: 900, mainExtra: 1200, completionist: 1800 };
+    writeCache('Stale Fallback Game', times);
+    const cachePath = path.join(CACHE_DIR, 'stale-fallback-game.json');
+    const oldTime = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(cachePath, new Date(oldTime), new Date(oldTime));
+    postMock.mockRejectedValue(new Error('network down'));
+
+    const result = await getHLTBTimes('Stale Fallback Game');
+    expect(result.success).toBe(true);
+    expect(result.stale).toBe(true);
+    expect(result.times).toEqual(times);
+    expect(postMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('bulkFetchHLTB', () => {
