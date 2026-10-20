@@ -94,6 +94,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('achievements:recent', limit),
   importLocalAchievements: (game: Game) =>
     ipcRenderer.invoke('achievements:importLocal', game),
+  onAchievementsImported: (cb: (data: { game: string; count: number }) => void) => {
+    const listener = (_event: unknown, data: { game: string; count: number }) => cb(data);
+    ipcRenderer.on('achievements:imported', listener);
+    return () => ipcRenderer.removeListener('achievements:imported', listener);
+  },
   
   // HLTB
   getHLTBTimes: (gameName: string) => 

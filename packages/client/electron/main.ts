@@ -13,7 +13,7 @@ import { getEmulatorGames } from './emulators/roms'
 import { launchGame, getLaunchCommand } from './launcher/manager'
 import type { LaunchOptions } from './launcher/strategies/types'
 import { buildPlaytimeSession, enqueuePlaytimeSession, type PlaytimeSessionPayload } from './playtime/session'
-import { getAchievementRoots, scanLocalAchievements } from './achievements/local'
+import { importLocalAchievementsFromDisk } from './achievements/import'
 import { listPrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix } from './prefix/manager'
 import { autoUpdater } from 'electron-updater'
 import {
@@ -1103,6 +1103,29 @@ ipcMain.handle('playtime:export', async (_event, format, range, customRange) => 
 
 
 // Achievements
+async function importLocalAchievementsForGame(game: Game) {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, count: 0, message: 'No Dune Server configured' }
+
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const result = await importLocalAchievementsFromDisk(game, async (name, achievements) => {
+      const res = await axios.post(
+        `${cleanUrl}/api/achievements/import`,
+        { game: name, achievements },
+        { headers: serverHeaders({ 'Content-Type': 'application/json' }) },
+      )
+      return res.data
+    })
+    if (result.success && result.count > 0) {
+      mainWindow?.webContents.send('achievements:imported', { game: game.name, count: result.count })
+    }
+    return result
+  } catch (e) {
+    return { success: false, count: 0, message: errorMessage(e) }
+  }
+}
+
 ipcMain.handle('achievements:get', async (_event, game) => {
   const cloud = store.get('cloud')
   if (!cloud?.url) return { success: false, achievements: [] }
@@ -1143,24 +1166,7 @@ ipcMain.handle('achievements:summary', async (_event, game) => {
 })
 
 ipcMain.handle('achievements:importLocal', async (_event, game: Game) => {
-  const cloud = store.get('cloud')
-  if (!cloud?.url) return { success: false, count: 0, message: 'No Dune Server configured' }
-
-  try {
-    const achievements = scanLocalAchievements(getAchievementRoots(game))
-    if (achievements.length === 0) {
-      return { success: true, count: 0, message: 'No local achievement files found' }
-    }
-
-    const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.post(`${cleanUrl}/api/achievements/import`, {
-      game: game.name,
-      achievements,
-    }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
-    return res.data
-  } catch (e) {
-    return { success: false, count: 0, message: errorMessage(e) }
-  }
+  return importLocalAchievementsForGame(game)
 })
 
 ipcMain.handle('achievements:recent', async (_event, limit) => {  const cloud = store.get('cloud')
@@ -1333,6 +1339,13 @@ ipcMain.handle('game:launch', async (_event, game: Game, options?: Record<string
     const tracking = {
       onExit: ({ startedAt, endedAt }: { startedAt: number; endedAt: number }) => {
         void recordLaunchPlaytime(game.name, startedAt, endedAt);
+        // Give the game a moment to flush achievement files, then import
+        // whatever it left on disk. Import failures stay silent until the
+        // user opens the achievements view.
+        const timer = setTimeout(() => {
+          void importLocalAchievementsForGame(game);
+        }, 1500);
+        timer.unref?.();
       },
     };
     const result = await launchGame(game, (options || {}) as LaunchOptions, tracking);

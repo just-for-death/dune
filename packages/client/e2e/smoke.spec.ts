@@ -51,6 +51,7 @@ test.beforeEach(async ({ page }) => {
       }),
       getRecentUnlocks: async () => ({ success: true, unlocks: [] }),
       importLocalAchievements: async () => ({ success: true, count: 0, message: 'No local achievement files found' }),
+      onAchievementsImported: () => () => {},
       getAchievementDetail: async () => ({
         success: true,
         achievements: [{

@@ -261,6 +261,14 @@ export default function App() {
     return cleanup;
   }, [showToast]);
 
+  useEffect(() => {
+    const cleanup = window.electronAPI.onAchievementsImported((data) => {
+      const noun = data.count === 1 ? 'achievement' : 'achievements';
+      showToast(`Imported ${data.count} local ${noun} for ${data.game}`, 'success');
+    });
+    return cleanup;
+  }, [showToast]);
+
 
   useEffect(() => {
     if (activeTab !== 'saves' || !selectedSaveGameName || !cloud.url) return;
