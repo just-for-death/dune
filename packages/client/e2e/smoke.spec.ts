@@ -44,8 +44,38 @@ test.beforeEach(async ({ page }) => {
       getRecentSessions: async () => ({ success: true, sessions: [] }),
       getTotalPlaytime: async () => ({ success: true, totalMinutes: 0 }),
       getAchievements: async () => ({ success: true, achievements: [] }),
-      getAchievementSummary: async () => ({ success: true, summary: [] }),
+      getAchievementSummary: async () => ({
+        success: true,
+        summary: [{ game: 'Hades', unlocked: 1, total: 2, percentage: 50 }],
+      }),
       getRecentUnlocks: async () => ({ success: true, unlocks: [] }),
+      getAchievementDetail: async () => ({
+        success: true,
+        achievements: [{
+          id: 1,
+          game: 'Hades',
+          apiName: 'ACH_TEST',
+          displayName: 'Test Achievement',
+          description: 'A test unlock',
+          unlocked: true,
+          unlockTime: '2026-01-01T00:00:00.000Z',
+          rarity: 5,
+          localRarity: 0,
+          hidden: false,
+          iconUrl: '',
+          iconGrayUrl: '',
+          isSecret: false,
+          steamApiName: 'ACH_TEST',
+          createdAt: '',
+          updatedAt: '',
+        }],
+        progress: {
+          total: 1,
+          unlocked: 1,
+          percentage: 100,
+          rarestUnlocked: { tier: 'legendary', minPercent: 0, maxPercent: 10, label: 'Legendary', color: '#FFD700' },
+        },
+      }),
       getHLTBTimes: async () => ({ success: false, message: 'offline (e2e stub)' }),
       analyzeFiles: async () => ({ success: false, message: 'offline (e2e stub)' }),
       searchArt: async () => ({ success: true, results: [] }),
@@ -124,6 +154,18 @@ test('settings exposes the server API key field', async ({ page }) => {
   await expect(keyInput).toBeVisible();
   await keyInput.fill('test-key-123');
   await expect(keyInput).toHaveValue('test-key-123');
+});
+
+test('achievements show rarity tiers and detail', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('#server-url').fill('http://localhost:3030');
+  await page.getByRole('button', { name: 'Achievements', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Achievements' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Hades' })).toBeVisible();
+  await page.getByRole('button', { name: 'View' }).click();
+  await expect(page.getByText('Test Achievement')).toBeVisible();
+  await expect(page.getByText('Legendary', { exact: true })).toBeVisible();
 });
 
 test('runtime manager lists prefix groups and create controls', async ({ page }) => {

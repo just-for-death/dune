@@ -1,6 +1,6 @@
 import { RARITY_TIERS } from '@dune/shared';
 import { getGameAchievements } from './achievements.js';
-import type { AchievementDetail, AchievementRarityTier } from '@dune/shared';
+import type { AchievementDetail, AchievementRarityTier, AchievementProgress } from '@dune/shared';
 
 export function getRarityTier(rarity: number): AchievementRarityTier {
   return RARITY_TIERS.find((tier) => rarity >= tier.minPercent && rarity < tier.maxPercent) ?? RARITY_TIERS[RARITY_TIERS.length - 1];
@@ -27,7 +27,7 @@ export function getAchievementDetails(game: string, ownerId?: string): Achieveme
   }));
 }
 
-export function getAchievementProgress(game: string, ownerId?: string): { total: number; unlocked: number; percentage: number; rarestUnlocked: AchievementRarityTier | null } {
+export function getAchievementProgress(game: string, ownerId?: string): AchievementProgress {
   const details = getAchievementDetails(game, ownerId);
   const unlocked = details.filter((achievement) => achievement.unlocked);
   const rarest = unlocked

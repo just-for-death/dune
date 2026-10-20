@@ -201,6 +201,13 @@ export interface AchievementRarityTier {
   color: string;
 }
 
+export interface AchievementProgress {
+  total: number;
+  unlocked: number;
+  percentage: number;
+  rarestUnlocked: AchievementRarityTier | null;
+}
+
 export const RARITY_TIERS: AchievementRarityTier[] = [
   { tier: 'legendary', minPercent: 0, maxPercent: 10, label: 'Legendary', color: '#FFD700' },
   { tier: 'epic', minPercent: 10, maxPercent: 20, label: 'Epic', color: '#E945FF' },
@@ -376,7 +383,7 @@ export interface ElectronAPI {
   getAchievements: (game: string) => Promise<{ success: boolean; achievements: Achievement[]; message?: string }>;
   getAchievementSummary: (game?: string) => Promise<{ success: boolean; summary: AchievementSummary[]; message?: string }>;
   getRecentUnlocks: (limit?: number) => Promise<{ success: boolean; unlocks: Achievement[]; message?: string }>;
-  getAchievementDetail: (game: string) => Promise<{ success: boolean; achievements: AchievementDetail[]; message?: string }>;
+  getAchievementDetail: (game: string) => Promise<{ success: boolean; achievements: AchievementDetail[]; progress?: AchievementProgress | null; message?: string }>;
   
   // HLTB
   getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string; stale?: boolean }>;

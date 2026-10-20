@@ -8,9 +8,11 @@ import type {
   PlaytimeGraphData,
   PlaytimeComparison,
   AchievementSummary,
+  Achievement,
+  AchievementDetail,
+  AchievementProgress,
   Game,
   Settings,
-  Achievement,
   ElectronAPI,
   SaveVersion,
   ConflictRecord,
@@ -18,7 +20,7 @@ import type {
   BackupProfile,
   PrefixSummary,
 } from '@dune/shared';
-import { nextId } from '@dune/shared';
+import { nextId, RARITY_TIERS } from '@dune/shared';
 import { Icon } from './Icon';
 import { PlaytimeCharts } from './components/PlaytimeCharts';
 import { applyTheme, loadThemes, getActiveThemeId, setActiveThemeId } from './theme/manager';
@@ -54,6 +56,11 @@ function formatBytes(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function rarityTier(rarity: number) {
+  return RARITY_TIERS.find((tier) => rarity >= tier.minPercent && rarity < tier.maxPercent)
+    ?? RARITY_TIERS[RARITY_TIERS.length - 1];
 }
 
 function formatDate(iso: string): string {
@@ -155,7 +162,9 @@ export default function App() {
   // Achievements state
   const [achievementSummary, setAchievementSummary] = useState<AchievementSummary[]>([]);
   const [selectedAchGame, setSelectedAchGame] = useState('');
-  const [achievements, setAchievements] = useState<Achievement[]>([]);
+  const [achievements, setAchievements] = useState<AchievementDetail[]>([]);
+  const [achievementProgress, setAchievementProgress] = useState<AchievementProgress | null>(null);
+  const [recentUnlocks, setRecentUnlocks] = useState<Achievement[]>([]);
   const [isLoadingAch, setIsLoadingAch] = useState(false);
 
   // HLTB cache
@@ -518,9 +527,13 @@ export default function App() {
     }
     setIsLoadingAch(true);
     try {
-      const res = await window.electronAPI.getAchievementSummary();
-      if (res.success) setAchievementSummary(res.summary);
-      else showToast(res.message || 'Failed to load achievements', 'error');
+      const [summaryRes, recentRes] = await Promise.all([
+        window.electronAPI.getAchievementSummary(),
+        window.electronAPI.getRecentUnlocks(5),
+      ]);
+      if (summaryRes.success) setAchievementSummary(summaryRes.summary);
+      else showToast(summaryRes.message || 'Failed to load achievements', 'error');
+      if (recentRes.success) setRecentUnlocks(recentRes.unlocks);
     } catch {
       showToast('Failed to load achievements', 'error');
     }
@@ -531,9 +544,10 @@ export default function App() {
     if (!gameName) return;
     setIsLoadingAch(true);
     try {
-      const res = await window.electronAPI.getAchievements(gameName);
+      const res = await window.electronAPI.getAchievementDetail(gameName);
       if (res.success) {
         setAchievements(res.achievements);
+        setAchievementProgress(res.progress ?? null);
         setSelectedAchGame(gameName);
       } else {
         showToast(res.message || 'No achievements found', 'info');
@@ -1147,18 +1161,52 @@ export default function App() {
                 </div>
               )}
             </div>
+            {recentUnlocks.length > 0 && (
+              <div className="card">
+                <h3 className="card-title"><Icon name="sparkles" />Recent Unlocks</h3>
+                <div className="path-list">
+                  {recentUnlocks.map(a => {
+                    const tier = rarityTier(a.rarity);
+                    return (
+                      <div className="path-row" key={`${a.game}-${a.id}`}>
+                        <div className="path-main">
+                          <strong>{a.displayName}</strong>
+                          <div className="path-sub">{a.game} · {a.unlockTime ? formatDate(a.unlockTime) : 'Unlocked'}</div>
+                        </div>
+                        <span className="badge" style={{ color: tier.color, borderColor: tier.color }}>{tier.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {achievements.length > 0 && (
               <div className="card">
-                <h3 className="card-title">{selectedAchGame} — {achievements.filter(a => a.unlocked).length}/{achievements.length} unlocked</h3>
+                <h3 className="card-title">
+                  {selectedAchGame} — {achievementProgress?.unlocked ?? achievements.filter(a => a.unlocked).length}/{achievementProgress?.total ?? achievements.length} unlocked
+                </h3>
+                {achievementProgress?.rarestUnlocked && (
+                  <p className="text-muted text-sm">
+                    Rarest unlocked: <strong style={{ color: achievementProgress.rarestUnlocked.color }}>{achievementProgress.rarestUnlocked.label}</strong>
+                  </p>
+                )}
                 <div className="ach-grid">
-                  {achievements.map(a => (
-                    <div key={a.id} className={`ach-card ${a.unlocked ? 'ach-unlocked' : 'ach-locked'}`}>
-                      <div className="ach-name">{a.displayName}</div>
-                      <div className="ach-desc">{a.description}</div>
-                      {a.unlocked && a.unlockTime && <div className="ach-time">{formatDate(a.unlockTime)}</div>}
-                      {a.rarity > 0 && <div className="ach-rarity">{a.rarity.toFixed(1)}% of players</div>}
-                    </div>
-                  ))}
+                  {achievements.map(a => {
+                    const tier = rarityTier(a.rarity);
+                    const secret = a.hidden && !a.unlocked;
+                    return (
+                      <div key={a.id} className={`ach-card ${a.unlocked ? 'ach-unlocked' : 'ach-locked'}`}>
+                        <div className="ach-name">{secret ? 'Hidden achievement' : a.displayName}</div>
+                        <div className="ach-desc">{secret ? 'Unlock to reveal this achievement.' : a.description}</div>
+                        {a.unlocked && a.unlockTime && <div className="ach-time">{formatDate(a.unlockTime)}</div>}
+                        {a.rarity > 0 && (
+                          <div className="ach-rarity" style={{ color: tier.color }}>
+                            {tier.label} · {a.rarity.toFixed(1)}% of players
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
