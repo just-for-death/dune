@@ -103,8 +103,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Save versions
   getSaveVersions: (game: string) =>
     ipcRenderer.invoke('saves:listVersions', game),
-  createSaveVersion: (game: string) =>
-    ipcRenderer.invoke('saves:createVersion', game),
+  createSaveVersion: (game: string, deviceId?: string, changeSummary?: string) =>
+    ipcRenderer.invoke('saves:createVersion', game, deviceId, changeSummary),
   getSaveVersion: (id: string) =>
     ipcRenderer.invoke('saves:getVersion', id),
   getSaveVersionDiff: (from: string, to: string) =>

@@ -714,14 +714,19 @@ app.post('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) 
     const row = database.getGameByName(path.basename(game.toString()));
     if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
     const ownerId = row.ownerId ?? req.user?.id;
+    const resolvedDeviceId = typeof deviceId === 'string' ? deviceId : req.user?.id;
     const version = createVersionFromDirectory({
       gameId: row.id,
       gameName: game.toString(),
       ownerId,
-      deviceId: typeof deviceId === 'string' ? deviceId : req.user?.id,
+      deviceId: resolvedDeviceId,
       changeSummary: typeof changeSummary === 'string' ? changeSummary : 'manual snapshot',
     });
-    res.status(201).json({ success: true, version });
+    const previous = listSaveVersions(row.id, 2)[1];
+    const conflict = previous && previous.deviceId && previous.deviceId !== resolvedDeviceId
+      ? detectConflict(row.id, previous.id, version.id)
+      : null;
+    res.status(201).json({ success: true, version, conflict, hasUnresolved: hasUnresolvedConflict(row.id) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }

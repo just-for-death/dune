@@ -344,7 +344,7 @@ export interface ElectronAPI {
 
   // Save versions
   getSaveVersions: (game: string) => Promise<{ success: boolean; versions?: SaveVersion[]; message?: string }>;
-  createSaveVersion: (game: string) => Promise<{ success: boolean; version?: SaveVersion; message?: string }>;
+  createSaveVersion: (game: string, deviceId?: string, changeSummary?: string) => Promise<{ success: boolean; version?: SaveVersion; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>;
   getSaveVersion: (id: string) => Promise<{ success: boolean; version?: SaveVersion; files?: SaveFileSnapshot[]; message?: string }>;
   getSaveVersionDiff: (from: string, to: string) => Promise<{ success: boolean; diff?: { added: string[]; removed: string[]; changed: string[]; unchanged: number }; message?: string }>;
   restoreSaveVersion: (game: string, versionId: string) => Promise<{ success: boolean; message?: string; restoredFiles?: number }>;

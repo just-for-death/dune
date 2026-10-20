@@ -200,3 +200,30 @@ export function commitUploaded(
   for (const rel of failedRels) delete uploaded[rel];
   saveGameStateFn(game, { uploaded });
 }
+/** Simple glob matcher for backup profile include/exclude rules. */
+export function matchesBackupGlob(relPath: string, pattern: string): boolean {
+  const normalizedPath = relPath.replace(/\\/g, '/');
+  const normalizedPattern = pattern.trim();
+  if (!normalizedPattern || normalizedPattern === '*' || normalizedPattern === '**' || normalizedPattern === '**/*') {
+    return true;
+  }
+
+  const regex = normalizedPattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\//g, '(?:.*/)?')
+    .replace(/\*\*/g, '.*')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]');
+  return new RegExp(`^${regex}$`, 'i').test(normalizedPath);
+}
+
+export function filterBackupFiles<T extends { rel: string }>(
+  files: T[],
+  profile: { includeGlobs: string[]; excludeGlobs: string[] },
+): T[] {
+  return files.filter((file) => {
+    const included = profile.includeGlobs.some((pattern) => matchesBackupGlob(file.rel, pattern));
+    const excluded = profile.excludeGlobs.some((pattern) => matchesBackupGlob(file.rel, pattern));
+    return included && !excluded;
+  });
+}

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, protocol, safeStorage, session, net } from 'electron'
 import { pathToFileURL } from 'node:url'
 import * as path from 'path'
+import * as os from 'os'
 import * as fs from 'fs'
 import Store from 'electron-store'
 import AdmZip from 'adm-zip'
@@ -17,6 +18,7 @@ import {
   sanitizeSettings,
   planUpload,
   commitUploaded,
+  filterBackupFiles,
 } from './utils'
 
 // Define default games if empty
@@ -269,7 +271,16 @@ async function performCloudSync(credentials: any) {
         }
 
         const syncId = Date.now().toString();
-        const { plan, localManifest, deleted } = planUpload(game.name, filePaths, getSyncState);
+        let profileFiles = filePaths;
+        try {
+          const profileRes = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(game.name)}`, { headers: serverHeaders() });
+          if (profileRes.data?.success && profileRes.data.profile) {
+            profileFiles = filterBackupFiles(filePaths.map((file) => ({ ...file, rel: file.rel })), profileRes.data.profile);
+          }
+        } catch {
+          // Fall back to the full file set when the server is unavailable.
+        }
+        const { plan, localManifest, deleted } = planUpload(game.name, profileFiles, getSyncState);
         let attempted = 0;
         const failedRels: string[] = [];
         for (let i = 0; i < plan.length; i += 5) {
@@ -298,6 +309,18 @@ async function performCloudSync(credentials: any) {
             await refreshRemoteManifest(cleanUrl, game.name);
           } catch {
             /* non-fatal: a stale baseline only costs an extra download later */
+          }
+        }
+
+        if (plan.length > 0 && failedRels.length === 0) {
+          try {
+            await axios.post(`${cleanUrl}/api/save-versions`, {
+              game: game.name,
+              deviceId: os.hostname(),
+              changeSummary: `Synced ${plan.length} changed file(s)`,
+            }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) });
+          } catch {
+            /* Version creation is non-fatal; sync already succeeded. */
           }
         }
 
@@ -376,6 +399,26 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
       list.push({ local: f.local, rel: f.rel });
       byGame.set(f.game, list);
     }
+
+    // Apply per-game backup profiles before planning uploads.
+    const profilesByGame = new Map<string, { includeGlobs: string[]; excludeGlobs: string[] }>();
+    for (const game of byGame.keys()) {
+      try {
+        const profileRes = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(game)}`, { headers: serverHeaders() });
+        if (profileRes.data?.success && profileRes.data.profile) {
+          profilesByGame.set(game, profileRes.data.profile);
+        }
+      } catch {
+        profilesByGame.set(game, { includeGlobs: ['**/*'], excludeGlobs: [] });
+      }
+    }
+    for (const [game, files] of Array.from(byGame.entries())) {
+      const profile = profilesByGame.get(game) || { includeGlobs: ['**/*'], excludeGlobs: [] };
+      const filtered = filterBackupFiles(files, profile);
+      if (filtered.length === 0) byGame.delete(game);
+      else byGame.set(game, filtered);
+    }
+
     const plans = new Map<string, ReturnType<typeof planUpload>>();
     for (const [game, files] of byGame) plans.set(game, planUpload(game, files, getSyncState));
 
@@ -429,6 +472,19 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
         await refreshRemoteManifest(cleanUrl, game);
       } catch {
         /* non-fatal: a stale baseline only costs an extra download later */
+      }
+    }
+
+    for (const [game, p] of plans) {
+      if (p.plan.length === 0 || (failedByGame.get(game) || []).length > 0) continue;
+      try {
+        await axios.post(`${cleanUrl}/api/save-versions`, {
+          game,
+          deviceId: os.hostname(),
+          changeSummary: `Synced ${p.plan.length} changed file(s)`,
+        }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) });
+      } catch {
+        /* Version creation is non-fatal; sync already succeeded. */
       }
     }
 
@@ -976,12 +1032,12 @@ ipcMain.handle('saves:listVersions', async (_event, game: string) => {
   }
 })
 
-ipcMain.handle('saves:createVersion', async (_event, game: string) => {
+ipcMain.handle('saves:createVersion', async (_event, game: string, deviceId?: string, changeSummary?: string) => {
   const cloud = store.get('cloud')
   if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
   try {
     const cleanUrl = normalizeUrl(cloud.url)
-    const res = await axios.post(`${cleanUrl}/api/save-versions`, { game }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
+    const res = await axios.post(`${cleanUrl}/api/save-versions`, { game, deviceId, changeSummary }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
     return res.data
   } catch (e: any) {
     return { success: false, message: e.message }
