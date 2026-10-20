@@ -347,3 +347,144 @@ describe('multi-user scoping', () => {
     await admin.users.remove({ id: alice.user.id });
   });
 });
+
+describe('remaining router procedures', () => {
+  it('sync.test reports success, server errors, and network failures', async () => {
+    const c = appRouter.createCaller(ctx());
+    getMock.mockResolvedValueOnce({ data: { success: true } });
+    await expect(c.sync.test({ url: 'http://127.0.0.1:3030' })).resolves.toMatchObject({
+      success: true,
+      message: 'Connection successful',
+    });
+
+    getMock.mockResolvedValueOnce({ data: { success: false } });
+    await expect(c.sync.test({ url: 'http://127.0.0.1:3030' })).resolves.toMatchObject({
+      success: false,
+      message: 'Server returned error',
+    });
+
+    getMock.mockRejectedValueOnce(new Error('down'));
+    await expect(c.sync.test({ url: 'http://127.0.0.1:3030' })).resolves.toMatchObject({
+      success: false,
+      message: 'down',
+    });
+  });
+
+  it('sync.local reports an empty run when no sources are configured', async () => {
+    const c = appRouter.createCaller(ctx());
+    const result = await c.sync.local();
+    expect(result).toMatchObject({ success: true, count: 0, games: [], errors: [] });
+  });
+
+  it('serves manifests, version folders, and file deletion inside the game root', async () => {
+    const c = appRouter.createCaller(ctx());
+    const added = await c.games.add({ name: 'Router File Game' });
+    const gameId = (added.games as { id: number }).id;
+    const gameDir = path.join(TMP, 'saves', ADMIN.id, 'Router File Game');
+    fs.mkdirSync(path.join(gameDir, '.versions', '1700000000000'), { recursive: true });
+    fs.writeFileSync(path.join(gameDir, 'slot1.sav'), 'router');
+    fs.writeFileSync(path.join(gameDir, '.versions', '1700000000000', 'slot1.sav'), 'older');
+
+    const manifest = await c.sync.manifest({ game: 'Router File Game' });
+    expect(manifest.files).toEqual([
+      expect.objectContaining({ path: 'slot1.sav', size: 6 }),
+    ]);
+
+    const versions = await c.files.versions.list({ game: 'Router File Game' });
+    expect(versions.versions).toEqual([
+      expect.objectContaining({ id: '1700000000000' }),
+    ]);
+    const snapshot = await c.files.versions.files({ game: 'Router File Game', versionId: '1700000000000' });
+    expect(snapshot.files.map(f => f.path)).toEqual(['slot1.sav']);
+
+    await expect(
+      c.files.remove({ game: 'Router File Game', path: 'sub/../../../../etc/passwd' }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      c.files.remove({ game: 'Router File Game', path: 'missing.sav' }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(c.files.remove({ game: 'Router File Game', path: 'slot1.sav' })).resolves.toMatchObject({
+      success: true,
+    });
+    expect(fs.existsSync(path.join(gameDir, 'slot1.sav'))).toBe(false);
+
+    await c.games.remove({ id: gameId });
+  });
+
+  it('auto-matches and manually assigns cover art for a member', async () => {
+    const admin = appRouter.createCaller(ctx());
+    await admin.settings.update({ steamGridApiKey: 'sgdb-router-key' });
+    const created = await admin.users.create({ name: 'ArtRouteMember', role: 'member' });
+    const member = {
+      id: created.user.id,
+      name: 'ArtRouteMember',
+      role: 'member' as const,
+      createdAt: '',
+      updatedAt: '',
+    };
+    const c = appRouter.createCaller({ ...ctx(), user: member });
+    const added = await c.games.add({ name: 'Art Route Game' });
+    const gameId = (added.games as { id: number }).id;
+
+    getMock.mockImplementation(async (url: string) => {
+      if (String(url).includes('autocomplete')) {
+        return { data: { success: true, data: [{ id: 21, name: 'Art Route Game' }] } };
+      }
+      return { data: { success: true, data: [{ url: 'http://img/auto.jpg' }] } };
+    });
+    const matched = await c.art.autoMatch();
+    expect(matched).toEqual({ success: true, count: 1 });
+    expect((await c.games.get({ id: gameId })).game.thumbnail).toBe('http://img/auto.jpg');
+
+    await expect(
+      c.art.set({ gameName: 'No Such Art Game', url: 'http://img/x.jpg' }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(
+      c.art.set({ gameName: 'Art Route Game', url: 'http://img/manual.jpg' }),
+    ).resolves.toMatchObject({ success: true });
+    expect((await c.games.get({ id: gameId })).game.thumbnail).toBe('http://img/manual.jpg');
+
+    await admin.users.remove({ id: member.id });
+    await admin.settings.update({ steamGridApiKey: '' });
+  });
+
+  it('lists collection endpoints and returns recent activity', async () => {
+    const c = appRouter.createCaller(ctx());
+    await expect(c.localSources.list()).resolves.toMatchObject({ success: true });
+    await expect(c.remoteServers.list()).resolves.toMatchObject({ success: true });
+    await expect(c.hltb.bulk({ gameNames: [] })).resolves.toMatchObject({ success: true, times: {} });
+    await expect(c.playtime.recent({ limit: 5 })).resolves.toMatchObject({ success: true });
+    await expect(c.achievements.recent({ limit: 5 })).resolves.toMatchObject({ success: true });
+  });
+
+  it('manages self-service keys and user administration', async () => {
+    const c = appRouter.createCaller(ctx());
+    await expect(c.users.me()).resolves.toMatchObject({
+      success: true,
+      user: { id: ADMIN.id, name: ADMIN.name, role: ADMIN.role },
+    });
+
+    const issued = await c.apiKeys.add({ description: 'coverage key' });
+    expect(issued.key).toMatch(/^dune_/);
+    const keys = await c.apiKeys.list();
+    const coverageKey = keys.keys.find(k => k.description === 'coverage key')!;
+    expect(coverageKey.masked).toBe('****');
+    await expect(c.apiKeys.remove({ id: coverageKey.id })).resolves.toMatchObject({ success: true });
+    await expect(c.apiKeys.remove({ id: 'missing' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    const member = await c.users.create({ name: 'KeyRouteMember', role: 'member' });
+    await expect(c.users.addKey({ id: 'usr_missing' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(c.users.addKey({ id: member.user.id, description: 'second' })).resolves.toMatchObject({
+      success: true,
+    });
+    const memberKeys = database.listUserKeys(member.user.id);
+    const removable = { id: member.user.id, keyId: memberKeys[0].hash.slice(0, 12) };
+    await expect(c.users.removeKey(removable)).resolves.toMatchObject({ success: true });
+    await expect(
+      c.users.removeKey({ id: member.user.id, keyId: 'missing' }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(c.users.remove({ id: 'usr_missing' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(c.users.remove({ id: member.user.id })).resolves.toMatchObject({ success: true });
+  });
+});
+

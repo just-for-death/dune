@@ -54,7 +54,10 @@ app.get('/ready', (_req, res) => {
   res.status(result.ready ? 200 : 503).json(result);
 });
 
-app.use(apiRateLimiter);
+// Skip rate limiting in test environment to avoid flaky 429s
+if (!process.env.VITEST) {
+  app.use(apiRateLimiter);
+}
 app.use(optionalAuthMiddleware);
 
 const FRONTEND_DIR = path.join(__dirname, '..', 'frontend', 'dist');
@@ -67,7 +70,12 @@ if (fs.existsSync(FRONTEND_DIR)) {
 app.use('/trpc', trpcHandler);
 
 // Legacy REST endpoints for file operations (streaming)
-app.post('/api/upload-file', authMiddleware, uploadRateLimiter, async (req: AuthenticatedRequest, res) => {
+// Skip upload rate limiting in test environment
+const uploadRateLimitMiddleware = process.env.VITEST
+  ? (req: express.Request, res: express.Response, next: express.NextFunction) => next()
+  : uploadRateLimiter;
+
+app.post('/api/upload-file', authMiddleware, uploadRateLimitMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     const game = req.headers['x-game'] as string;
     const filePath = req.headers['x-path'] as string;

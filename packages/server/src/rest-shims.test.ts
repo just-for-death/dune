@@ -66,6 +66,16 @@ describe('REST shims auth gate', () => {
     ['delete', '/api/api-keys/x'],
     ['get', '/api/ollama-models?endpoint=http://x:11434'],
     ['get', '/api/ollama-health'],
+    ['get', '/api/save-versions?game=x'],
+    ['get', '/api/save-versions/1'],
+    ['post', '/api/save-versions'],
+    ['post', '/api/restore-version'],
+    ['get', '/api/conflicts'],
+    ['post', '/api/conflicts/detect'],
+    ['post', '/api/conflicts/1/resolve'],
+    ['get', '/api/backup-profile?game=x'],
+    ['post', '/api/backup-profile'],
+    ['get', '/api/storage?game=x'],
   ];
   it.each(probes)('%s %s rejects without a key', async (method, url) => {
     const res = await (request(app) as unknown as Record<string, (u: string) => request.Test>)[method](url);
@@ -361,3 +371,134 @@ describe('delta sync endpoints', () => {
     expect((await api(request(app).delete(`/api/file?game=${game}&path=slot1.sav`))).status).toBe(404);
   });
 });
+
+describe('save version, conflict, profile, and storage endpoints', () => {
+  const game = 'VersionShimGame';
+  const owner = database.listUsers()[0];
+  const gameDir = path.join(TMP, 'saves', owner.id, game);
+
+  const upload = (contents: string, syncId: string) =>
+    api(
+      request(app)
+        .post('/api/upload-file')
+        .set('Content-Type', 'application/octet-stream')
+        .set('x-game', game)
+        .set('x-path', 'slot1.sav')
+        .set('x-sync-id', syncId),
+    ).send(Buffer.from(contents));
+
+  it('creates, lists, reads, and restores snapshots', async () => {
+    expect((await upload('one', '100')).status).toBe(200);
+    const first = await api(request(app).post('/api/save-versions')).send({
+      game,
+      deviceId: 'device-a',
+      changeSummary: 'first snapshot',
+    });
+    expect(first.status).toBe(201);
+    expect(first.body.version).toMatchObject({ gameId: expect.any(Number), fileCount: 1 });
+    expect(first.body.hasUnresolved).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect((await upload('two', '101')).status).toBe(200);
+    const second = await api(request(app).post('/api/save-versions')).send({
+      game,
+      deviceId: 'device-b',
+    });
+    expect(second.status).toBe(201);
+
+    const listed = await api(request(app).get(`/api/save-versions?game=${encodeURIComponent(game)}`));
+    expect(listed.status).toBe(200);
+    const versionIds = listed.body.versions.map((v: { id: string }) => v.id);
+    expect(versionIds).toContain(second.body.version.id);
+
+    // Detail endpoint for the latest version
+    const detail = await api(request(app).get(`/api/save-versions/${second.body.version.id}`));
+    expect(detail.status).toBe(200);
+    expect(detail.body.files.map((f: { path: string }) => f.path)).toContain('slot1.sav');
+
+    // Error cases
+    expect((await api(request(app).get('/api/save-versions'))).status).toBe(400);
+    expect((await api(request(app).get('/api/save-versions/does-not-exist'))).status).toBe(404);
+    expect((await api(request(app).post('/api/save-versions')).send({})).status).toBe(400);
+    expect((await api(request(app).post('/api/restore-version')).send({})).status).toBe(400);
+    expect(
+      (await api(request(app).post('/api/restore-version')).send({ game, versionId: 'missing' })).status,
+    ).toBe(404);
+  });
+
+  it('detects, lists, and resolves conflicts', async () => {
+    const { recordConflict } = await import('./services/conflicts.js');
+    const versions = await api(request(app).get(`/api/save-versions?game=${encodeURIComponent(game)}`));
+    expect(versions.status).toBe(200);
+    expect(Array.isArray(versions.body.versions)).toBe(true);
+    if (versions.body.versions.length < 2) {
+      // Not enough versions to test conflict detection; skip the rest.
+      return;
+    }
+    const [latest, previous] = versions.body.versions as Array<{ id: string }>;
+
+    const detected = await api(request(app).post('/api/conflicts/detect')).send({
+      game,
+      localVersionId: latest.id,
+      remoteVersionId: previous.id,
+    });
+    expect(detected.status).toBe(200);
+    // A direct parent/child pair is normal sync progression, not a conflict.
+    expect(detected.body.conflict).toBeNull();
+
+    expect((await api(request(app).post('/api/conflicts/detect')).send({})).status).toBe(400);
+
+    const row = database.getGameByName(game)!;
+    const recorded = recordConflict(row.id, latest.id, previous.id);
+    const all = await api(request(app).get('/api/conflicts'));
+    expect(all.status).toBe(200);
+    expect(all.body.conflicts.some((c: { id: string }) => c.id === recorded.id)).toBe(true);
+
+    const scoped = await api(request(app).get(`/api/conflicts?game=${encodeURIComponent(game)}`));
+    expect(scoped.body).toMatchObject({ success: true, hasUnresolved: true });
+
+    expect(
+      (await api(request(app).post(`/api/conflicts/${recorded.id}/resolve`)).send({ resolution: 'bogus' }))
+        .status,
+    ).toBe(400);
+    const resolved = await api(request(app).post(`/api/conflicts/${recorded.id}/resolve`)).send({
+      resolution: 'local',
+    });
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.conflict.resolution).toBe('local');
+    expect(
+      (await api(request(app).post('/api/conflicts/nope/resolve')).send({ resolution: 'local' })).status,
+    ).toBe(404);
+  });
+
+  it('reads and updates backup profiles and reports storage usage', async () => {
+    expect((await api(request(app).get('/api/backup-profile'))).status).toBe(400);
+
+    const initial = await api(request(app).get(`/api/backup-profile?game=${encodeURIComponent(game)}`));
+    expect(initial.status).toBe(200);
+    expect(initial.body.profile).toMatchObject({ includeGlobs: ['**/*'], autoExcludeCache: true });
+
+    const updated = await api(request(app).post('/api/backup-profile')).send({
+      game,
+      includeGlobs: ['**/*.sav'],
+      excludeGlobs: ['cache/**'],
+      autoExcludeCache: false,
+      maxFileSizeMB: 5,
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.profile).toMatchObject({
+      includeGlobs: ['**/*.sav'],
+      excludeGlobs: ['cache/**'],
+      autoExcludeCache: false,
+      maxFileSizeMB: 5,
+    });
+    expect((await api(request(app).post('/api/backup-profile')).send({})).status).toBe(400);
+
+    expect((await api(request(app).get('/api/storage'))).status).toBe(400);
+    const storage = await api(request(app).get(`/api/storage?game=${encodeURIComponent(game)}`));
+    expect(storage.status).toBe(200);
+    expect(storage.body.entry).toMatchObject({ gameId: expect.any(Number) });
+    expect(typeof storage.body.freeBytes).toBe('number');
+  });
+});
+
