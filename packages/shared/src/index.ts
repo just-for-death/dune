@@ -359,6 +359,16 @@ export interface ElectronAPI {
   // HLTB
   getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string }>;
 
+  // Launcher
+  launchGame: (game: Game, options?: Record<string, unknown>) => Promise<{ success: boolean; message: string; pid?: number }>;
+  getLaunchCommand: (game: Game, options?: Record<string, unknown>) => Promise<{ success: boolean; command?: { command: string; args: string[]; env?: Record<string, string>; cwd?: string } | null; message?: string }>;
+
+  // Prefix manager
+  listPrefixes: () => Promise<{ success: boolean; prefixes?: unknown; message?: string }>;
+  createPrefix: (prefixPath: string) => Promise<{ success: boolean; message: string }>;
+  deletePrefix: (prefixPath: string) => Promise<{ success: boolean; message: string }>;
+  backupPrefix: (prefixPath: string) => Promise<{ success: boolean; message: string; backupPath?: string }>;
+
   // Save versions
   getSaveVersions: (game: string) => Promise<{ success: boolean; versions?: SaveVersion[]; message?: string }>;
   createSaveVersion: (game: string, deviceId?: string, changeSummary?: string) => Promise<{ success: boolean; version?: SaveVersion; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>;

@@ -1,4 +1,4 @@
-import type { LaunchCommand, LaunchStrategy } from './types.js';
+import type { LaunchStrategy } from './types.js';
 
 export const heroicStrategy: LaunchStrategy = {
   canLaunch(game, options) {

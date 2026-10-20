@@ -9,6 +9,8 @@ import axios from 'axios'
 import { nextId } from '@dune/shared'
 import type { FileManifest, HashManifest } from '@dune/shared'
 import { autoDetectGames } from './scanner'
+import { launchGame, getLaunchCommand } from './launcher/manager'
+import { listPrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix } from './prefix/manager'
 import { autoUpdater } from 'electron-updater'
 import {
   normalizeUrl,
@@ -1155,6 +1157,57 @@ ipcMain.handle('storage:get', async (_event, game: string) => {
     return { success: false, message: e.message, entry: null }
   }
 })
+
+// Game launcher
+ipcMain.handle('game:launch', async (_event, game, options) => {
+  try {
+    const result = await launchGame(game, options || {});
+    return result;
+  } catch (e: any) {
+    return { success: false, message: e.message };
+  }
+});
+
+ipcMain.handle('game:launchCommand', async (_event, game, options) => {
+  try {
+    return { success: true, command: getLaunchCommand(game, options || {}) };
+  } catch (e: any) {
+    return { success: false, message: e.message, command: null };
+  }
+});
+
+// Prefix manager
+ipcMain.handle('prefix:list', async () => {
+  try {
+    return { success: true, prefixes: listPrefixes() };
+  } catch (e: any) {
+    return { success: false, message: e.message, prefixes: null };
+  }
+});
+
+ipcMain.handle('prefix:create', async (_event, prefixPath: string) => {
+  try {
+    return createWinePrefix(prefixPath);
+  } catch (e: any) {
+    return { success: false, message: e.message };
+  }
+});
+
+ipcMain.handle('prefix:delete', async (_event, prefixPath: string) => {
+  try {
+    return deleteWinePrefix(prefixPath);
+  } catch (e: any) {
+    return { success: false, message: e.message };
+  }
+});
+
+ipcMain.handle('prefix:backup', async (_event, prefixPath: string) => {
+  try {
+    return backupWinePrefix(prefixPath);
+  } catch (e: any) {
+    return { success: false, message: e.message };
+  }
+});
 
 // AI Analysis
 ipcMain.handle('ai:analyze', async (_event, { gameName, files }) => {

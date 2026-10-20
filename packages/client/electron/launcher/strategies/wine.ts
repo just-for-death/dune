@@ -1,5 +1,5 @@
 import * as path from 'path';
-import type { LaunchCommand, LaunchStrategy } from './types.js';
+import type { LaunchStrategy } from './types.js';
 
 export const wineStrategy: LaunchStrategy = {
   canLaunch(game, options) {

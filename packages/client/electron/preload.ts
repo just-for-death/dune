@@ -100,6 +100,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getHLTBTimes: (gameName: string) => 
     ipcRenderer.invoke('hltb:get', gameName),
 
+  // Launcher
+  launchGame: (game: any, options?: any) =>
+    ipcRenderer.invoke('game:launch', game, options),
+  getLaunchCommand: (game: any, options?: any) =>
+    ipcRenderer.invoke('game:launchCommand', game, options),
+
+  // Prefix manager
+  listPrefixes: () =>
+    ipcRenderer.invoke('prefix:list'),
+  createPrefix: (prefixPath: string) =>
+    ipcRenderer.invoke('prefix:create', prefixPath),
+  deletePrefix: (prefixPath: string) =>
+    ipcRenderer.invoke('prefix:delete', prefixPath),
+  backupPrefix: (prefixPath: string) =>
+    ipcRenderer.invoke('prefix:backup', prefixPath),
+
   // Save versions
   getSaveVersions: (game: string) =>
     ipcRenderer.invoke('saves:listVersions', game),
