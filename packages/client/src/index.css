@@ -916,3 +916,50 @@ label {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Big Picture ── */
+.big-picture {
+  min-height: calc(100vh - 64px);
+}
+
+.big-picture-header {
+  margin-bottom: 24px;
+}
+
+.big-picture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 18px;
+}
+
+.big-picture-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.big-picture-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--sand);
+}
+
+.big-picture-cover {
+  aspect-ratio: 3 / 4;
+  background: var(--cover);
+  border-radius: var(--radius-control);
+  margin-bottom: 10px;
+}
+
+.big-picture-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.big-picture-meta {
+  color: var(--muted);
+  font-size: 12.5px;
+}

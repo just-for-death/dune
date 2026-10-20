@@ -17,6 +17,23 @@ export interface Game {
   updatedAt: string;
   sourceId?: string; // 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft'
   source?: 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft' | 'emulator';
+  tags?: string[];
+}
+
+// Collection / smart view
+export interface CollectionRule {
+  field: 'source' | 'status' | 'tag' | 'name' | 'playtime';
+  op: 'equals' | 'contains' | 'startsWith' | 'gt' | 'lt';
+  value: string | number;
+}
+
+export interface Collection {
+  id: number;
+  name: string;
+  logic: 'all' | 'any';
+  rules: CollectionRule[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 // File analysis from AI

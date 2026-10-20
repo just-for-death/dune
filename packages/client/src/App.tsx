@@ -21,6 +21,7 @@ import { SaveVersionTimeline } from './components/saves/SaveVersionTimeline';
 import { ConflictModal } from './components/saves/ConflictModal';
 import { StorageManager } from './components/saves/StorageManager';
 import { ExclusionEditor } from './components/saves/ExclusionEditor';
+import { BigPicture } from './components/BigPicture';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
@@ -32,7 +33,7 @@ declare global {
   }
 }
 
-type Tab = 'dashboard' | 'mapping' | 'sync' | 'saves' | 'playtime' | 'achievements' | 'settings';
+type Tab = 'dashboard' | 'mapping' | 'sync' | 'saves' | 'bigpicture' | 'playtime' | 'achievements' | 'settings';
 
 function formatMinutes(min: number): string {
   if (min < 60) return `${min}m`;
@@ -525,6 +526,10 @@ export default function App() {
           <Icon name="sync" />
           <span>Saves</span>
         </button>
+        <button className={`nav-item ${activeTab === 'bigpicture' ? 'active' : ''}`} onClick={() => setActiveTab('bigpicture')}>
+          <Icon name="game" />
+          <span>Big Picture</span>
+        </button>
         <button className={`nav-item ${activeTab === 'playtime' ? 'active' : ''}`} onClick={() => { setActiveTab('playtime'); loadPlaytime(); }}>
           <Icon name="playtime" />
           <span>Playtime</span>
@@ -797,6 +802,9 @@ export default function App() {
           </div>
         )}
         <ConflictModal conflict={conflicts.find((c) => !c.resolution) ?? null} localVersion={saveVersions[1]} remoteVersion={saveVersions[0]} open={showConflictModal} onClose={() => setShowConflictModal(false)} onResolve={async (resolution) => { const conflict = conflicts.find((c) => !c.resolution); if (conflict) { const res = await window.electronAPI.resolveConflict(conflict.id, resolution); if (res?.success) { setConflicts((prev) => prev.map((c) => c.id === conflict.id ? { ...c, resolution, resolvedAt: new Date().toISOString() } : c)); setShowConflictModal(false); showToast('Conflict resolved', 'success'); } else showToast(res?.message || 'Failed to resolve conflict', 'error'); } }} />
+        {activeTab === 'bigpicture' && (
+          <BigPicture games={games} onLaunch={(game) => showToast(`Launch requested: ${game.name}`, 'info')} />
+        )}
         {activeTab === 'playtime' && (
           <div>
             <div className="section-header">
