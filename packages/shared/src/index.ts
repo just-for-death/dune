@@ -15,6 +15,8 @@ export interface Game {
   analysis?: Record<string, FileAnalysis>;
   createdAt: string;
   updatedAt: string;
+  sourceId?: string; // 'steam' | 'heroic' | 'lutris' | 'manual'
+  source?: 'steam' | 'heroic' | 'lutris' | 'manual';
 }
 
 // File analysis from AI
@@ -102,6 +104,8 @@ export interface HLTBTimes {
   mainStory: number; // minutes
   mainExtra: number; // minutes
   completionist: number; // minutes
+  source?: string; // source of data (steam, hlbt, community)
+  fetchedAt: string; // ISO 8601
 }
 
 // Playtime session
@@ -113,15 +117,18 @@ export interface PlaytimeSession {
   sessionEnd: string; // ISO 8601
   durationMinutes: number;
   createdAt: string;
+  source: 'steam' | 'local'; // source of playtime data
 }
 
-// Playtime summary
+// Playtime summary per game
 export interface PlaytimeSummary {
+  gameId: number;
   game: string;
   platform: string;
   totalMinutes: number;
   totalSessions: number;
   lastPlayed: string | null;
+  firstPlayed: string | null;
 }
 
 // Achievement
@@ -133,10 +140,74 @@ export interface Achievement {
   description: string;
   unlocked: boolean;
   unlockTime: string | null;
-  rarity: number;
+  rarity: number; // percentage (0-100)
   hidden: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+// Achievement detail with full progress info
+export interface AchievementDetail {
+  id: number;
+  game: string;
+  apiName: string;
+  displayName: string;
+  description: string;
+  unlocked: boolean;
+  unlockTime: string | null;
+  rarity: number; // global percentage
+  localRarity: number; // user's library percentage
+  hidden: boolean;
+  iconUrl: string;
+  iconGrayUrl: string;
+  isSecret: boolean;
+  steamApiName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Rarity tier classification
+export type RarityTier = 'common' | 'uncommon' | 'rare' | 'ultra-rare' | 'epic' | 'legendary';
+
+export interface AchievementRarityTier {
+  tier: RarityTier;
+  minPercent: number; // inclusive
+  maxPercent: number; // exclusive
+  label: string;
+  color: string;
+}
+
+export const RARITY_TIERS: AchievementRarityTier[] = [
+  { tier: 'legendary', minPercent: 0, maxPercent: 10, label: 'Legendary', color: '#FFD700' },
+  { tier: 'epic', minPercent: 10, maxPercent: 20, label: 'Epic', color: '#E945FF' },
+  { tier: 'ultra-rare', minPercent: 20, maxPercent: 50, label: 'Ultra Rare', color: '#FF6B00' },
+  { tier: 'rare', minPercent: 50, maxPercent: 80, label: 'Rare', color: '#00BFFF' },
+  { tier: 'uncommon', minPercent: 80, maxPercent: 95, label: 'Uncommon', color: '#32CD32' },
+  { tier: 'common', minPercent: 95, maxPercent: 101, label: 'Common', color: '#888888' },
+];
+
+// Playtime graph data for charts
+export interface PlaytimeGraphData {
+  line: { date: string; minutes: number }[]; // cumulative over time
+  bar: { game: string; minutes: number }[]; // per-game
+  pie: { game: string; minutes: number; percentage: number }[]; // distribution
+  heatmap: { date: string; minutes: number }[]; // calendar heatmap
+  area: { date: string; cumulativeMinutes: number }[]; // cumulative area
+}
+
+// Playtime comparison data
+export interface PlaytimeComparison {
+  current: { period: string; totalMinutes: number; sessions: number };
+  previous: { period: string; totalMinutes: number; sessions: number };
+  difference: { minutes: number; percentage: number; sessions: number };
+}
+
+// Playtime summary aggregate
+export interface PlaytimeSummaryAggregate {
+  totalMinutes: number;
+  totalSessions: number;
+  gamesPlayed: number;
+  averageSessionMinutes: number;
 }
 
 // Achievement summary
@@ -200,14 +271,20 @@ export interface ElectronAPI {
   getPlaytimeSummary: (game?: string) => Promise<{ success: boolean; summary: PlaytimeSummary[]; message?: string }>;
   getRecentSessions: (limit?: number) => Promise<{ success: boolean; sessions: PlaytimeSession[]; message?: string }>;
   getTotalPlaytime: () => Promise<{ success: boolean; totalMinutes: number; message?: string }>;
+  getPlaytimeGraphData: (range: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) => Promise<{ success: boolean; data: PlaytimeGraphData; message?: string }>;
+  getPlaytimeComparison: (range: 'week' | 'month' | 'year') => Promise<{ success: boolean; comparison: PlaytimeComparison; message?: string }>;
+  exportPlaytimeData: (format: 'csv' | 'json', range?: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) => Promise<{ success: boolean; data: string; message?: string }>;
   
   // Achievements
   getAchievements: (game: string) => Promise<{ success: boolean; achievements: Achievement[]; message?: string }>;
   getAchievementSummary: (game?: string) => Promise<{ success: boolean; summary: AchievementSummary[]; message?: string }>;
   getRecentUnlocks: (limit?: number) => Promise<{ success: boolean; unlocks: Achievement[]; message?: string }>;
+  getAchievementDetail: (game: string) => Promise<{ success: boolean; achievements: AchievementDetail[]; message?: string }>;
   
   // HLTB
   getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string }>;
+  refreshHLTBCache: (gameName?: string) => Promise<{ success: boolean; message?: string }>;
+  getHLTBCacheStats: () => Promise<{ success: boolean; stats: { entries: number; oldest: string; newest: string }; message?: string }>;
   
   // AI Analysis
   analyzeFiles: (gameName: string, files: GameFile[]) => Promise<{ success: boolean; analysis?: Record<string, FileAnalysis>; message?: string }>;
