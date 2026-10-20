@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { listWinePrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix } from './wine.js';
 import { listProtonVersions } from './proton.js';
 import { listHeroicPrefixes } from './heroic.js';
