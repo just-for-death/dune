@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { dataDir } from '../utils/path.js';
 
-const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function cacheDir(): string {
   return path.join(dataDir(), 'hltb-cache');
@@ -13,12 +13,15 @@ export interface HLTBTimes {
   mainStory: number;
   mainExtra: number;
   completionist: number;
+  source?: string;
+  fetchedAt?: string;
 }
 
 export interface HLTBResponse {
   success: boolean;
   times?: HLTBTimes;
   message?: string;
+  stale?: boolean;
 }
 
 function ensureCacheDir(): void {
@@ -33,17 +36,17 @@ function getCachePath(gameName: string): string {
   return path.join(cacheDir(), `${safeName}.json`);
 }
 
-export function readCache(gameName: string): HLTBTimes | null {
+export function readCache(gameName: string, allowStale = false): HLTBTimes | null {
   try {
     ensureCacheDir();
     const cachePath = getCachePath(gameName);
     if (!fs.existsSync(cachePath)) return null;
-    
+
     const stats = fs.statSync(cachePath);
-    if (Date.now() - stats.mtimeMs > CACHE_TTL_MS) return null;
-    
     const data = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
-    return data.times;
+    if (Date.now() - stats.mtimeMs > CACHE_TTL_MS && !allowStale) return null;
+
+    return data.times ?? null;
   } catch {
     return null;
   }
@@ -53,7 +56,7 @@ export function writeCache(gameName: string, times: HLTBTimes): void {
   try {
     ensureCacheDir();
     const cachePath = getCachePath(gameName);
-    fs.writeFileSync(cachePath, JSON.stringify({ times, cachedAt: Date.now() }), 'utf-8');
+    fs.writeFileSync(cachePath, JSON.stringify({ times, source: 'hltb', fetchedAt: new Date().toISOString(), cachedAt: Date.now() }), 'utf-8');
   } catch {
     // Ignore cache write errors
   }
@@ -100,8 +103,14 @@ export async function getHLTBTimes(gameName: string): Promise<HLTBResponse> {
 
   const times = await searchHLTB(gameName);
   if (times) {
-    writeCache(gameName, times);
-    return { success: true, times };
+    const stamped = { ...times, source: 'hltb', fetchedAt: new Date().toISOString() };
+    writeCache(gameName, stamped);
+    return { success: true, times: stamped };
+  }
+
+  const stale = readCache(gameName, true);
+  if (stale) {
+    return { success: true, times: stale, stale: true, message: 'Using cached HowLongToBeat data' };
   }
 
   return { success: false, message: 'Game not found on HowLongToBeat' };

@@ -1,13 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 vi.mock('axios');
 import axios from 'axios';
 import { getHLTBTimes, bulkFetchHLTB, readCache, writeCache } from './hltb.js';
 
+const HLTB_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-hltb-test-'));
+process.env.DATA_DIR = HLTB_TMP;
 const postMock = vi.mocked(axios.post);
-const CACHE_DIR = path.join(process.cwd(), 'data', 'hltb-cache');
+const CACHE_DIR = path.join(process.env.DATA_DIR as string, 'hltb-cache');
 
 beforeEach(() => {
   postMock.mockReset();
@@ -15,7 +18,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (fs.existsSync(CACHE_DIR)) fs.rmSync(CACHE_DIR, { recursive: true });
+  if (fs.existsSync(CACHE_DIR)) fs.rmSync(CACHE_DIR, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  delete process.env.DATA_DIR;
+  fs.rmSync(HLTB_TMP, { recursive: true, force: true });
 });
 
 function apiGame(overrides = {}) {
@@ -51,7 +59,7 @@ describe('Cache functions', () => {
 
     // Manually modify the cache file to be old
     const cachePath = path.join(CACHE_DIR, 'test-game-ttl.json');
-    const oldTime = Date.now() - 8 * 24 * 60 * 60 * 1000; // 8 days ago
+    const oldTime = Date.now() - 31 * 24 * 60 * 60 * 1000; // 31 days ago
     fs.utimesSync(cachePath, new Date(oldTime), new Date(oldTime));
 
     const cached = readCache('Test Game TTL');
@@ -75,7 +83,7 @@ describe('getHLTBTimes', () => {
 
     const result = await getHLTBTimes('Some Game');
     expect(result.success).toBe(true);
-    expect(result.times).toEqual({ mainStory: 1200, mainExtra: 1800, completionist: 3000 });
+    expect(result.times).toMatchObject({ mainStory: 1200, mainExtra: 1800, completionist: 3000 });
     // Second call served from cache — still exactly one HTTP request
     await getHLTBTimes('Some Game');
     expect(postMock).toHaveBeenCalledTimes(1);
