@@ -963,6 +963,143 @@ ipcMain.handle('hltb:get', async (_event, gameName) => {
   }
 })
 
+// Save versions
+ipcMain.handle('saves:listVersions', async (_event, game: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', versions: [] }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/save-versions?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, versions: [] }
+  }
+})
+
+ipcMain.handle('saves:createVersion', async (_event, game: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/save-versions`, { game }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('saves:getVersion', async (_event, id: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/save-versions/${encodeURIComponent(id)}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('saves:diff', async (_event, from: string, to: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/save-versions/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('saves:restore', async (_event, game: string, versionId: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/restore-version`, { game, versionId }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// Conflicts
+ipcMain.handle('conflicts:list', async (_event, game?: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', conflicts: [] }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const url = game ? `${cleanUrl}/api/conflicts?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/conflicts`
+    const res = await axios.get(url, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, conflicts: [] }
+  }
+})
+
+ipcMain.handle('conflicts:detect', async (_event, game: string, localVersionId: string, remoteVersionId: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/conflicts/detect`, { game, localVersionId, remoteVersionId }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('conflicts:resolve', async (_event, id: string, resolution: 'local' | 'remote' | 'both' | 'later') => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/conflicts/${encodeURIComponent(id)}/resolve`, { resolution }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// Backup profiles
+ipcMain.handle('backupProfile:get', async (_event, game: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('backupProfile:set', async (_event, profile: any) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/backup-profile`, profile, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+// Storage
+ipcMain.handle('storage:get', async (_event, game: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', entry: null }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/storage?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, entry: null }
+  }
+})
+
 // AI Analysis
 ipcMain.handle('ai:analyze', async (_event, { gameName, files }) => {
   const cloud = store.get('cloud')

@@ -10,6 +10,10 @@ import type {
   Settings,
   Achievement,
   ElectronAPI,
+  SaveVersion,
+  ConflictRecord,
+  StorageEntry,
+  BackupProfile,
 } from '@dune/shared';
 import { nextId } from '@dune/shared';
 import { Icon } from './Icon';
@@ -93,7 +97,6 @@ const DEMO_BACKUP_PROFILE = {
   updatedAt: new Date().toISOString(),
 };
 
-const DEMO_CONFLICT = null;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -141,6 +144,13 @@ export default function App() {
   // HLTB cache
   const [hltbCache, setHltbCache] = useState<Record<string, HLTBTimes>>({});
   const [hltbLoading, setHltbLoading] = useState<Record<string, boolean>>({});
+
+  // Save version state
+  const [saveVersions, setSaveVersions] = useState<SaveVersion[]>([]);
+  const [storageEntry, setStorageEntry] = useState<StorageEntry | null>(null);
+  const [backupProfile, setBackupProfile] = useState<BackupProfile | null>(null);
+  const [conflicts, setConflicts] = useState<ConflictRecord[]>([]);
+  const [showConflictModal, setShowConflictModal] = useState(false);
 
   const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
     const id = nextId();
@@ -194,6 +204,30 @@ export default function App() {
     });
     return cleanup;
   }, []);
+
+
+  useEffect(() => {
+    if (activeTab !== 'saves' || games.length === 0 || !cloud.url) return;
+    const game = games[0].name;
+    const loadSaves = async () => {
+      try {
+        const versions = await window.electronAPI.getSaveVersions(game);
+        if (versions?.success) setSaveVersions(versions.versions ?? []);
+        const storage = await window.electronAPI.getStorage(game);
+        if (storage?.success) setStorageEntry(storage.entry ?? null);
+        const profile = await window.electronAPI.getBackupProfile(game);
+        if (profile?.success) setBackupProfile(profile.profile ?? null);
+        const conflictList = await window.electronAPI.getConflicts(game);
+        if (conflictList?.success) {
+          setConflicts(conflictList.conflicts ?? []);
+          setShowConflictModal((conflictList.conflicts ?? []).some((c: ConflictRecord) => !c.resolution));
+        }
+      } catch {
+        // Keep the last known UI state when the server is unavailable.
+      }
+    };
+    loadSaves();
+  }, [activeTab, games, cloud.url]);
 
   const saveSettings = async (newSettings: Partial<Settings>) => {
     const s = { ...settings, ...newSettings };
@@ -747,22 +781,22 @@ export default function App() {
         {activeTab === 'saves' && (
           <div className="card">
             <h3 className="card-title">Save versions</h3>
-            <SaveVersionTimeline versions={DEMO_SAVE_VERSIONS} onRestore={(id) => showToast(`Restore requested: ${id}`, 'info')} />
+            <SaveVersionTimeline versions={saveVersions.length ? saveVersions : DEMO_SAVE_VERSIONS} onRestore={async (id) => { const res = await window.electronAPI.restoreSaveVersion(games[0]?.name ?? '', id); showToast(res?.message || 'Restore requested', res?.success ? 'success' : 'error'); }} />
           </div>
         )}
         {activeTab === 'saves' && (
           <div className="card">
             <h3 className="card-title">Storage manager</h3>
-            <StorageManager drives={[{ name: 'D:\\', totalBytes: 2 * 1024 * 1024 * 1024 * 1024, freeBytes: 690 * 1024 * 1024 * 1024 }]} entries={DEMO_STORAGE_ENTRIES} />
+            <StorageManager drives={[{ name: storageEntry?.drive ?? 'D:\\', totalBytes: 2 * 1024 * 1024 * 1024 * 1024, freeBytes: 690 * 1024 * 1024 * 1024 }]} entries={storageEntry ? [storageEntry] : DEMO_STORAGE_ENTRIES} />
           </div>
         )}
         {activeTab === 'saves' && (
           <div className="card">
             <h3 className="card-title">Smart exclusions</h3>
-            <ExclusionEditor profile={DEMO_BACKUP_PROFILE} files={[{ path: 'saves/slot1.sav', size: 6.6 * 1024 * 1024, category: 'Save' }, { path: 'ShaderCache/file.bin', size: 412 * 1024 * 1024, category: 'Cache' }]} onChange={() => showToast('Backup profile updated', 'success')} />
+            <ExclusionEditor profile={backupProfile ?? DEMO_BACKUP_PROFILE} files={[{ path: 'saves/slot1.sav', size: 6.6 * 1024 * 1024, category: 'Save' }, { path: 'ShaderCache/file.bin', size: 412 * 1024 * 1024, category: 'Cache' }]} onChange={async (profile) => { if (games[0]) { const res = await window.electronAPI.setBackupProfile({ ...profile, game: games[0].name }); if (res?.success && res.profile) setBackupProfile(res.profile); showToast(res?.message || 'Backup profile updated', res?.success ? 'success' : 'error'); } }} />
           </div>
         )}
-        <ConflictModal conflict={DEMO_CONFLICT} open={false} onClose={() => {}} onResolve={() => {}} />
+        <ConflictModal conflict={conflicts.find((c) => !c.resolution) ?? null} localVersion={saveVersions[1]} remoteVersion={saveVersions[0]} open={showConflictModal} onClose={() => setShowConflictModal(false)} onResolve={async (resolution) => { const conflict = conflicts.find((c) => !c.resolution); if (conflict) { const res = await window.electronAPI.resolveConflict(conflict.id, resolution); if (res?.success) { setConflicts((prev) => prev.map((c) => c.id === conflict.id ? { ...c, resolution, resolvedAt: new Date().toISOString() } : c)); setShowConflictModal(false); showToast('Conflict resolved', 'success'); } else showToast(res?.message || 'Failed to resolve conflict', 'error'); } }} />
         {activeTab === 'playtime' && (
           <div>
             <div className="section-header">

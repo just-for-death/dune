@@ -240,7 +240,7 @@ export interface UploadHeaders {
 }
 
 // Electron IPC API
-// Save versioning (Arcane-inspired)
+// Save versioning (Dune)
 export interface SaveFileSnapshot {
   versionId: string;
   path: string;
@@ -341,6 +341,25 @@ export interface ElectronAPI {
   
   // HLTB
   getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string }>;
+
+  // Save versions
+  getSaveVersions: (game: string) => Promise<{ success: boolean; versions?: SaveVersion[]; message?: string }>;
+  createSaveVersion: (game: string) => Promise<{ success: boolean; version?: SaveVersion; message?: string }>;
+  getSaveVersion: (id: string) => Promise<{ success: boolean; version?: SaveVersion; files?: SaveFileSnapshot[]; message?: string }>;
+  getSaveVersionDiff: (from: string, to: string) => Promise<{ success: boolean; diff?: { added: string[]; removed: string[]; changed: string[]; unchanged: number }; message?: string }>;
+  restoreSaveVersion: (game: string, versionId: string) => Promise<{ success: boolean; message?: string; restoredFiles?: number }>;
+
+  // Conflicts
+  getConflicts: (game?: string) => Promise<{ success: boolean; conflicts?: ConflictRecord[]; hasUnresolved?: boolean; message?: string }>;
+  detectConflict: (game: string, localVersionId: string, remoteVersionId: string) => Promise<{ success: boolean; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>;
+  resolveConflict: (id: string, resolution: 'local' | 'remote' | 'both' | 'later') => Promise<{ success: boolean; conflict?: ConflictRecord; message?: string }>;
+
+  // Backup profiles
+  getBackupProfile: (game: string) => Promise<{ success: boolean; profile?: BackupProfile; message?: string }>;
+  setBackupProfile: (profile: BackupProfile & { game?: string }) => Promise<{ success: boolean; profile?: BackupProfile; message?: string }>;
+
+  // Storage
+  getStorage: (game: string) => Promise<{ success: boolean; entry?: StorageEntry; freeBytes?: number; message?: string }>;
   refreshHLTBCache: (gameName?: string) => Promise<{ success: boolean; message?: string }>;
   getHLTBCacheStats: () => Promise<{ success: boolean; stats: { entries: number; oldest: string; newest: string }; message?: string }>;
   

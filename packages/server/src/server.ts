@@ -6,6 +6,10 @@ import { authMiddleware, optionalAuthMiddleware, requireAdmin, AuthenticatedRequ
 import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
 import { dataDir, validateGamePath, getGameRoot, listFilesInDir, validateServerUrl } from './utils/path.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
+import { listSaveVersions, getSaveVersion, getVersionDiff, createVersionFromDirectory, restoreVersion } from './services/saveVersions.js';
+import { listConflicts, detectConflict, resolveConflict, hasUnresolvedConflict } from './services/conflicts.js';
+import { getBackupProfile, upsertBackupProfile } from './services/backupProfiles.js';
+import { scanStorage, getDriveFreeBytes } from './services/storage.js';
 import { manifestForGame, removeGameFile } from './services/manifest.js';
 import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
@@ -662,6 +666,178 @@ app.delete('/api/saves', authMiddleware, requireAdmin, (req: AuthenticatedReques
     const root = getGameRoot(row.name, row.ownerId);
     if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
     res.json({ success: true });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// ── Save versioning REST shims ─────────────────────────────────────────────
+app.get('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const game = req.query.game?.toString();
+    if (!game) return res.status(400).json({ success: false, message: 'game required' });
+    if (!ensureGameRead(req, res, path.basename(game))) return;
+    const row = database.getGameByName(path.basename(game));
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    res.json({ success: true, versions: listSaveVersions(row.id) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.get('/api/save-versions/:id', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const detail = getSaveVersion(req.params.id.toString());
+    if (!detail) return res.status(404).json({ success: false, message: 'Version not found' });
+    res.json({ success: true, ...detail });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.get('/api/save-versions/diff', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const from = req.query.from?.toString();
+    const to = req.query.to?.toString();
+    if (!from || !to) return res.status(400).json({ success: false, message: 'from and to required' });
+    res.json({ success: true, diff: getVersionDiff(from, to) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const { game, deviceId, changeSummary } = req.body ?? {};
+    if (!game) return res.status(400).json({ success: false, message: 'game required' });
+    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
+    const row = database.getGameByName(path.basename(game.toString()));
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    const ownerId = row.ownerId ?? req.user?.id;
+    const version = createVersionFromDirectory({
+      gameId: row.id,
+      gameName: game.toString(),
+      ownerId,
+      deviceId: typeof deviceId === 'string' ? deviceId : req.user?.id,
+      changeSummary: typeof changeSummary === 'string' ? changeSummary : 'manual snapshot',
+    });
+    res.status(201).json({ success: true, version });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/restore-version', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const { game, versionId } = req.body ?? {};
+    if (!game || !versionId) return res.status(400).json({ success: false, message: 'game and versionId required' });
+    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
+    const row = database.getGameByName(path.basename(game.toString()));
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    const result = restoreVersion(game.toString(), versionId.toString(), row.ownerId ?? req.user?.id);
+    if (!result.success) return res.status(404).json(result);
+    res.json(result);
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// ── Save conflict REST shims ─────────────────────────────────────────────────
+app.get('/api/conflicts', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const game = req.query.game?.toString();
+    if (game) {
+      if (!ensureGameRead(req, res, path.basename(game))) return;
+      const row = database.getGameByName(path.basename(game));
+      if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+      res.json({ success: true, conflicts: listConflicts(row.id), hasUnresolved: hasUnresolvedConflict(row.id) });
+    } else {
+      res.json({ success: true, conflicts: listConflicts(), hasUnresolved: false });
+    }
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/conflicts/detect', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const { game, localVersionId, remoteVersionId } = req.body ?? {};
+    if (!game || !localVersionId || !remoteVersionId) {
+      return res.status(400).json({ success: false, message: 'game, localVersionId and remoteVersionId required' });
+    }
+    if (!ensureGameRead(req, res, path.basename(game.toString()))) return;
+    const row = database.getGameByName(path.basename(game.toString()));
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    const conflict = detectConflict(row.id, localVersionId.toString(), remoteVersionId.toString());
+    res.json({ success: true, conflict, hasUnresolved: hasUnresolvedConflict(row.id) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/conflicts/:id/resolve', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const { resolution } = req.body ?? {};
+    if (!['local', 'remote', 'both', 'later'].includes(resolution)) {
+      return res.status(400).json({ success: false, message: 'invalid resolution' });
+    }
+    const conflict = resolveConflict(req.params.id.toString(), resolution);
+    if (!conflict) return res.status(404).json({ success: false, message: 'Conflict not found' });
+    res.json({ success: true, conflict });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// ── Backup profile and storage REST shims ───────────────────────────────────
+app.get('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const game = req.query.game?.toString();
+    if (!game) return res.status(400).json({ success: false, message: 'game required' });
+    if (!ensureGameRead(req, res, path.basename(game))) return;
+    const row = database.getGameByName(path.basename(game));
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    res.json({ success: true, profile: getBackupProfile(row.id) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const { game, includeGlobs, excludeGlobs, autoExcludeCache, maxFileSizeMB } = req.body ?? {};
+    if (!game) return res.status(400).json({ success: false, message: 'game required' });
+    if (!ensureGameWrite(req, res, path.basename(game.toString()))) return;
+    const row = database.getGameByName(path.basename(game.toString()));
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    const profile = upsertBackupProfile({
+      gameId: row.id,
+      includeGlobs: Array.isArray(includeGlobs) ? includeGlobs : ['**/*'],
+      excludeGlobs: Array.isArray(excludeGlobs) ? excludeGlobs : [],
+      autoExcludeCache: autoExcludeCache !== false,
+      maxFileSizeMB: typeof maxFileSizeMB === 'number' ? maxFileSizeMB : undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    res.json({ success: true, profile });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.get('/api/storage', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const game = req.query.game?.toString();
+    if (!game) return res.status(400).json({ success: false, message: 'game required' });
+    if (!ensureGameRead(req, res, path.basename(game))) return;
+    const row = database.getGameByName(path.basename(game));
+    if (!row) return res.status(404).json({ success: false, message: 'Game not found' });
+    const ownerId = row.ownerId ?? req.user?.id;
+    const root = getGameRoot(game.toString(), ownerId);
+    const entry = {
+      gameId: row.id,
+      ...scanStorage(root, row.lastSync === 'Never' ? null : row.lastSync),
+    };
+    res.json({ success: true, entry, freeBytes: getDriveFreeBytes(root) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }

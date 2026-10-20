@@ -99,6 +99,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // HLTB
   getHLTBTimes: (gameName: string) => 
     ipcRenderer.invoke('hltb:get', gameName),
+
+  // Save versions
+  getSaveVersions: (game: string) =>
+    ipcRenderer.invoke('saves:listVersions', game),
+  createSaveVersion: (game: string) =>
+    ipcRenderer.invoke('saves:createVersion', game),
+  getSaveVersion: (id: string) =>
+    ipcRenderer.invoke('saves:getVersion', id),
+  getSaveVersionDiff: (from: string, to: string) =>
+    ipcRenderer.invoke('saves:diff', from, to),
+  restoreSaveVersion: (game: string, versionId: string) =>
+    ipcRenderer.invoke('saves:restore', game, versionId),
+
+  // Conflicts
+  getConflicts: (game?: string) =>
+    ipcRenderer.invoke('conflicts:list', game),
+  detectConflict: (game: string, localVersionId: string, remoteVersionId: string) =>
+    ipcRenderer.invoke('conflicts:detect', game, localVersionId, remoteVersionId),
+  resolveConflict: (id: string, resolution: 'local' | 'remote' | 'both' | 'later') =>
+    ipcRenderer.invoke('conflicts:resolve', id, resolution),
+
+  // Backup profiles
+  getBackupProfile: (game: string) =>
+    ipcRenderer.invoke('backupProfile:get', game),
+  setBackupProfile: (profile: any) =>
+    ipcRenderer.invoke('backupProfile:set', profile),
+
+  // Storage
+  getStorage: (game: string) =>
+    ipcRenderer.invoke('storage:get', game),
   
   // AI Analysis
   analyzeFiles: (gameName: string, files: Array<{ path: string; size: number; category: string }>) => 
