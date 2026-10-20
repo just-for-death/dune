@@ -9,6 +9,7 @@ import axios from 'axios'
 import { nextId } from '@dune/shared'
 import type { FileManifest, HashManifest, Game, Settings, Cloud, BackupProfile } from '@dune/shared'
 import { autoDetectGames } from './scanner'
+import { getEmulatorGames } from './emulators/roms'
 import { launchGame, getLaunchCommand } from './launcher/manager'
 import type { LaunchOptions } from './launcher/strategies/types'
 import { buildPlaytimeSession, enqueuePlaytimeSession, type PlaytimeSessionPayload } from './playtime/session'
@@ -769,16 +770,18 @@ ipcMain.handle('dialog:selectDirectory', async () => {
 ipcMain.handle('games:autodetect', async (_event, customRoots) => {
   const storedRoots = (store.get('settings') as Settings | undefined)?.scanRoots || [];
   const roots = Array.isArray(customRoots) && customRoots.length > 0 ? customRoots : storedRoots;
-  const detected = await autoDetectGames(roots);
+  const detected = [...(await autoDetectGames(roots)), ...getEmulatorGames()];
   const games = (store.get('games') || []) as Game[];
+  let added = 0;
   for (const d of detected) {
     if (!games.find((g: Game) => g.name === d.name)) {
       const now = new Date().toISOString();
       games.push({ ...d, thumbnail: '', createdAt: now, updatedAt: now });
+      added++;
     }
   }
   store.set('games', games);
-  return { count: detected.length, currentGames: games };
+  return { count: added, currentGames: games };
 });
 
 ipcMain.handle('sync:export', async () => {

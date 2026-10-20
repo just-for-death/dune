@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { detectEmulators, getRetroArchConfigDir } from './detect.js';
-import { scanRomFolder, isRomFile } from './roms.js';
+import { scanRomFolder, isRomFile, getEmulatorForRom } from './roms.js';
 import { getRetroArchSaveStates, getRetroArchBatterySaves, findFilesByExtensions } from './saves.js';
 
 describe('emulator support', () => {
@@ -38,6 +38,8 @@ describe('emulator support', () => {
     expect(games).toHaveLength(1);
     expect(games[0].name).toBe('mario');
     expect(games[0].source).toBe('emulator');
+    expect(games[0].romPath).toBe(path.join(dir, 'nes', 'mario.nes'));
+    expect(games[0].linPath).toBe('');
     expect(isRomFile('mario.nes')).toBe(true);
   });
 
@@ -53,5 +55,15 @@ describe('emulator support', () => {
     expect(getRetroArchSaveStates(dir)).toHaveLength(1);
     expect(getRetroArchBatterySaves(dir)).toHaveLength(1);
     expect(findFilesByExtensions(dir, ['.state'])).toHaveLength(1);
+  });
+
+  it('picks an installed emulator by ROM extension', () => {
+    expect(getEmulatorForRom('/games/mario.nes', new Set(['mesen', 'retroarch']))).toBe('retroarch');
+    expect(getEmulatorForRom('/games/mario.nes', new Set(['mesen']))).toBe('mesen');
+    expect(getEmulatorForRom('/games/wii.wbfs', new Set(['retroarch', 'dolphin-emu']))).toBe('dolphin-emu');
+    expect(getEmulatorForRom('/games/psp.cso', new Set(['retroarch', 'ppsspp']))).toBe('ppsspp');
+    expect(getEmulatorForRom('/games/PS2/game.iso', new Set(['retroarch', 'duckstation', 'pcsx2']))).toBe('pcsx2');
+    expect(getEmulatorForRom('/games/unknown.xyz', new Set(['retroarch']))).toBe('retroarch');
+    expect(getEmulatorForRom('/games/mario.nes', new Set())).toBeNull();
   });
 });

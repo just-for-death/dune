@@ -27,6 +27,8 @@ export type LaunchableGame = {
   winePrefix?: string;
   protonPath?: string;
   executable?: string;
+  emulator?: string;
+  romPath?: string;
 };
 
 export interface LaunchStrategy {

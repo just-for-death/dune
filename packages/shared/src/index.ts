@@ -25,6 +25,10 @@ export interface Game {
   winePrefix?: string;
   protonPath?: string;
   executable?: string;
+  /** Emulator command used for ROM entries (for example `retroarch`). */
+  emulator?: string;
+  /** Absolute ROM path for emulator entries; may differ from linPath. */
+  romPath?: string;
 }
 
 // Collection / smart view

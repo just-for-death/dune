@@ -87,4 +87,38 @@ describe('launcher strategies', () => {
     const info = await exited;
     expect(info.endedAt).toBeGreaterThanOrEqual(info.startedAt);
   });
+
+  it('launches a ROM through its detected emulator', async () => {
+    const script = path.join(os.tmpdir(), `dune-launch-emulator-${Date.now()}.sh`);
+    const rom = path.join(os.tmpdir(), `dune-launch-rom-${Date.now()}.nes`);
+    fs.writeFileSync(script, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(rom, 'rom');
+    const game = { ...baseGame, source: 'emulator' as const, linPath: '', romPath: rom, emulator: script };
+
+    expect(getLaunchCommand(game)?.command).toBe(script);
+    expect(getLaunchCommand(game)?.args).toEqual([rom]);
+
+    const exited = new Promise<{ startedAt: number; endedAt: number }>((resolve) => {
+      void launchGame(game, {}, { onExit: resolve }).then((result) => {
+        expect(result.success).toBe(true);
+      });
+    });
+    const info = await exited;
+    expect(info.endedAt).toBeGreaterThanOrEqual(info.startedAt);
+  });
+
+  it('reports a missing emulator command instead of claiming success', async () => {
+    const rom = path.join(os.tmpdir(), `dune-launch-missing-rom-${Date.now()}.nes`);
+    fs.writeFileSync(rom, 'rom');
+    const game = {
+      ...baseGame,
+      source: 'emulator' as const,
+      linPath: '',
+      romPath: rom,
+      emulator: `dune-missing-emulator-${Date.now()}`,
+    };
+    const result = await launchGame(game);
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('Command not found');
+  });
 });
