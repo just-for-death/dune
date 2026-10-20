@@ -1,12 +1,17 @@
 import type { Page } from '@playwright/test';
 import type {
   BackupPrefixResult,
+  BackupProfile,
+  CloudSyncResult,
   CreatePrefixResult,
   DeletePrefixResult,
   DriveSpace,
   ElectronAPI,
   Game,
   LaunchFailureReason,
+  PlaytimeComparison,
+  PlaytimeGraphData,
+  ServerFailure,
   Settings,
 } from '@dune/shared';
 
@@ -76,6 +81,14 @@ export interface StubOptions {
   serverKey?: string;
   conflicts?: StubConflict[];
   versions?: StubVersion[];
+  /** syncCloud / restoreCloud failure (default: NO_SERVER). */
+  syncFail?: Extract<CloudSyncResult, { ok: false }>;
+  /** Playtime chart data; without it the graph and comparison calls fail (500). */
+  playtime?: { graph?: PlaytimeGraphData; comparison?: PlaytimeComparison };
+  /** Saved backup profile returned by getBackupProfile (default: none). */
+  backupProfile?: BackupProfile;
+  /** Make setBackupProfile reject ('reject') or answer with this ServerFailure. */
+  backupProfileFail?: 'reject' | ServerFailure;
 }
 
 export const sampleGames = [
@@ -242,8 +255,14 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       autoDetectGames: async () => ({ count: 0, currentGames: store.games }),
       selectDirectory: async () => ({ success: false }),
       testCloud: network,
-      syncCloud: async () => ({ ok: false, code: 'NO_SERVER', message: 'No server configured' }),
-      restoreCloud: async () => ({ ok: false, code: 'NO_SERVER', message: 'No server configured' }),
+      syncCloud: async () => {
+        record('syncCloud');
+        return opts.syncFail ?? { ok: false, code: 'NO_SERVER', message: 'No server configured' };
+      },
+      restoreCloud: async () => {
+        record('restoreCloud');
+        return opts.syncFail ?? { ok: false, code: 'NO_SERVER', message: 'No server configured' };
+      },
       fetchArt: offline,
       setCustomArt: async () => false,
       onSyncProgress: () => () => {},
@@ -252,8 +271,12 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       getPlaytimeSummary: async () => ({ ok: true, success: true, summary: [] }),
       getRecentSessions: async () => ({ ok: true, success: true, sessions: [] }),
       getTotalPlaytime: async () => ({ ok: true, success: true, totalMinutes: 0 }),
-      getPlaytimeGraphData: async () => ({ ok: false, status: 500, code: 'INTERNAL', message: 'Internal error' }),
-      getPlaytimeComparison: async () => ({ ok: false, status: 500, code: 'INTERNAL', message: 'Internal error' }),
+      getPlaytimeGraphData: async () => (opts.playtime?.graph
+        ? { ok: true, success: true, data: structuredClone(opts.playtime.graph) }
+        : { ok: false, status: 500, code: 'INTERNAL', message: 'Internal error' }),
+      getPlaytimeComparison: async () => (opts.playtime?.comparison
+        ? { ok: true, success: true, comparison: structuredClone(opts.playtime.comparison) }
+        : { ok: false, status: 500, code: 'INTERNAL', message: 'Internal error' }),
       getAchievements: async () => ({ ok: true, success: true, achievements: [] }),
       getAchievementSummary: async () => ({
         ok: true,
@@ -430,9 +453,14 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       },
       getBackupProfile: async (game: string) => {
         await wait(game);
-        return { ok: true, success: true };
+        return opts.backupProfile ? { ok: true, success: true, profile: structuredClone(opts.backupProfile) } : { ok: true, success: true };
       },
-      setBackupProfile: async (profile) => ({ ok: true, success: true, profile }),
+      setBackupProfile: async (profile) => {
+        record('setBackupProfile', structuredClone(profile));
+        if (opts.backupProfileFail === 'reject') throw new Error('ipc gone (e2e stub)');
+        if (opts.backupProfileFail) return opts.backupProfileFail;
+        return { ok: true, success: true, profile };
+      },
       getConflicts: async (game?: string) => {
         if (game !== undefined) await wait(game);
         return { ok: true, success: true, conflicts: conflictsFor(game) };

@@ -49,6 +49,9 @@ import { pickFailureMessage } from './services/launchSettings';
 import { DriveSpaceList } from './components/saves/DriveSpaceList';
 import { toDriveRows, type DriveRow } from './services/driveSpace';
 import { cloudSyncFailureMessage, serverFailureMessage } from './services/serverError';
+import { formatMinutes } from './services/playtimeFormat';
+import { createResetTimer } from './services/resetTimer';
+import { saveBackupProfile } from './services/backupProfileSave';
 
 // ── Typed IPC bridge ─────────────────────────────────────────────────────────
 // ElectronAPI, Game, Settings and Achievement are canonical in @dune/shared;
@@ -61,13 +64,6 @@ declare global {
 }
 
 type Tab = 'dashboard' | 'mapping' | 'prefixes' | 'sync' | 'saves' | 'bigpicture' | 'hltb' | 'playtime' | 'achievements' | 'settings';
-
-function formatMinutes(min: number): string {
-  if (min < 60) return `${min}m`;
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return m === 0 ? `${h}h` : `${h}h ${m}m`;
-}
 
 /** Plain wording for DUN-061 launch failures; the optional detail from main is appended, the code never is. */
 function launchFailureMessage(name: string, reason: string, detail?: string): string {
@@ -185,6 +181,9 @@ const DEMO_EXCLUSION_FILES = import.meta.env.DEV
     ]
   : [];
 
+/** How long a finished sync/restore card stays visible. */
+const SYNC_PROGRESS_HIDE_MS = 4000;
+
 const TOAST_DURATION_MS: Record<Toast['type'], number> = { success: 4000, info: 4000, error: 8000 };
 
 /** One toast with its own dismiss timer; the timer pauses on hover/focus. */
@@ -289,11 +288,15 @@ export default function App() {
   const [saveVersions, setSaveVersions] = useState<SaveVersion[]>([]);
   const [storageEntry, setStorageEntry] = useState<StorageEntry | null>(null);
   const [backupProfile, setBackupProfile] = useState<BackupProfile | null>(null);
+  // DUN-047: bumped after a failed save so the editor remounts on the last saved profile.
+  const [exclusionRevision, setExclusionRevision] = useState(0);
   const [conflicts, setConflicts] = useState<ConflictRecord[]>([]);
   // Game the save data above belongs to; anything else is not shown (DUN-046).
   const [savesGameId, setSavesGameId] = useState<number | null>(null);
   const [conflictDialog, setConflictDialog] = useState<ConflictDialogState | null>(null);
   const savesGate = useRef(createLatestGate<number>());
+  // DUN-050: the one timer that hides the finished sync/restore card.
+  const syncProgressTimer = useRef(createResetTimer());
   const achievementsGate = useRef(createLatestGate<string>());
   // Conflict ids already auto-opened this session; later visits show a
   // "Review conflict" banner instead of re-opening the modal.
@@ -369,6 +372,7 @@ export default function App() {
   }, [loadConfig]);
 
   useEffect(() => {
+    const timer = syncProgressTimer.current;
     const cleanup = window.electronAPI.onSyncProgress((data: { percent: number; message: string }) => {
       if (data.percent === 0) return;
       setSyncProgress(prev => ({
@@ -381,10 +385,13 @@ export default function App() {
       if (data.percent === 100) {
         setSyncProgress({ percent: 100, message: data.message, done: true, success: true });
         setIsSyncing(false);
-        setTimeout(() => setSyncProgress(null), 4000);
+        timer.schedule(() => setSyncProgress(null), SYNC_PROGRESS_HIDE_MS);
       }
     });
-    return cleanup;
+    return () => {
+      cleanup();
+      timer.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -630,13 +637,14 @@ export default function App() {
       return;
     }
     setIsSyncing(true);
+    syncProgressTimer.current.clear();
     setSyncProgress({ percent: 1, message: 'Preparing sync...', done: false, success: false });
     try {
       const res = await window.electronAPI.syncCloud(cloud);
       if (!res.ok) {
         setSyncProgress({ percent: 0, message: cloudSyncFailureMessage(res, 'Sync'), done: true, success: false });
         setIsSyncing(false);
-        setTimeout(() => setSyncProgress(null), 4000);
+        syncProgressTimer.current.schedule(() => setSyncProgress(null), SYNC_PROGRESS_HIDE_MS);
       } else {
         const config = await loadConfig();
         const conflictRes = await window.electronAPI.getConflicts();
@@ -657,7 +665,7 @@ export default function App() {
     } catch {
       setSyncProgress({ percent: 0, message: 'Sync failed', done: true, success: false });
       setIsSyncing(false);
-      setTimeout(() => setSyncProgress(null), 4000);
+      syncProgressTimer.current.schedule(() => setSyncProgress(null), SYNC_PROGRESS_HIDE_MS);
     }
   };
 
@@ -674,13 +682,14 @@ export default function App() {
     setPendingRestore(false);
 
     setIsSyncing(true);
+    syncProgressTimer.current.clear();
     setSyncProgress({ percent: 1, message: 'Preparing to restore...', done: false, success: false });
     try {
       const res = await window.electronAPI.restoreCloud(cloud);
       if (!res.ok) {
         setSyncProgress({ percent: 0, message: cloudSyncFailureMessage(res, 'Restore'), done: true, success: false });
         setIsSyncing(false);
-        setTimeout(() => setSyncProgress(null), 4000);
+        syncProgressTimer.current.schedule(() => setSyncProgress(null), SYNC_PROGRESS_HIDE_MS);
       } else {
         await loadConfig();
         showToast('Restore complete', 'success');
@@ -688,7 +697,7 @@ export default function App() {
     } catch {
       setSyncProgress({ percent: 0, message: 'Restore failed', done: true, success: false });
       setIsSyncing(false);
-      setTimeout(() => setSyncProgress(null), 4000);
+      syncProgressTimer.current.schedule(() => setSyncProgress(null), SYNC_PROGRESS_HIDE_MS);
     }
   };
 
@@ -1020,47 +1029,62 @@ export default function App() {
 
   const inSyncCount = games.filter(g => g.status === 'In Sync').length;
 
+  // DUN-047: never rejects. On failure the editor goes back to the last saved profile.
+  const handleExclusionChange = async (profile: BackupProfile) => {
+    if (!selectedSaveGameName || selectedSaveGameId === null) return;
+    const gameId = selectedSaveGameId;
+    const game = selectedSaveGameName;
+    const outcome = await saveBackupProfile(() => window.electronAPI.setBackupProfile({ ...profile, game }));
+    if (!outcome.ok) {
+      if (savesGate.current.currentKey() === gameId) setExclusionRevision(r => r + 1);
+      showToast(outcome.message, 'error');
+      return;
+    }
+    if (outcome.profile && savesGate.current.currentKey() === gameId) setBackupProfile(outcome.profile);
+    showToast(outcome.message, 'success');
+  };
+
   return (
     <div className="layout">
-      <div className="sidebar">
+      <nav className="sidebar" aria-label="Main">
         <div className="sidebar-title">Dune</div>
-        <button className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
+        <button className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`} aria-current={activeTab === 'dashboard' ? 'page' : undefined} onClick={() => setActiveTab('dashboard')}>
           <Icon name="dashboard" />
           <span>Dashboard</span>
         </button>
-        <button className={`nav-item ${activeTab === 'mapping' ? 'active' : ''}`} onClick={() => setActiveTab('mapping')}>
+        <button className={`nav-item ${activeTab === 'mapping' ? 'active' : ''}`} aria-current={activeTab === 'mapping' ? 'page' : undefined} onClick={() => setActiveTab('mapping')}>
           <Icon name="paths" />
           <span>Game Paths</span>
         </button>
-        <button className={`nav-item ${activeTab === 'prefixes' ? 'active' : ''}`} onClick={() => { setActiveTab('prefixes'); loadPrefixes(); }}>
+        <button className={`nav-item ${activeTab === 'prefixes' ? 'active' : ''}`} aria-current={activeTab === 'prefixes' ? 'page' : undefined} onClick={() => { setActiveTab('prefixes'); loadPrefixes(); }}>
           <Icon name="folder" />
           <span>Prefixes</span>
         </button>
-        <button className={`nav-item ${activeTab === 'sync' ? 'active' : ''}`} onClick={() => setActiveTab('sync')}>
+        <button className={`nav-item ${activeTab === 'sync' ? 'active' : ''}`} aria-current={activeTab === 'sync' ? 'page' : undefined} onClick={() => setActiveTab('sync')}>
           <Icon name="sync" />
           <span>Server Sync</span>
         </button>
-        <button className={`nav-item ${activeTab === 'saves' ? 'active' : ''}`} onClick={() => setActiveTab('saves')}>
-          <Icon name="sync" />
+        <button className={`nav-item ${activeTab === 'saves' ? 'active' : ''}`} aria-current={activeTab === 'saves' ? 'page' : undefined} onClick={() => setActiveTab('saves')}>
+          <Icon name="files" />
           <span>Saves</span>
         </button>
-        <button className={`nav-item ${activeTab === 'bigpicture' ? 'active' : ''}`} onClick={() => setActiveTab('bigpicture')}>
+        <button className={`nav-item ${activeTab === 'bigpicture' ? 'active' : ''}`} aria-current={activeTab === 'bigpicture' ? 'page' : undefined} onClick={() => setActiveTab('bigpicture')}>
           <Icon name="game" />
           <span>Big Picture</span>
         </button>
-        <button className={`nav-item ${activeTab === 'hltb' ? 'active' : ''}`} onClick={() => setActiveTab('hltb')}>
-          <Icon name="playtime" />
+        <button className={`nav-item ${activeTab === 'hltb' ? 'active' : ''}`} aria-current={activeTab === 'hltb' ? 'page' : undefined} onClick={() => setActiveTab('hltb')}>
+          <Icon name="hltb" />
           <span>HLTB</span>
         </button>
-        <button className={`nav-item ${activeTab === 'playtime' ? 'active' : ''}`} onClick={() => { setActiveTab('playtime'); loadPlaytime(); }}>
+        <button className={`nav-item ${activeTab === 'playtime' ? 'active' : ''}`} aria-current={activeTab === 'playtime' ? 'page' : undefined} onClick={() => { setActiveTab('playtime'); loadPlaytime(); }}>
           <Icon name="playtime" />
           <span>Playtime</span>
         </button>
-        <button className={`nav-item ${activeTab === 'achievements' ? 'active' : ''}`} onClick={() => { setActiveTab('achievements'); loadAchievements(); }}>
+        <button className={`nav-item ${activeTab === 'achievements' ? 'active' : ''}`} aria-current={activeTab === 'achievements' ? 'page' : undefined} onClick={() => { setActiveTab('achievements'); loadAchievements(); }}>
           <Icon name="achievements" />
           <span>Achievements</span>
         </button>
-        <button className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
+        <button className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`} aria-current={activeTab === 'settings' ? 'page' : undefined} onClick={() => setActiveTab('settings')}>
           <Icon name="settings" />
           <span>Settings</span>
         </button>
@@ -1075,9 +1099,9 @@ export default function App() {
             <span>{games.length === 0 ? 'Nothing tracked' : `${inSyncCount}/${games.length} in sync`}</span>
           </div>
         </div>
-      </div>
+      </nav>
 
-      <div className="main-content">
+      <main className="main-content">
         {activeTab === 'dashboard' && (
           <div>
             <div className="dashboard-header">
@@ -1403,14 +1427,22 @@ export default function App() {
                     {syncProgress.percent > 0 ? `${syncProgress.percent}%` : ''}
                   </div>
                 </div>
-                <div className="progress-track">
+                <div
+                  className="progress-track"
+                  role="progressbar"
+                  aria-label="Sync progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={syncProgress.percent}
+                >
                   <div
                     className={`progress-fill ${syncProgress.done && syncProgress.success ? 'progress-done' : ''}`}
                     style={{ width: `${syncProgress.percent}%` }}
                   />
                 </div>
-                <div className="sync-progress-message">
-                  {!syncProgress.done && <span className="progress-spinner" />}
+                <div className="sync-progress-message" role="status" aria-live="polite">
+                  {!syncProgress.done && <span className="progress-spinner" aria-hidden="true" />}
+                  {syncProgress.done && <span className="sr-only">{syncProgress.success ? 'Sync Complete' : 'Sync Failed'}: </span>}
                   {syncProgress.message}
                 </div>
               </div>
@@ -1505,7 +1537,7 @@ export default function App() {
             {!exclusionProfile ? (
               <p className="text-muted text-sm">No backup profile for this game yet. Exclusions appear after the first backup.</p>
             ) : (
-            <ExclusionEditor key={`${selectedSaveGameName}:${exclusionProfile.gameId}`} profile={exclusionProfile} files={DEMO_EXCLUSION_FILES} onChange={async (profile) => { if (selectedSaveGameName && selectedSaveGameId !== null) { const gameId = selectedSaveGameId; const res = await window.electronAPI.setBackupProfile({ ...profile, game: selectedSaveGameName }); if (!res.ok) { showToast(serverFailureMessage(res), 'error'); return; } if (res.profile && savesGate.current.currentKey() === gameId) setBackupProfile(res.profile); showToast(res.message || 'Backup profile updated', 'success'); } }} />
+            <ExclusionEditor key={`${selectedSaveGameName}:${exclusionProfile.gameId}:${exclusionRevision}`} profile={exclusionProfile} files={DEMO_EXCLUSION_FILES} onChange={handleExclusionChange} />
             )}
           </div>
         )}
@@ -1920,7 +1952,7 @@ export default function App() {
 
           </div>
         )}
-      </div>
+      </main>
 
       <div className="toast-container">
         {/* Live regions stay mounted so screen readers announce new toasts. */}

@@ -1170,3 +1170,31 @@ dialog.confirm-dialog { max-width: 480px; }
 .drive-list { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 .drive-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drive-reason { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+
+/* ── Playtime charts (DUN-049) ──
+   Sections inside the playtime card (no nested .card). Text uses --text /
+   --muted on --panel (15.0:1 / 6.9:1). Slice and swatch colours are
+   hsl(h, 70%, 65%): at least 3.69:1 on --panel, --panel-2 and --bg for every
+   hue (WCAG 1.4.11). Slices are also named in the legend, so colour is never
+   the only cue. */
+.playtime-charts { display: grid; gap: 20px; min-width: 0; }
+.chart-section { min-width: 0; }
+.chart-section + .chart-section { border-top: 1px solid var(--line); padding-top: 20px; }
+.chart-svg { display: block; width: 100%; height: auto; max-height: 220px; }
+.pie-layout { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
+.pie-layout .pie-chart { width: 200px; max-width: 100%; flex: 0 0 auto; }
+.chart-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; flex: 1 1 220px; min-width: 0; }
+.chart-legend-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chart-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.chart-legend-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chart-legend-value,
+.bar-value { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-chart { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.bar-label { min-width: 0; overflow-wrap: anywhere; }
+.bar-track { display: block; height: 8px; background: var(--bg); border-radius: 99px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--sand); border-radius: 99px; }
+@media (max-width: 680px) {
+  .bar-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .bar-row .bar-track { grid-column: 1 / -1; grid-row: 2; }
+}
