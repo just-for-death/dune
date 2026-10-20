@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { nextId } from '@dune/shared';
 import type { Game } from '@dune/shared';
+import { getRetroArchConfigDir } from './detect.js';
+import { getRetroArchSavePath } from './saves.js';
 
 const ROM_EXTENSIONS = new Set([
   '.nes', '.snes', '.smc', '.sfc', '.n64', '.z64', '.v64', '.gb', '.gbc', '.gba',
@@ -95,10 +97,15 @@ export function isRomFile(filePath: string): boolean {
   return ROM_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
-export function scanRomFolder(folder: string, recursive = true): Game[] {
+export function scanRomFolder(
+  folder: string,
+  recursive = true,
+  installedEmulators?: Set<string>,
+): Game[] {
   const games: Game[] = [];
   if (!fs.existsSync(folder)) return games;
-  const availableEmulators = detectInstalledEmulators();
+  const availableEmulators = installedEmulators ?? detectInstalledEmulators();
+  const retroarchConfigDir = getRetroArchConfigDir();
 
   const walk = (dir: string) => {
     let entries: fs.Dirent[];
@@ -115,13 +122,16 @@ export function scanRomFolder(folder: string, recursive = true): Game[] {
       } else if (isRomFile(fullPath)) {
         const now = new Date().toISOString();
         const emulator = getEmulatorForRom(fullPath, availableEmulators);
+        const savePath = emulator === 'retroarch'
+          ? getRetroArchSavePath(fullPath, retroarchConfigDir)
+          : null;
         games.push({
           id: nextId(),
           name: path.basename(fullPath, path.extname(fullPath)),
           winPath: '',
-          // ROMs are launch targets, not save locations. Keeping linPath empty
-          // prevents save sync from uploading entire ROM files.
-          linPath: '',
+          // RetroArch battery saves can sync per-ROM. Other emulator save
+          // layouts stay unmapped until their save root is discovered.
+          linPath: savePath ?? '',
           lastSync: 'Never',
           status: 'Pending Upload',
           thumbnail: '',

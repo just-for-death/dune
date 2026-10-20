@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { detectEmulators, getRetroArchConfigDir } from './detect.js';
 import { scanRomFolder, isRomFile, getEmulatorForRom } from './roms.js';
-import { getRetroArchSaveStates, getRetroArchBatterySaves, findFilesByExtensions } from './saves.js';
+import { getRetroArchSaveStates, getRetroArchBatterySaves, getRetroArchSavePath, findFilesByExtensions } from './saves.js';
 
 describe('emulator support', () => {
   const tempDirs: string[] = [];
@@ -34,12 +34,17 @@ describe('emulator support', () => {
     tempDirs.push(dir);
     fs.mkdirSync(path.join(dir, 'nes'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'nes', 'mario.nes'), 'rom');
-    const games = scanRomFolder(dir);
+    const retroarch = path.join(dir, 'retroarch');
+    fs.mkdirSync(path.join(retroarch, 'saves'), { recursive: true });
+    fs.writeFileSync(path.join(retroarch, 'saves', 'mario.sav'), 'save');
+    process.env.RETROARCH_CONFIG_DIR = retroarch;
+    const games = scanRomFolder(dir, true, new Set(['retroarch']));
     expect(games).toHaveLength(1);
     expect(games[0].name).toBe('mario');
     expect(games[0].source).toBe('emulator');
     expect(games[0].romPath).toBe(path.join(dir, 'nes', 'mario.nes'));
-    expect(games[0].linPath).toBe('');
+    expect(games[0].linPath).toBe(path.join(retroarch, 'saves', 'mario.sav'));
+    expect(games[0].emulator).toBe('retroarch');
     expect(isRomFile('mario.nes')).toBe(true);
   });
 
@@ -65,5 +70,17 @@ describe('emulator support', () => {
     expect(getEmulatorForRom('/games/PS2/game.iso', new Set(['retroarch', 'duckstation', 'pcsx2']))).toBe('pcsx2');
     expect(getEmulatorForRom('/games/unknown.xyz', new Set(['retroarch']))).toBe('retroarch');
     expect(getEmulatorForRom('/games/mario.nes', new Set())).toBeNull();
+  });
+
+  it('maps RetroArch battery saves without treating the ROM as a save', () => {
+    const config = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-ra-map-'));
+    tempDirs.push(config);
+    const saves = path.join(config, 'saves');
+    fs.mkdirSync(saves, { recursive: true });
+
+    expect(getRetroArchSavePath('/roms/mario.nes', config)).toBe(path.join(saves, 'mario.srm'));
+    fs.writeFileSync(path.join(saves, 'mario.sav'), 'save');
+    expect(getRetroArchSavePath('/roms/mario.nes', config)).toBe(path.join(saves, 'mario.sav'));
+    expect(getRetroArchSavePath('/roms/mario.nes', null)).toBeNull();
   });
 });

@@ -42,3 +42,19 @@ export function getRetroArchBatterySaves(configDir: string): EmulatorSave[] {
   return findFilesByExtensions(savesDir, ['.srm', '.sav'])
     .map((filePath) => ({ emulator: 'RetroArch', type: 'battery' as const, path: filePath, game: path.basename(filePath, path.extname(filePath)) }));
 }
+
+/**
+ * Predict the battery-save path RetroArch uses for a ROM. Prefers an existing
+ * `.sav`/`.srm` file and otherwise returns the default `.srm` path so save
+ * sync picks it up once the game creates it.
+ */
+export function getRetroArchSavePath(romPath: string, configDir: string | null): string | null {
+  if (!configDir) return null;
+  const savesDir = path.join(configDir, 'saves');
+  const base = path.basename(romPath, path.extname(romPath));
+  for (const extension of ['.srm', '.sav']) {
+    const candidate = path.join(savesDir, base + extension);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(savesDir, base + '.srm');
+}
