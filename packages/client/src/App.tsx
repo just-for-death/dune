@@ -17,6 +17,8 @@ import type {
 } from '@dune/shared';
 import { nextId } from '@dune/shared';
 import { Icon } from './Icon';
+import { applyTheme, loadThemes, getActiveThemeId, setActiveThemeId } from './theme/manager';
+import { t, availableLocales, type Locale } from './i18n';
 import { SaveVersionTimeline } from './components/saves/SaveVersionTimeline';
 import { ConflictModal } from './components/saves/ConflictModal';
 import { StorageManager } from './components/saves/StorageManager';
@@ -145,6 +147,8 @@ export default function App() {
   // HLTB cache
   const [hltbCache, setHltbCache] = useState<Record<string, HLTBTimes>>({});
   const [hltbLoading, setHltbLoading] = useState<Record<string, boolean>>({});
+  const [themeId, setThemeId] = useState(getActiveThemeId());
+  const [locale, setLocale] = useState<Locale>((localStorage.getItem('dune:locale') as Locale) || 'en');
 
   // Save version state
   const [saveVersions, setSaveVersions] = useState<SaveVersion[]>([]);
@@ -229,6 +233,18 @@ export default function App() {
     };
     loadSaves();
   }, [activeTab, games, cloud.url]);
+
+
+  useEffect(() => {
+    const themes = loadThemes();
+    const theme = themes.find((item) => item.id === themeId) ?? themes[0];
+    applyTheme(theme);
+    setActiveThemeId(theme.id);
+  }, [themeId]);
+
+  useEffect(() => {
+    localStorage.setItem('dune:locale', locale);
+  }, [locale]);
 
   const saveSettings = async (newSettings: Partial<Settings>) => {
     const s = { ...settings, ...newSettings };
@@ -1020,6 +1036,22 @@ export default function App() {
                 <option value="1h">Every 1 Hour</option>
                 <option value="6h">Every 6 Hours</option>
                 <option value="24h">Daily</option>
+              </select>
+            </div>
+
+            <div className="card">
+              <h3 className="card-title"><Icon name="settings" />Appearance and Language</h3>
+              <label>Theme</label>
+              <select value={themeId} onChange={(e) => setThemeId(e.target.value)}>
+                {loadThemes().map((theme) => (
+                  <option key={theme.id} value={theme.id}>{theme.name}</option>
+                ))}
+              </select>
+              <label>{t(locale, 'settings.language')}</label>
+              <select value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
+                {availableLocales.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
               </select>
             </div>
 
