@@ -162,6 +162,7 @@ export default function App() {
   // Achievements state
   const [achievementSummary, setAchievementSummary] = useState<AchievementSummary[]>([]);
   const [selectedAchGame, setSelectedAchGame] = useState('');
+  const [achievementImportGame, setAchievementImportGame] = useState('');
   const [achievements, setAchievements] = useState<AchievementDetail[]>([]);
   const [achievementProgress, setAchievementProgress] = useState<AchievementProgress | null>(null);
   const [recentUnlocks, setRecentUnlocks] = useState<Achievement[]>([]);
@@ -192,6 +193,10 @@ export default function App() {
   // that would synchronously set state on every library change.
   const selectedSaveGameName = games.some(game => game.name === selectedSaveGame)
     ? selectedSaveGame
+    : (games[0]?.name ?? '');
+
+  const achievementImportGameName = games.some(game => game.name === achievementImportGame)
+    ? achievementImportGame
     : (games[0]?.name ?? '');
 
   const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
@@ -581,6 +586,29 @@ export default function App() {
       }
     } catch {
       showToast('Failed to load achievements', 'error');
+    }
+    setIsLoadingAch(false);
+  };
+
+  const handleImportLocalAchievements = async () => {
+    const game = games.find(item => item.name === achievementImportGameName);
+    if (!game) {
+      showToast('Add a game before importing achievements', 'error');
+      return;
+    }
+
+    setIsLoadingAch(true);
+    try {
+      const res = await window.electronAPI.importLocalAchievements(game);
+      if (res.success && res.count > 0) {
+        showToast(`Imported ${res.count} local achievement(s)`, 'success');
+        await loadAchievements();
+        await loadGameAchievements(game.name);
+      } else {
+        showToast(res.message || 'No local achievements found', res.success ? 'info' : 'error');
+      }
+    } catch {
+      showToast('Failed to import local achievements', 'error');
     }
     setIsLoadingAch(false);
   };
@@ -1180,6 +1208,32 @@ export default function App() {
                 {isLoadingAch ? 'Loading...' : 'Refresh'}
               </button>
             </div>
+            {games.length > 0 && (
+              <div className="card">
+                <h3 className="card-title"><Icon name="scan" />Local Achievement Import</h3>
+                <p className="text-muted text-sm">
+                  Reads achievements.ini, achievements.json, or user_stats.json from the selected game install or Wine prefix.
+                </p>
+                <div className="inline-form">
+                  <div className="form-group">
+                    <label htmlFor="ach-import-game">Game</label>
+                    <select
+                      id="ach-import-game"
+                      value={achievementImportGameName}
+                      onChange={e => setAchievementImportGame(e.target.value)}
+                    >
+                      {games.map(game => (
+                        <option key={game.id} value={game.name}>{game.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button className="btn btn-primary" onClick={handleImportLocalAchievements} disabled={isLoadingAch}>
+                    <Icon name="scan" />
+                    {isLoadingAch ? 'Importing...' : 'Scan local files'}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="card">
               {achievementSummary.length === 0 ? (
                 <div className="empty-state">

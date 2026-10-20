@@ -50,6 +50,7 @@ test.beforeEach(async ({ page }) => {
         summary: [{ game: 'Hades', unlocked: 1, total: 2, percentage: 50 }],
       }),
       getRecentUnlocks: async () => ({ success: true, unlocks: [] }),
+      importLocalAchievements: async () => ({ success: true, count: 0, message: 'No local achievement files found' }),
       getAchievementDetail: async () => ({
         success: true,
         achievements: [{
@@ -183,6 +184,21 @@ test('save manager switches between tracked games', async ({ page }) => {
   await expect(picker).toHaveValue('Alpha');
   await picker.selectOption('Beta');
   await expect(picker).toHaveValue('Beta');
+});
+
+test('local achievements can be imported for a tracked game', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('#server-url').fill('http://localhost:3030');
+  await page.getByRole('button', { name: 'Game Paths', exact: true }).click();
+  await page.locator('#new-game-title').fill('Hades');
+  await page.locator('#new-game-lin').fill('/tmp/hades.sh');
+  await page.getByRole('button', { name: 'Save Mapping' }).click();
+
+  await page.getByRole('button', { name: 'Achievements', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Local Achievement Import' })).toBeVisible();
+  await page.getByRole('button', { name: 'Scan local files' }).click();
+  await expect(page.locator('.toast.toast-info').filter({ hasText: 'No local achievement files found' })).toBeVisible();
 });
 
 test('achievements show rarity tiers and detail', async ({ page }) => {

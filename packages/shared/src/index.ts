@@ -385,6 +385,7 @@ export interface ElectronAPI {
   getAchievementSummary: (game?: string) => Promise<{ success: boolean; summary: AchievementSummary[]; message?: string }>;
   getRecentUnlocks: (limit?: number) => Promise<{ success: boolean; unlocks: Achievement[]; message?: string }>;
   getAchievementDetail: (game: string) => Promise<{ success: boolean; achievements: AchievementDetail[]; progress?: AchievementProgress | null; message?: string }>;
+  importLocalAchievements: (game: Game) => Promise<{ success: boolean; count: number; message?: string }>;
   
   // HLTB
   getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string; stale?: boolean }>;

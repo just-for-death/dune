@@ -430,6 +430,8 @@ label {
 .form-group { margin-bottom: 14px; }
 .save-game-picker { margin-bottom: 0; min-width: 240px; }
 .save-game-picker select { width: 100%; }
+.inline-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.inline-form .form-group { margin-bottom: 0; min-width: 240px; }
 .btn-row { display: flex; gap: 12px; margin-bottom: 20px; margin-top: 14px; flex-wrap: wrap; }
 .sync-btn-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .btn-flex { flex: 1; justify-content: center; min-width: 180px; }

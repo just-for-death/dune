@@ -12,6 +12,7 @@ import { autoDetectGames } from './scanner'
 import { launchGame, getLaunchCommand } from './launcher/manager'
 import type { LaunchOptions } from './launcher/strategies/types'
 import { buildPlaytimeSession, enqueuePlaytimeSession, type PlaytimeSessionPayload } from './playtime/session'
+import { getAchievementRoots, scanLocalAchievements } from './achievements/local'
 import { listPrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix } from './prefix/manager'
 import { autoUpdater } from 'electron-updater'
 import {
@@ -1138,8 +1139,28 @@ ipcMain.handle('achievements:summary', async (_event, game) => {
   }
 })
 
-ipcMain.handle('achievements:recent', async (_event, limit) => {
+ipcMain.handle('achievements:importLocal', async (_event, game: Game) => {
   const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, count: 0, message: 'No Dune Server configured' }
+
+  try {
+    const achievements = scanLocalAchievements(getAchievementRoots(game))
+    if (achievements.length === 0) {
+      return { success: true, count: 0, message: 'No local achievement files found' }
+    }
+
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.post(`${cleanUrl}/api/achievements/import`, {
+      game: game.name,
+      achievements,
+    }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
+    return res.data
+  } catch (e) {
+    return { success: false, count: 0, message: errorMessage(e) }
+  }
+})
+
+ipcMain.handle('achievements:recent', async (_event, limit) => {  const cloud = store.get('cloud')
   if (!cloud?.url) return { success: false, unlocks: [] }
   
   try {

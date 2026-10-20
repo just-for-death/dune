@@ -26,7 +26,7 @@ if (process.versions.node) {
 }
 
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime, getPlaytimeGraphData, getPlaytimeComparison, exportPlaytimeData } from './services/playtime.js';
-import { getGameAchievements, getAchievementSummary, getRecentUnlocks } from './services/achievements.js';
+import { getGameAchievements, getAchievementSummary, getRecentUnlocks, upsertAchievements } from './services/achievements.js';
 import { getAchievementDetails, getAchievementProgress } from './services/achievementDetail.js';
 import { getHLTBTimes } from './services/hltb.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from './services/ollama.js';
@@ -293,6 +293,36 @@ app.get('/api/playtime/recent', authMiddleware, (req: AuthenticatedRequest, res)
 app.get('/api/playtime/total', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     res.json({ success: true, totalMinutes: getTotalPlaytime(ownerScope(req)) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.post('/api/achievements/import', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const { game, achievements } = req.body ?? {};
+    if (typeof game !== 'string' || !game.trim() || !Array.isArray(achievements)) {
+      return res.status(400).json({ success: false, message: 'game and achievements[] required' });
+    }
+
+    const cleaned = achievements
+      .filter((a: unknown): a is Record<string, unknown> => (
+        typeof a === 'object' && a !== null && typeof (a as Record<string, unknown>).apiName === 'string'
+      ))
+      .slice(0, 5000)
+      .map((a) => ({
+        apiName: String(a.apiName).slice(0, 200),
+        displayName: typeof a.displayName === 'string' && a.displayName.trim()
+          ? a.displayName.slice(0, 200)
+          : String(a.apiName).slice(0, 200),
+        description: typeof a.description === 'string' ? a.description.slice(0, 2000) : '',
+        unlocked: Boolean(a.unlocked),
+        unlockTime: typeof a.unlockTime === 'string' ? a.unlockTime : null,
+        rarity: typeof a.rarity === 'number' ? a.rarity : 0,
+        hidden: Boolean(a.hidden),
+      }));
+
+    res.json(upsertAchievements(game.trim(), cleaned, req.user?.id ?? ''));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }

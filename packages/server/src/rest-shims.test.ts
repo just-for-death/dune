@@ -47,6 +47,7 @@ describe('REST shims auth gate', () => {
     ['get', '/api/achievements/recent'],
     ['get', '/api/achievements/Bob'],
     ['get', '/api/achievements'],
+    ['post', '/api/achievements/import'],
     ['get', '/api/hltb/Bob'],
     ['post', '/api/analyze-files-ai'],
     ['get', '/api/search-art?query=x'],
@@ -128,6 +129,28 @@ describe('REST shims happy paths', () => {
 
     const recent = await api(request(app).get('/api/achievements/recent?limit=200'));
     expect(recent.body.unlocks).toEqual([]);
+  });
+
+  it('imports local achievements into game detail', async () => {
+    const imported = await api(request(app).post('/api/achievements/import')).send({
+      game: 'Local Shim Game',
+      achievements: [
+        {
+          apiName: 'ACH_LOCAL_1',
+          displayName: 'Local First',
+          description: 'Imported from disk',
+          unlocked: true,
+          unlockTime: '2026-01-01T12:00:00.000Z',
+        },
+      ],
+    });
+    expect(imported.body.success).toBe(true);
+    expect(imported.body.count).toBe(1);
+
+    const detail = await api(request(app).get('/api/achievements/detail/Local%20Shim%20Game'));
+    expect(detail.body.achievements).toHaveLength(1);
+    expect(detail.body.achievements[0].displayName).toBe('Local First');
+    expect(detail.body.progress.unlocked).toBe(1);
   });
 
   it('hltb returns offline-shaped failure hermetically', async () => {

@@ -1,23 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { BackupProfile } from '@dune/shared';
-
-interface Game {
-  id: number;
-  name: string;
-  winPath: string;
-  linPath: string;
-  lastSync: string;
-  status: string;
-  thumbnail: string;
-  analysis?: Record<string, FileAnalysis>;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-interface FileAnalysis {
-  category: 'Save' | 'Config' | 'Cache' | 'Other';
-  description: string;
-}
+import type { BackupProfile, Game } from '@dune/shared';
 
 interface Cloud {
   url: string;
@@ -110,6 +92,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('achievements:summary', game),
   getRecentUnlocks: (limit?: number) => 
     ipcRenderer.invoke('achievements:recent', limit),
+  importLocalAchievements: (game: Game) =>
+    ipcRenderer.invoke('achievements:importLocal', game),
   
   // HLTB
   getHLTBTimes: (gameName: string) => 
