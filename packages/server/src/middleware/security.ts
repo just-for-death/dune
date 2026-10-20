@@ -67,5 +67,5 @@ export const corsConfig = cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'x-game', 'x-path', 'x-sync-id'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'x-game', 'x-path', 'x-sync-id', 'x-dune-relay'],
 });

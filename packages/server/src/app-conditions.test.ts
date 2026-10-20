@@ -196,21 +196,23 @@ describe('D. adversarial app conditions', () => {
     expect(res.status).toBe(413);
   });
 
-  it('preserves a corrupt DB and boots with defaults', async () => {
+  it('refuses a corrupt DB: requests fail, /ready is 503, the file is untouched (DUN-099)', async () => {
     const { closeDbForTests } = await import('./db/index.js');
     closeDbForTests();
     const dbFile = path.join(TMP, 'dune.sqlite');
+    const saved = fs.existsSync(dbFile) ? fs.readFileSync(dbFile) : null;
     try {
       fs.writeFileSync(dbFile, '{corrupt-sqlite!!!');
-      const games = database.getGames();
-      expect(games).toEqual([]);
-      const corruptCopies = fs.readdirSync(TMP).filter((f) => f.startsWith('dune.sqlite.corrupt-'));
-      expect(corruptCopies.length).toBeGreaterThanOrEqual(1);
+      expect(() => database.getGames()).toThrow(/left untouched/);
+      const ready = await request(app).get('/ready');
+      expect(ready.status).toBe(503);
+      expect(ready.body.checks.database.ok).toBe(false);
+      expect(fs.readFileSync(dbFile, 'utf-8')).toBe('{corrupt-sqlite!!!');
+      expect(fs.readdirSync(TMP).filter((f) => f.startsWith('dune.sqlite.corrupt-'))).toEqual([]);
     } finally {
       closeDbForTests();
-      for (const f of fs.readdirSync(TMP)) {
-        if (f.startsWith('dune.sqlite')) fs.rmSync(path.join(TMP, f), { force: true });
-      }
+      if (saved) fs.writeFileSync(dbFile, saved);
+      else fs.rmSync(dbFile, { force: true });
     }
   });
 });

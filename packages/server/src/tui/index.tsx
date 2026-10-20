@@ -3,6 +3,7 @@ import { render, Text, Box, useInput, useApp } from 'ink';
 import { getConfig } from '../utils/config.js';
 import { getTrackedFolders } from '../services/folderTracker.js';
 import { database } from '../db/index.js';
+import { steamGridKeyStatus } from '../services/providerKeys.js';
 
 type ViewName = 'dashboard' | 'games' | 'sync' | 'settings' | 'folder-tracker' | 'logs';
 
@@ -32,7 +33,6 @@ function safeGetConfig(): ReturnType<typeof getConfig> {
       server: { port: 3030, host: '0.0.0.0' },
       sync: { autoSync: false, syncInterval: 300000, maxVersions: 10 },
       ollama: { endpoint: 'http://localhost:11434', model: 'phi4-mini:latest' },
-      steamGridDb: { apiKey: '' },
     } as ReturnType<typeof getConfig>;
   }
 }
@@ -167,6 +167,9 @@ function SyncView({ state, cfg }: { state: AppState; cfg: ReturnType<typeof getC
 }
 
 function SettingsView({ cfg }: { cfg: ReturnType<typeof getConfig> }) {
+  // DUN-092: the key lives encrypted in the DB; the TUI only shows status.
+  let sgdbSet = false;
+  try { sgdbSet = steamGridKeyStatus().set; } catch { /* DB unavailable */ }
   return (
     <Box flexDirection="column" padding={1}>
       <Text bold>Settings</Text>
@@ -211,7 +214,7 @@ function SettingsView({ cfg }: { cfg: ReturnType<typeof getConfig> }) {
         <Text bold>SteamGridDB</Text>
         <Box flexDirection="row">
           <Text>API Key: </Text>
-          <Text color={cfg.steamGridDb.apiKey ? 'green' : 'red'}>{cfg.steamGridDb.apiKey ? 'Set' : 'Not Set'}</Text>
+          <Text color={sgdbSet ? 'green' : 'red'}>{sgdbSet ? 'Set' : 'Not Set'}</Text>
         </Box>
       </Box>
     </Box>

@@ -146,22 +146,41 @@ describe('legacy JSON migration', () => {
   });
 });
 
-describe('corrupt database recovery', () => {
-  it('quarantines the corrupt file and boots with defaults', () => {
+describe('unopenable database (DUN-099: fail loudly, never move aside)', () => {
+  const dbFile = () => path.join(TMP, 'dune.sqlite');
+  const snapshot = () => fs.readdirSync(TMP).sort();
+
+  it('a corrupt file throws DatabaseOpenError on every call and is left byte-for-byte untouched', async () => {
+    const { DatabaseOpenError } = await import('./sqlite.js');
     closeDbForTests();
-    const dbFile = path.join(TMP, 'dune.sqlite');
-    fs.writeFileSync(dbFile, '{not valid sqlite{{{');
+    fs.writeFileSync(dbFile(), '{not valid sqlite{{{');
+    const before = snapshot();
+    expect(() => database.getGames()).toThrow(DatabaseOpenError);
+    expect(() => database.getGames()).toThrow(/left untouched/);
+    expect(() => runBootMigrations()).toThrow(DatabaseOpenError); // no fresh admin / bootstrap key
+    expect(fs.readFileSync(dbFile(), 'utf-8')).toBe('{not valid sqlite{{{');
+    expect(snapshot()).toEqual(before); // no .corrupt-*, no new DB, no .bootstrap-key
+    fs.unlinkSync(dbFile());
+    closeDbForTests();
+  });
 
-    const games = database.getGames();
-    expect(games).toEqual([]);
-
-    const entries = fs.readdirSync(TMP);
-    const backups = entries.filter(e => /^dune\.sqlite\.corrupt-\d+$/.test(e));
-    expect(backups).toHaveLength(1);
-    // Quarantine holds the same garbage (rename, not copy)
-    expect(fs.readFileSync(path.join(TMP, backups[0]), 'utf-8')).toBe('{not valid sqlite{{{');
-    // A fresh database file was created in its place
-    expect(fs.existsSync(dbFile)).toBe(true);
+  it.skipIf(process.getuid?.() === 0)('an unreadable (EACCES) healthy DB throws and keeps its data', async () => {
+    const { DatabaseOpenError } = await import('./sqlite.js');
+    closeDbForTests();
+    if (fs.existsSync(dbFile())) fs.unlinkSync(dbFile());
+    database.ensureGame(database.createUser(`acc-${Date.now()}`, 'member').id, 'Keep Me');
+    closeDbForTests();
+    const bytes = fs.readFileSync(dbFile());
+    fs.chmodSync(dbFile(), 0o000);
+    try {
+      expect(() => database.getGames()).toThrow(DatabaseOpenError);
+      expect(fs.readdirSync(TMP).filter((e) => e.includes('.corrupt-'))).toEqual([]);
+    } finally {
+      fs.chmodSync(dbFile(), 0o600);
+    }
+    expect(Buffer.compare(fs.readFileSync(dbFile()), bytes)).toBe(0);
+    closeDbForTests();
+    expect(database.getGames().map((g) => g.name)).toContain('Keep Me');
   });
 });
 

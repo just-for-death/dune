@@ -51,7 +51,6 @@ export interface Version {
 
 export interface Settings {
   maxVersions: number;
-  steamGridApiKey: string;
   ollamaEndpoint: string;
   ollamaModel: string;
   apiKeys: string[]; // Valid API keys for authentication

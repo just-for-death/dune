@@ -7,6 +7,7 @@ import { manifestForGame, removeGameFile } from '../services/manifest.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from '../services/ollama.js';
 import { getHLTBTimes, bulkFetchHLTB } from '../services/hltb.js';
 import { searchArt, autoMatchAll } from '../services/steamGridDB.js';
+import { withSteamGridKey, steamGridKeyStatus, setSteamGridKey, clearSteamGridKey } from '../services/providerKeys.js';
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from '../services/playtime.js';
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from '../services/achievements.js';
 import {
@@ -221,19 +222,12 @@ export const appRouter = router({
     search: authedProcedure
       .input(z.object({ query: z.string().min(1) }))
       .query(async ({ input }) => {
-        const settings = database.getSettings();
-        const apiKey = settings.steamGridApiKey;
-        if (!apiKey) throw new TRPCError({ code: 'UNAUTHORIZED', message: 'SteamGridDB API key not configured' });
-        const result = await searchArt(apiKey, input.query);
-        return result;
+        return withSteamGridKey((apiKey) => searchArt(apiKey, input.query));
       }),
 
     autoMatch: authedProcedure.mutation(async ({ ctx }) => {
-      const settings = database.getSettings();
-      const apiKey = settings.steamGridApiKey;
-      if (!apiKey) throw new TRPCError({ code: 'UNAUTHORIZED', message: 'SteamGridDB API key not configured' });
       const games = database.getGamesForUser(ctx.user);
-      const matched = await autoMatchAll(apiKey, games);
+      const matched = await withSteamGridKey((apiKey) => autoMatchAll(apiKey, games));
       for (const m of matched) {
         const game = games.find(g => g.name === m.name);
         if (game && !game.thumbnail) {
@@ -521,17 +515,15 @@ export const appRouter = router({
   },
 
   settings: {
-    get: authedProcedure.query(async ({ ctx }) => {
+    get: authedProcedure.query(async () => {
       const settings = database.getSettings();
-      // Third-party secret: the server performs SteamGridDB lookups itself, so
-      // members never need the key — only admins get it in the clear.
-      const isAdmin = ctx.user.role === 'admin';
+      // DUN-092: the SteamGridDB key is write-only; expose only whether it is set.
       return {
         success: true,
         settings: {
           ...settings,
           apiKeys: settings.apiKeys.map(() => '****'),
-          steamGridApiKey: isAdmin ? settings.steamGridApiKey : settings.steamGridApiKey ? '****' : '',
+          steamGridApiKeySet: steamGridKeyStatus().set,
         },
       };
     }),
@@ -539,18 +531,28 @@ export const appRouter = router({
     update: adminProcedure
       .input(z.object({
         maxVersions: z.number().int().positive().max(100).optional(),
-        steamGridApiKey: z.string().optional(),
         ollamaEndpoint: z.string().url().optional(),
         ollamaModel: z.string().optional(),
         autoSyncEnabled: z.boolean().optional(),
         autoSyncFreq: z.enum(['never', '1h', '6h', '24h']).optional(),
-      }))
+      }).strict())
       .mutation(async ({ input }) => {
         const current = database.getSettings();
         const merged = { ...current, ...input };
         database.saveSettings(merged);
         return { success: true };
       }),
+  },
+
+  // DUN-092: write-only provider key. Only `{ set }` ever leaves the server.
+  providerKeys: {
+    steamGridDb: {
+      status: authedProcedure.query(() => steamGridKeyStatus()),
+      set: adminProcedure
+        .input(z.object({ key: z.string() }).strict())
+        .mutation(({ input }) => setSteamGridKey(input.key)),
+      clear: adminProcedure.mutation(() => clearSteamGridKey()),
+    },
   },
 
   health: publicProcedure.query(async () => {

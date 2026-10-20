@@ -118,6 +118,7 @@ describe('triggerRemoteSync', () => {
       expect(decodeURIComponent(headers['x-game'])).toBe('Remote Game');
       expect(headers['x-path']).toBe('saves.zip');
       expect(headers['x-sync-id']).toMatch(/^\d+$/);
+      expect(headers['x-dune-relay']).toBe('1'); // DUN-091: receiver must not re-push
     } finally {
       delete process.env.REMOTE_SYNC_API_KEY;
     }

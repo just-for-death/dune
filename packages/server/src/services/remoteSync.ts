@@ -35,7 +35,9 @@ export async function triggerRemoteSync(syncedGames: Array<{ id: number; name: s
     const zipPath = path.join(path.dirname(gameDir), `${path.basename(gameDir)}_sync.zip`);
     
     try {
-      await execFileAsync('zip', ['-r', zipPath, '.', '-x', '.versions/*'], { cwd: gameDir });
+      // -y: store symlinks as links (never follow them out of the root); the
+      // receiving server rejects such an archive.
+      await execFileAsync('zip', ['-r', '-y', '-q', zipPath, '.', '-x', '.versions/*'], { cwd: gameDir });
 
       for (const server of remoteServers) {
         // Basic SSRF check for remote server URLs
@@ -64,6 +66,8 @@ export async function triggerRemoteSync(syncedGames: Array<{ id: number; name: s
               'x-game': encodeURIComponent(gameName),
               'x-path': encodeURIComponent('saves.zip'),
               'x-sync-id': Date.now().toString(),
+              // DUN-091: mark as server-to-server so the peer never re-pushes.
+              'x-dune-relay': '1',
               ...(syncKey ? { 'x-api-key': syncKey } : {}),
             },
             maxBodyLength: Infinity,

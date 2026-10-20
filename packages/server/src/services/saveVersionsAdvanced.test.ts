@@ -23,7 +23,7 @@ afterAll(() => {
 });
 
 describe('save version directory snapshots', () => {
-  it('creates a version from a directory and restores it', () => {
+  it('creates a version from a directory and restores it', async () => {
     const game = database.upsertGame({ name: 'Snapshot Game', status: 'In Sync', lastSync: 'Never', ownerId: OWNER });
     const gameRoot = getGameRoot(game.id, OWNER);
     fs.mkdirSync(gameRoot, { recursive: true });
@@ -41,7 +41,7 @@ describe('save version directory snapshots', () => {
     expect(fs.existsSync(path.join(gameRoot, '.versions', version.id, 'slot.sav'))).toBe(true);
 
     fs.writeFileSync(path.join(gameRoot, 'slot.sav'), 'modified');
-    const restore = restoreVersion(game.id, version.id, OWNER);
+    const restore = await restoreVersion(game.id, version.id, OWNER);
     expect(restore.success).toBe(true);
     expect(restore.restoredFiles).toBe(1);
     expect(fs.readFileSync(path.join(gameRoot, 'slot.sav'), 'utf-8')).toBe('original');

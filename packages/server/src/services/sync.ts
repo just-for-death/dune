@@ -1,16 +1,52 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { database, withDbLock } from '../db/index.js';
-import { getGameRoot, resolveGameFile, isPathRuleError, requireGameTitle, PathRuleError } from '../utils/path.js';
+import { getGameRoot, resolveGameFile, requireGameTitle, PathRuleError } from '../utils/path.js';
+import { isApiError, type ApiError } from '../utils/apiError.js';
+import { applySavesArchive, archiveLimits } from './archive.js';
 import { validateRelativeSavePath } from '@dune/shared/pathRules';
 import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
 import { invalidateGame } from './manifest.js';
 import { logger } from '../middleware/logging.js';
 
-const execFileAsync = promisify(execFile);
+/** Files in a game root, excluding version history (per-game cap). */
+function countGameFiles(root: string): number {
+  let count = 0;
+  if (!fs.existsSync(root)) return 0;
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (dir === root && entry.name === '.versions') continue;
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) stack.push(path.join(dir, entry.name));
+      else count += 1;
+    }
+  }
+  return count;
+}
+
+/** Keep the newest `maxVersions` numeric upload snapshots. */
+function pruneUploadVersions(root: string, maxVersions: number): void {
+  const versionsRoot = path.join(root, '.versions');
+  if (!fs.existsSync(versionsRoot)) return;
+  const versions = fs.readdirSync(versionsRoot)
+    .filter(v => /^\d+$/.test(v))
+    .sort((a, b) => Number(b) - Number(a));
+  for (const v of versions.slice(maxVersions)) {
+    fs.rmSync(path.join(versionsRoot, v), { recursive: true, force: true });
+  }
+}
+
+export interface UploadOptions {
+  /**
+   * DUN-091: true for a server-to-server push (x-dune-relay header). The
+   * receiving server stores it but never re-pushes, so peers that list each
+   * other can't ping-pong forever.
+   */
+  relay?: boolean;
+}
 
 /**
  * Version snapshots live at `.versions/<versionId>`, so the id becomes a
@@ -58,7 +94,8 @@ export async function handleUploadFile(
   fileStream: NodeJS.ReadableStream,
   syncId: string,
   ownerId: string,
-): Promise<{ success: boolean; message: string; status?: number; pathError?: PathRuleError; gameId?: number }> {
+  opts: UploadOptions = {},
+): Promise<{ success: boolean; message: string; status?: number; error?: ApiError; gameId?: number }> {
   // DUN-111: validation runs inside the try so a rejected name/path is a 400
   // (PathRuleError), not an unhandled throw that the route turns into a 500.
   let finalPath = '';
@@ -81,63 +118,24 @@ export async function handleUploadFile(
     finalPath = target.abs;
     const finalDir = path.dirname(finalPath);
 
-    // Per-game file-count cap (cheap guard against zip-bombs / runaway syncs)
-    try {
-      let count = 0;
-      const gameRoot = target.root;
-      if (fs.existsSync(gameRoot) && !fs.existsSync(finalPath)) {
-        const stack: string[] = [gameRoot];
-        while (stack.length > 0) {
-          const dir = stack.pop() as string;
-          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            if (entry.name === '.versions') continue;
-            if (entry.isSymbolicLink()) continue;
-            if (entry.isDirectory()) stack.push(path.join(dir, entry.name));
-            else if (++count >= maxFilesPerGame) {
-              return { success: false, message: `Game already has ${maxFilesPerGame} files`, status: 413 };
-            }
-          }
-        }
-      }
-    } catch {
-      // Best-effort guard only; never block uploads on counting errors
+    // DUN-089: saves.zip (only at the game root) is an archive to apply,
+    // never a file to keep. Anything else is a plain save file.
+    const isArchive = target.rel === 'saves.zip';
+    const existingFiles = countGameFiles(target.root);
+    if (!isArchive && !fs.existsSync(finalPath) && existingFiles >= maxFilesPerGame) {
+      return { success: false, message: `Game already has ${maxFilesPerGame} files`, status: 413 };
     }
+    const maxVersions = database.getSettings().maxVersions || 10;
 
     if (!fs.existsSync(finalDir)) {
       fs.mkdirSync(finalDir, { recursive: true });
     }
 
-    if (fs.existsSync(finalPath)) {
-      const versionDir = path.join(target.root, '.versions', safeVersionId(syncId));
-      const archivePath = path.join(versionDir, ...target.rel.split('/'));
-
-      // Guard against path traversal in the version snapshot.
-      const resolvedArchive = path.resolve(archivePath);
-      const resolvedVersionDir = path.resolve(versionDir);
-      if (resolvedArchive !== resolvedVersionDir && !resolvedArchive.startsWith(resolvedVersionDir + path.sep)) {
-        logger.warn({ gameName, filePath }, 'Rejected version snapshot outside game root');
-      } else {
-        if (!fs.existsSync(path.dirname(archivePath))) {
-          fs.mkdirSync(path.dirname(archivePath), { recursive: true });
-        }
-        fs.copyFileSync(finalPath, archivePath);
-
-        const settings = database.getSettings();
-        const maxVersions = settings.maxVersions || 10;
-        const versionsRoot = path.join(target.root, '.versions');
-
-        if (fs.existsSync(versionsRoot)) {
-          const versions = fs.readdirSync(versionsRoot)
-            .filter(v => !isNaN(Number(v)))
-            .sort((a, b) => Number(b) - Number(a));
-
-          if (versions.length > maxVersions) {
-            versions.slice(maxVersions).forEach(v => {
-              fs.rmSync(path.join(versionsRoot, v), { recursive: true, force: true });
-            });
-          }
-        }
-      }
+    if (!isArchive && fs.existsSync(finalPath)) {
+      // Snapshot the file about to be overwritten (validated path).
+      const archivePath = resolveGameFile(game.id, `.versions/${safeVersionId(syncId)}/${target.rel}`, ownerId).abs;
+      fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+      fs.copyFileSync(finalPath, archivePath);
     }
 
     // Stream to a temp file first, then atomically rename onto the target.
@@ -173,69 +171,27 @@ export async function handleUploadFile(
       writer.on('error', reject);
     });
 
-    // Atomic publish: only replace the live file once the full upload succeeded.
-    fs.renameSync(tmpPath, finalPath);
-
-    if (path.basename(filePath) === 'saves.zip') {
-      const gameRoot = target.root;
-      const tempExtractDir = path.join(gameRoot, '_extract_tmp');
+    if (isArchive) {
+      // DUN-089: inspect, extract privately, snapshot overwrites, apply.
+      // Failures throw ArchiveError (400/413); the archive is never kept.
       try {
-        if (fs.existsSync(tempExtractDir)) fs.rmSync(tempExtractDir, { recursive: true, force: true });
-        fs.mkdirSync(tempExtractDir, { recursive: true });
-
-        await execFileAsync('unzip', ['-o', finalPath, '-d', tempExtractDir]);
-
-        // Validate every extracted entry stays inside tempExtractDir (zip-slip guard).
-        const extractedFiles: string[] = [];
-        const walk = (dir: string) => {
-          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-            if (entry.isSymbolicLink()) throw new Error('symlink in archive');
-            const full = path.join(dir, entry.name);
-            const rel = path.relative(tempExtractDir, full);
-            if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('path traversal in archive');
-            if (entry.isDirectory()) walk(full);
-            else extractedFiles.push(full);
-          }
-        };
-        walk(tempExtractDir);
-
-        // Enforce per-game file cap post-extraction.
-        let existing = 0;
-        if (fs.existsSync(gameRoot)) {
-          const stack: string[] = [gameRoot];
-          while (stack.length) {
-            const d = stack.pop() as string;
-            for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-              if (e.name === '.versions' || e.name === '_extract_tmp') continue;
-              if (e.isSymbolicLink()) continue;
-              if (e.isDirectory()) stack.push(path.join(d, e.name));
-              else existing++;
-            }
-          }
-        }
-        if (existing + extractedFiles.length > maxFilesPerGame) {
-          throw new Error(`Game would exceed ${maxFilesPerGame} files`);
-        }
-
-        // Copy only validated files, preserving relative paths.
-        for (const src of extractedFiles) {
-          const rel = path.relative(tempExtractDir, src);
-          const dest = path.join(gameRoot, rel);
-          const resolvedDest = path.resolve(dest);
-          if (resolvedDest !== path.resolve(gameRoot) && !resolvedDest.startsWith(path.resolve(gameRoot) + path.sep)) {
-            throw new Error('path traversal in archive');
-          }
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          fs.copyFileSync(src, dest);
-        }
-
-        fs.rmSync(tempExtractDir, { recursive: true, force: true });
-        fs.unlinkSync(finalPath);
-      } catch (err) {
-        logger.error({ err }, 'Failed to extract saves.zip');
-        try { fs.rmSync(tempExtractDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        await applySavesArchive({
+          archive: tmpPath,
+          gameId: game.id,
+          ownerId,
+          versionId: safeVersionId(syncId),
+          limits: archiveLimits(maxFilesPerGame),
+          existingFileCount: existingFiles,
+          maxFilesPerGame,
+        });
+      } finally {
+        try { fs.unlinkSync(tmpPath); } catch { /* already gone */ }
       }
+    } else {
+      // Atomic publish: only replace the live file once the full upload succeeded.
+      fs.renameSync(tmpPath, finalPath);
     }
+    pruneUploadVersions(target.root, maxVersions);
 
     // Fingerprints for this game are now stale (new/overwritten files).
     invalidateGame(game.id, ownerId);
@@ -248,14 +204,20 @@ export async function handleUploadFile(
       database.markGameSynced(game.id);
     });
 
-    setImmediate(() => {
-      triggerRemoteSync([{ id: game.id, name: game.name }], ownerId).catch(err => logger.error({ err }, 'Remote sync error'));
-    });
+    // DUN-091: re-push only uploads that came from a client, never a relay.
+    if (!opts.relay) {
+      setImmediate(() => {
+        triggerRemoteSync([{ id: game.id, name: game.name }], ownerId).catch(err => logger.error({ err }, 'Remote sync error'));
+      });
+    }
 
     return { success: true, message: `Uploaded ${game.name} saves`, gameId: game.id };
   } catch (error: unknown) {
-    if (isPathRuleError(error)) {
-      return { success: false, message: error.message, status: 400, pathError: error };
+    if (finalPath) {
+      try { fs.unlinkSync(finalPath + '.uploading'); } catch { /* no temp */ }
+    }
+    if (isApiError(error)) {
+      return { success: false, message: error.message, status: error.status, error };
     }
     if (finalPath) {
       try { fs.unlinkSync(finalPath + '.uploading'); } catch { /* no temp */ }

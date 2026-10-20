@@ -135,19 +135,27 @@ describe('admin gate', () => {
     await expect(c.settings.get()).resolves.toMatchObject({ success: true });
   });
 
-  it('does not leak the SteamGridDB key or API keys to members', async () => {
+  it('never returns the SteamGridDB key (admin or member); only a set flag (DUN-092)', async () => {
     const admin = appRouter.createCaller(ctx());
-    await admin.settings.update({ steamGridApiKey: 'sgdb-super-secret' });
-
     const member = appRouter.createCaller(memberCtx());
-    const seen = (await member.settings.get()).settings;
-    expect(seen.steamGridApiKey).not.toBe('sgdb-super-secret');
-    expect(JSON.stringify(seen)).not.toContain('sgdb-super-secret');
-    expect(seen.apiKeys.every(k => k === '****')).toBe(true);
-
-    // Admins still see the real value (needed for the dashboard/ops).
-    expect((await admin.settings.get()).settings.steamGridApiKey).toBe('sgdb-super-secret');
-    await admin.settings.update({ steamGridApiKey: '' });
+    const KEY = 'sgdb-super-secret-0123456789';
+    expect(await admin.providerKeys.steamGridDb.set({ key: KEY })).toEqual({ set: true });
+    for (const c of [admin, member]) {
+      const seen = (await c.settings.get()).settings;
+      expect(seen.steamGridApiKeySet).toBe(true);
+      expect(JSON.stringify(seen)).not.toContain(KEY);
+      expect(seen.apiKeys.every(k => k === '****')).toBe(true);
+      expect(await c.providerKeys.steamGridDb.status()).toEqual({ set: true });
+    }
+    await expect(member.providerKeys.steamGridDb.set({ key: KEY })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(member.providerKeys.steamGridDb.clear()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    // settings.update no longer accepts the key (strict schema).
+    await expect(admin.settings.update({ steamGridApiKey: KEY } as never)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(admin.providerKeys.steamGridDb.set({ key: 'short' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST', cause: { code: 'INVALID_PROVIDER_KEY' },
+    });
+    expect(await admin.providerKeys.steamGridDb.clear()).toEqual({ set: false });
+    expect((await member.settings.get()).settings.steamGridApiKeySet).toBe(false);
   });
 });
 
@@ -285,15 +293,16 @@ describe('ai + art + hltb contract (offline)', () => {
 
   it('art.search requires a key; with key + mocked API returns art', async () => {
     const c = appRouter.createCaller(ctx());
-    await expect(c.art.search({ query: 'x' })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    await c.settings.update({ steamGridApiKey: 'sgdb-test' });
+    await expect(c.art.search({ query: 'x' })).rejects.toMatchObject({ code: 'BAD_REQUEST', cause: { code: 'PROVIDER_KEY_NOT_SET' } });
+    await c.providerKeys.steamGridDb.set({ key: 'sgdb-test-key-0123456789' });
     getMock.mockImplementation(async (url: string) => {
       if (String(url).includes('autocomplete')) return { data: { success: true, data: [{ id: 7, name: 'G' }] } };
       return { data: { success: true, data: [{ url: 'http://img/y.jpg' }] } };
     });
     const r = await c.art.search({ query: 'G' });
     expect(r.results).toEqual(['http://img/y.jpg']);
-    await c.settings.update({ steamGridApiKey: '' });
+    expect(getMock.mock.calls.at(-1)?.[1]).toMatchObject({ headers: { Authorization: 'Bearer sgdb-test-key-0123456789' } });
+    await c.providerKeys.steamGridDb.clear();
   });
 
   it('hltb serves cache without network and fails closed offline', async () => {
@@ -418,7 +427,7 @@ describe('remaining router procedures', () => {
 
   it('auto-matches and manually assigns cover art for a member', async () => {
     const admin = appRouter.createCaller(ctx());
-    await admin.settings.update({ steamGridApiKey: 'sgdb-router-key' });
+    await admin.providerKeys.steamGridDb.set({ key: 'sgdb-router-key-0123456789' });
     const created = await admin.users.create({ name: 'ArtRouteMember', role: 'member' });
     const member = {
       id: created.user.id,
@@ -450,7 +459,7 @@ describe('remaining router procedures', () => {
     expect((await c.games.get({ id: gameId })).game.thumbnail).toBe('http://img/manual.jpg');
 
     await admin.users.remove({ id: member.id });
-    await admin.settings.update({ steamGridApiKey: '' });
+    await admin.providerKeys.steamGridDb.clear();
   });
 
   it('lists collection endpoints and returns recent activity', async () => {

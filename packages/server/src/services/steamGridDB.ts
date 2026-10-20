@@ -1,5 +1,11 @@
 import axios from 'axios';
-import { logger } from '../middleware/logging.js';
+import { logger, redactText } from '../middleware/logging.js';
+
+/** DUN-092: an error message must never carry the key, even if a library echoes it. */
+function safeMessage(error: unknown, apiKey: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return redactText(apiKey ? message.split(apiKey).join('[REDACTED]') : message);
+}
 
 export interface SteamGridDBResponse {
   success: boolean;
@@ -20,8 +26,7 @@ export async function searchGame(apiKey: string, query: string): Promise<{ id: n
     
     return { id: response.data.data[0].id, name: response.data.data[0].name };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn({ err: message, query }, 'SteamGridDB search failed');
+    logger.warn({ err: safeMessage(error, apiKey), query }, 'SteamGridDB search failed');
     return null;
   }
 }
@@ -39,8 +44,7 @@ export async function getGridImages(apiKey: string, gameId: number): Promise<str
     
     return response.data.data.map((g: { url: string }) => g.url);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn({ err: message, gameId }, 'SteamGridDB grids failed');
+    logger.warn({ err: safeMessage(error, apiKey), gameId }, 'SteamGridDB grids failed');
     return [];
   }
 }
@@ -69,7 +73,7 @@ export async function autoMatchAll(apiKey: string, games: Array<{ name: string; 
       }
       await new Promise(r => setTimeout(r, 300));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = safeMessage(error, apiKey);
       logger.warn({ err: message, game: game.name }, 'SteamGridDB auto-match failed for game');
       errors.push({ game: game.name, error: message });
     }

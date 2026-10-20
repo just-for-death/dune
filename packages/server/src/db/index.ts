@@ -22,7 +22,6 @@ export { closeDbForTests } from './sqlite.js';
 
 const defaultSettings: Settings = {
   maxVersions: 10,
-  steamGridApiKey: '',
   ollamaEndpoint: 'http://ollama:11434',
   ollamaModel: 'phi4-mini:latest',
   apiKeys: [],

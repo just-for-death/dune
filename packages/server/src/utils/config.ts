@@ -13,9 +13,6 @@ export interface DuneConfig {
     hltbCacheDir: string;
     watchDirs?: string[];
   };
-  steamGridDb: {
-    apiKey: string;
-  };
   ollama: {
     endpoint: string;
     model: string;
@@ -44,9 +41,6 @@ const DEFAULT_CONFIG: DuneConfig = {
     savesDir: 'data/saves',
     backupDir: 'data/backups',
     hltbCacheDir: 'data/hltb-cache',
-  },
-  steamGridDb: {
-    apiKey: '',
   },
   ollama: {
     endpoint: 'http://localhost:11434',
@@ -290,7 +284,6 @@ export function getConfig(): DuneConfig {
 export const config = {
   get server() { return getConfig().server; },
   get data() { return getConfig().data; },
-  get steamGridDb() { return getConfig().steamGridDb; },
   get ollama() { return getConfig().ollama; },
   get ollamaAI() { return getConfig().ollamaAI; },
   get sync() { return getConfig().sync; },

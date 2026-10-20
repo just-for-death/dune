@@ -158,7 +158,10 @@ export function getVersionDiff(fromVersionId: string, toVersionId: string): {
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { getGameRoot, resolveGameSubdir, assertStrictlyInside, PathRuleError } from '../utils/path.js';
+import { getGameRoot, resolveGameSubdir, resolveGameFile, PathRuleError } from '../utils/path.js';
+import { withDbLock } from '../db/mutex.js';
+import { database } from '../db/index.js';
+import { invalidateGame } from './manifest.js';
 import { getBackupProfile, filterBackupFiles } from './backupProfiles.js';
 
 function hashFile(filePath: string): string {
@@ -254,49 +257,85 @@ export const SAVE_VERSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
  */
 export const VERSION_DIR_ID = /^(?:\d{1,20}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
-export function restoreVersion(gameId: number, versionId: string, ownerId: string): { success: boolean; message: string; restoredFiles: number } {
+export interface RestoreResult {
+  success: boolean;
+  message: string;
+  restoredFiles: number;
+  /** Tracked files that existed now but not in the version (mirrored away). */
+  removedFiles: number;
+  /** Snapshot of the state just before the restore (undo point). */
+  preRestoreVersionId?: string;
+}
+
+/**
+ * DUN-090: restore = exact mirror of a stored version, never destructive.
+ * Under the DB lock: (1) verify the snapshot is complete and symlink-free,
+ * (2) take a pre-restore version of the current state, (3) write every
+ * versioned file (staged + rename), (4) delete tracked files that the version
+ * doesn't have, (5) bump lastSync and invalidate the manifest. Files the
+ * backup profile excludes (e.g. caches) and `.versions/` are never touched.
+ */
+export async function restoreVersion(gameId: number, versionId: string, ownerId: string): Promise<RestoreResult> {
   // DUN-125: versionId becomes a directory name; accept only the stored id
-  // format (crypto.randomUUID), then resolve it with the same containment
-  // rules as file paths. Malformed ids are a 400 (INVALID_VERSION_ID).
+  // format (crypto.randomUUID). Malformed ids are a 400 (INVALID_VERSION_ID).
   if (!SAVE_VERSION_ID.test(versionId)) {
     throw new PathRuleError('INVALID_VERSION_ID', 'Invalid version id');
   }
-  const detail = getSaveVersion(versionId);
-  // DUN-087: a version of another game (or another user's game) is "not found".
-  if (!detail || detail.version.gameId !== gameId) {
-    return { success: false, message: 'Version not found', restoredFiles: 0 };
-  }
+  return withDbLock(() => {
+    const detail = getSaveVersion(versionId);
+    // DUN-087: a version of another game (or another user's game) is "not found".
+    if (!detail || detail.version.gameId !== gameId) {
+      return { success: false, message: 'Version not found', restoredFiles: 0, removedFiles: 0 };
+    }
+    const gameRoot = getGameRoot(gameId, ownerId);
+    const snapshotDir = resolveGameSubdir(gameId, `.versions/${versionId}`, ownerId);
 
-  const gameRoot = getGameRoot(gameId, ownerId);
-  const snapshotDir = resolveGameSubdir(gameId, `.versions/${versionId}`, ownerId);
-  if (!fs.existsSync(snapshotDir)) {
-    return { success: false, message: 'Version snapshot files not found', restoredFiles: 0 };
-  }
-
-  let restoredFiles = 0;
-  const stack: string[] = [snapshotDir];
-  while (stack.length > 0) {
-    const dir = stack.pop() as string;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      // DUN-128: never follow a symlink inside a snapshot (it could point
-      // anywhere); only real files and directories are restored.
-      if (entry.isSymbolicLink()) {
-        logger.warn({ gameId, versionId, entry: entry.name }, 'Skipped symlink in version snapshot');
-        continue;
-      }
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-      } else if (entry.isFile()) {
-        const rel = path.relative(snapshotDir, full);
-        const dest = path.join(gameRoot, rel);
-        assertStrictlyInside(dest, gameRoot, 'Restore target');
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.copyFileSync(full, dest);
-        restoredFiles += 1;
+    // (1) Every recorded file must be a real file in the snapshot; nothing
+    // else is ever copied (a symlink planted in a snapshot is ignored, DUN-128).
+    const wanted = detail.files.map((f) => f.path);
+    for (const rel of wanted) {
+      const src = resolveGameFile(gameId, `.versions/${versionId}/${rel}`, ownerId).abs;
+      if (!fs.lstatSync(src, { throwIfNoEntry: false })?.isFile()) {
+        return { success: false, message: 'Version snapshot files not found', restoredFiles: 0, removedFiles: 0 };
       }
     }
-  }
+    if (!fs.existsSync(snapshotDir)) {
+      return { success: false, message: 'Version snapshot files not found', restoredFiles: 0, removedFiles: 0 };
+    }
 
-  return { success: true, message: 'Version restored', restoredFiles };
+    // (2) Undo point.
+    const pre = createVersionFromDirectory({
+      gameId, ownerId, changeSummary: `pre-restore (before restoring ${versionId})`,
+    });
+
+    // (3) Write the version's files.
+    for (const rel of wanted) {
+      const src = path.join(snapshotDir, ...rel.split('/'));
+      const dest = resolveGameFile(gameId, rel, ownerId).abs;
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      const staged = `${dest}.restoring`;
+      fs.copyFileSync(src, staged);
+      fs.renameSync(staged, dest);
+    }
+
+    // (4) Mirror deletions within the tracked set only.
+    const keep = new Set(wanted);
+    const profile = getBackupProfile(gameId);
+    const current = walkFiles(gameRoot).map((f) => ({ path: f.path, size: f.size }));
+    const { included } = filterBackupFiles(current, profile);
+    let removedFiles = 0;
+    for (const f of included) {
+      if (keep.has(f.path)) continue;
+      fs.rmSync(resolveGameFile(gameId, f.path, ownerId).abs, { force: true });
+      removedFiles += 1;
+    }
+
+    // (5) Status + manifest.
+    database.markGameSynced(gameId);
+    invalidateGame(gameId, ownerId);
+    logger.info({ gameId, versionId, preRestoreVersionId: pre.id, restoredFiles: wanted.length, removedFiles }, 'Restored save version');
+    return {
+      success: true, message: 'Version restored', restoredFiles: wanted.length, removedFiles, preRestoreVersionId: pre.id,
+    };
+  });
 }

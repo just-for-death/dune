@@ -41,25 +41,16 @@ afterAll(() => {
 });
 
 describe('GET /api/settings', () => {
-  it('returns the full config to admins', async () => {
-    await api(request(app).post('/api/settings')).send({ steamGridApiKey: 'sgdb-admin-secret', maxVersions: 4 });
+  it('returns settings to admins with only a SteamGridDB set flag (DUN-092)', async () => {
+    await api(request(app).post('/api/settings')).send({ maxVersions: 4 });
     const res = await api(request(app).get('/api/settings'));
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.settings.steamGridApiKey).toBe('sgdb-admin-secret');
     expect(res.body.settings.maxVersions).toBe(4);
+    expect(res.body.settings.steamGridApiKeySet).toBe(false);
+    expect('steamGridApiKey' in res.body.settings).toBe(false);
     // API keys are never echoed in plaintext, even to admins.
     expect(res.body.settings.apiKeys.every((k: string) => k === '****')).toBe(true);
-  });
-
-  it('masks the SteamGridDB key for members', async () => {
-    await api(request(app).post('/api/settings')).send({ steamGridApiKey: 'sgdb-hidden-secret' });
-    const memberKey = await createMember('SettingsMember');
-
-    const seen = await request(app).get('/api/settings').set('x-api-key', memberKey);
-    expect(seen.status).toBe(200);
-    expect(seen.body.settings.steamGridApiKey).toBe('****');
-    expect(JSON.stringify(seen.body)).not.toContain('sgdb-hidden-secret');
   });
 });
 
@@ -73,18 +64,21 @@ describe('POST /api/settings', () => {
     expect(forbidden.status).toBe(403);
   });
 
-  it('ignores invalid values, persists valid ones, and clears the key', async () => {
-    const res = await api(request(app).post('/api/settings')).send({
-      maxVersions: -5,
-      ollamaModel: 'llama3:8b',
-      steamGridApiKey: '',
-    });
+  it('ignores invalid values and persists valid ones', async () => {
+    const res = await api(request(app).post('/api/settings')).send({ maxVersions: -5, ollamaModel: 'llama3:8b' });
     expect(res.body.success).toBe(true);
-
     const settings = (await api(request(app).get('/api/settings'))).body.settings;
     expect(settings.ollamaModel).toBe('llama3:8b');
     expect(settings.maxVersions).toBeGreaterThan(0); // negative ignored
-    expect(settings.steamGridApiKey).toBe('');
+  });
+
+  it('rejects steamGridApiKey (write-only, own route) with 400 WRITE_ONLY_FIELD and stores nothing', async () => {
+    const res = await api(request(app).post('/api/settings')).send({ steamGridApiKey: 'sgdb-via-settings-0123456789', maxVersions: 6 });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: expect.any(String), code: 'WRITE_ONLY_FIELD' });
+    const settings = (await api(request(app).get('/api/settings'))).body.settings;
+    expect(settings.steamGridApiKeySet).toBe(false);
+    expect(settings.maxVersions).not.toBe(6);
   });
 });
 

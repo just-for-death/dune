@@ -15,6 +15,18 @@ function legacyJsonPath(): string {
 
 let db: DatabaseSync | null = null;
 
+/** DUN-099: the database exists but can't be opened. Never recovered automatically. */
+export class DatabaseOpenError extends Error {
+  readonly file: string;
+  readonly dbCode: string;
+  constructor(file: string, dbCode: string, reason: string, cause: unknown) {
+    super(`Cannot open ${file} (${dbCode}): ${reason}. The file was left untouched; fix the cause or restore a backup, then restart.`, { cause });
+    this.name = 'DatabaseOpenError';
+    this.file = file;
+    this.dbCode = dbCode;
+  }
+}
+
 /**
  * Open (creating + migrating on first run) the SQLite database.
  * Single-file rollback-journal mode on purpose: the data dir is backed up
@@ -28,16 +40,15 @@ export function getDb(): DatabaseSync {
   try {
     db = openSchema(file);
   } catch (err) {
-    // Corrupt / unreadable file: quarantine it exactly like jsonStore does
-    // for corrupt JSON, then boot empty. Never delete user data silently.
-    try {
-      const backup = `${file}.corrupt-${Date.now()}`;
-      fs.renameSync(file, backup);
-      logger.error({ err, file, backup }, 'dune.sqlite: corrupt DB preserved, booting with defaults');
-    } catch (copyErr) {
-      logger.error({ err: copyErr, file }, 'dune.sqlite: corrupt DB could not be preserved');
-    }
-    db = openSchema(file);
+    // DUN-099: fail loudly. Never rename, copy over, delete or re-create the
+    // file: a BUSY/EACCES/IO error on a healthy DB must not turn into an empty
+    // database with a fresh admin and bootstrap key. The operator fixes the
+    // cause (or restores a backup) and restarts.
+    db = null;
+    const code = (err as { code?: unknown; errcode?: unknown }).errcode ?? (err as { code?: unknown }).code;
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.fatal({ err, file }, 'dune.sqlite could not be opened; refusing to start (file left untouched)');
+    throw new DatabaseOpenError(file, String(code ?? 'UNKNOWN'), reason, err);
   }
   if (fresh) {
     migrateLegacyJson();

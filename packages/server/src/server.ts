@@ -20,7 +20,7 @@ import { manifestForGame, removeGameFile } from './services/manifest.js';
 import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
 import { checkReadiness } from './services/health.js';
-import { database } from './db/index.js';
+import { database, withDbLock } from './db/index.js';
 
 // Runtime Node version gate: node:sqlite requires Node ≥22.
 if (process.versions.node) {
@@ -37,6 +37,7 @@ import { getAchievementDetails, getAchievementProgress } from './services/achiev
 import { getHLTBTimes } from './services/hltb.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from './services/ollama.js';
 import { searchArt, autoMatchAll } from './services/steamGridDB.js';
+import { withSteamGridKey, steamGridKeyStatus, setSteamGridKey, clearSteamGridKey } from './services/providerKeys.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -105,8 +106,10 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimitMiddleware, async (r
       return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'File exceeds upload size limit');
     }
 
-    const result = await handleUploadFile(title, filePath, req, syncId, ownerId);
-    if (!result.success && result.pathError) throw result.pathError;
+    // DUN-091: peers mark their pushes; a relayed upload is never re-pushed.
+    const relay = req.headers['x-dune-relay'] === '1';
+    const result = await handleUploadFile(title, filePath, req, syncId, ownerId, { relay });
+    if (!result.success && result.error) throw result.error;
     if (!result.success) {
       return sendError(res, result.status ?? 500, result.status === 413 ? 'PAYLOAD_TOO_LARGE' : 'UPLOAD_FAILED', result.message);
     }
@@ -453,9 +456,7 @@ app.get('/api/search-art', authMiddleware, async (req, res) => {
   try {
     const { query } = req.query;
     if (!query) return sendError(res, 400, 'BAD_REQUEST', 'query required');
-    const apiKey = database.getSettings().steamGridApiKey;
-    if (!apiKey) return sendError(res, 400, 'BAD_REQUEST', 'SteamGridDB API key not configured');
-    res.json(await searchArt(apiKey, query.toString()));
+    res.json(await withSteamGridKey((apiKey) => searchArt(apiKey, query.toString())));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -463,10 +464,8 @@ app.get('/api/search-art', authMiddleware, async (req, res) => {
 
 app.get('/api/auto-match-all', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
-    const apiKey = database.getSettings().steamGridApiKey;
-    if (!apiKey) return sendError(res, 400, 'BAD_REQUEST', 'SteamGridDB API key not configured');
     const games = req.user ? database.getGamesForUser(req.user) : [];
-    const matched = await autoMatchAll(apiKey, games);
+    const matched = await withSteamGridKey((apiKey) => autoMatchAll(apiKey, games));
     for (const m of matched) {
       const game = games.find(g => g.name === m.name);
       if (game && !game.thumbnail) {
@@ -697,17 +696,16 @@ app.get('/api/ollama-health', authMiddleware, async (_req, res) => {
 // The Electron client and the dashboard both depend on these, so they are
 // registered with the other /api shims (above the /api 404 catch-all) and are
 // available whether or not a frontend bundle is present.
-app.get('/api/settings', authMiddleware, (req: AuthenticatedRequest, res) => {
+app.get('/api/settings', authMiddleware, (req, res) => {
   try {
     const s = database.getSettings();
-    const isAdmin = req.user?.role === 'admin';
     res.json({
       success: true,
       settings: {
         maxVersions: s.maxVersions,
         ollamaEndpoint: s.ollamaEndpoint,
         ollamaModel: s.ollamaModel,
-        steamGridApiKey: isAdmin ? s.steamGridApiKey : s.steamGridApiKey ? '****' : '',
+        steamGridApiKeySet: steamGridKeyStatus().set, // DUN-092: status only, never the key
         apiKeys: s.apiKeys.map(() => '****'),
         localSources: s.localSources,
         remoteServers: s.remoteServers,
@@ -724,7 +722,10 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
     const input = req.body ?? {};
     const merged = { ...current };
     if (typeof input.maxVersions === 'number' && input.maxVersions > 0) merged.maxVersions = input.maxVersions;
-    if (typeof input.steamGridApiKey === 'string') merged.steamGridApiKey = input.steamGridApiKey;
+    if ('steamGridApiKey' in input) {
+      // DUN-092: write-only secret with its own routes; never stored in settings.
+      return sendError(res, 400, 'WRITE_ONLY_FIELD', 'steamGridApiKey is set via PUT /api/provider-keys/steamgriddb');
+    }
     if (typeof input.ollamaEndpoint === 'string') {
       const check = validateServerUrl(input.ollamaEndpoint);
       if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
@@ -733,6 +734,32 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
     if (typeof input.ollamaModel === 'string') merged.ollamaModel = input.ollamaModel;
     database.saveSettings(merged);
     res.json({ success: true });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// DUN-092: SteamGridDB key is write-only. Status for any user; set/clear for admins.
+// Responses are exactly `{ set }`; the key is never returned or logged.
+app.get('/api/provider-keys/steamgriddb', authMiddleware, (req, res) => {
+  try {
+    res.json(steamGridKeyStatus());
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.put('/api/provider-keys/steamgriddb', authMiddleware, requireAdmin, (req, res) => {
+  try {
+    res.json(setSteamGridKey(req.body?.key));
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.delete('/api/provider-keys/steamgriddb', authMiddleware, requireAdmin, (req, res) => {
+  try {
+    res.json(clearSteamGridKey());
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -808,19 +835,20 @@ app.get('/api/save-versions/:id', authMiddleware, (req: AuthenticatedRequest, re
   }
 });
 
-app.post('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) => {
+app.post('/api/save-versions', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     assertNoLaunchFields(req.body); // DUN-061
     const { game, deviceId, changeSummary } = req.body ?? {};
     if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
     const row = requireGame(req, game.toString());
     const resolvedDeviceId = typeof deviceId === 'string' ? deviceId : req.user?.id;
-    const version = createVersionFromDirectory({
+    // Serialized with uploads/restores (DUN-090).
+    const version = await withDbLock(() => createVersionFromDirectory({
       gameId: row.id,
       ownerId: row.ownerId,
       deviceId: resolvedDeviceId,
       changeSummary: typeof changeSummary === 'string' ? changeSummary : 'manual snapshot',
-    });
+    }));
     const previous = listSaveVersions(row.id, 2)[1];
     const conflict = previous && previous.deviceId && previous.deviceId !== resolvedDeviceId
       ? detectConflict(row.id, previous.id, version.id)
@@ -831,7 +859,7 @@ app.post('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) 
   }
 });
 
-app.post('/api/restore-version', authMiddleware, (req: AuthenticatedRequest, res) => {
+app.post('/api/restore-version', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     assertNoLaunchFields(req.body); // DUN-061
     const { game, versionId } = req.body ?? {};
@@ -839,7 +867,7 @@ app.post('/api/restore-version', authMiddleware, (req: AuthenticatedRequest, res
     const row = requireGame(req, game.toString());
     // DUN-125: restoreVersion validates versionId format (400
     // INVALID_VERSION_ID) + containment; a version of another game is 404.
-    const result = restoreVersion(row.id, versionId.toString(), row.ownerId);
+    const result = await restoreVersion(row.id, versionId.toString(), row.ownerId);
     if (!result.success) return sendError(res, 404, 'VERSION_NOT_FOUND', result.message);
     res.json(result);
   } catch (e) {
