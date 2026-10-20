@@ -18,6 +18,13 @@ export interface Game {
   sourceId?: string; // 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft'
   source?: 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft' | 'emulator';
   tags?: string[];
+  // Optional launcher metadata supplied by source scanners.
+  steamAppId?: string;
+  heroicId?: string;
+  lutrisSlug?: string;
+  winePrefix?: string;
+  protonPath?: string;
+  executable?: string;
 }
 
 // Collection / smart view
@@ -315,6 +322,21 @@ export interface StorageEntry {
   drive: string;
 }
 
+export interface PrefixEntry {
+  name: string;
+  path: string;
+  valid?: boolean;
+  sizeBytes?: number;
+  version?: string;
+}
+
+export interface PrefixSummary {
+  wine: PrefixEntry[];
+  proton: PrefixEntry[];
+  heroic: PrefixEntry[];
+  lutris: PrefixEntry[];
+}
+
 export interface ElectronAPI {
   // Config
   loadConfig: () => Promise<{ games: Game[]; cloud: Cloud; settings: Settings } | null>;
@@ -364,7 +386,7 @@ export interface ElectronAPI {
   getLaunchCommand: (game: Game, options?: Record<string, unknown>) => Promise<{ success: boolean; command?: { command: string; args: string[]; env?: Record<string, string>; cwd?: string } | null; message?: string }>;
 
   // Prefix manager
-  listPrefixes: () => Promise<{ success: boolean; prefixes?: unknown; message?: string }>;
+  listPrefixes: () => Promise<{ success: boolean; prefixes?: PrefixSummary; message?: string }>;
   createPrefix: (prefixPath: string) => Promise<{ success: boolean; message: string }>;
   deletePrefix: (prefixPath: string) => Promise<{ success: boolean; message: string }>;
   backupPrefix: (prefixPath: string) => Promise<{ success: boolean; message: string; backupPath?: string }>;

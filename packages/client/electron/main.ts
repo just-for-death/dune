@@ -7,7 +7,7 @@ import Store from 'electron-store'
 import AdmZip from 'adm-zip'
 import axios from 'axios'
 import { nextId } from '@dune/shared'
-import type { FileManifest, HashManifest } from '@dune/shared'
+import type { FileManifest, HashManifest, Game, Settings, Cloud, BackupProfile } from '@dune/shared'
 import { autoDetectGames } from './scanner'
 import { launchGame, getLaunchCommand } from './launcher/manager'
 import { listPrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix } from './prefix/manager'
@@ -36,6 +36,10 @@ const defaultGames = [
   }
 ]
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 const store = new Store({
   defaults: {
     games: defaultGames,
@@ -53,6 +57,13 @@ const store = new Store({
     }
   }
 })
+
+type LegacyStore = {
+  get(key: string, defaultValue?: unknown): unknown;
+  delete(key: string): void;
+  set(key: string, value: unknown): void;
+};
+const legacyStore = store as unknown as LegacyStore;
 
 // Auth header for Dune Server calls. The server requires x-api-key on every
 // route except /health; without it the whole client↔server integration 401s.
@@ -81,9 +92,9 @@ export function loadServerKey(): string {
     }
   }
   // If legacy plaintext key was present in store, migrate if possible and purge from disk
-  const legacy = (store as any).get(LEGACY_KEY, '') as string;
+  const legacy = legacyStore.get(LEGACY_KEY, '') as string;
   if (legacy) {
-    (store as any).delete(LEGACY_KEY);
+    legacyStore.delete(LEGACY_KEY);
     if (safeStorage.isEncryptionAvailable()) {
       try {
         store.set(ENC_KEY, safeStorage.encryptString(legacy).toString('base64'));
@@ -105,14 +116,14 @@ export function saveServerKey(key: string): void {
   if (!clean) {
     sessionServerKey = '';
     store.delete(ENC_KEY);
-    (store as any).delete(LEGACY_KEY);
+    legacyStore.delete(LEGACY_KEY);
     return;
   }
 
   if (safeStorage.isEncryptionAvailable()) {
     try {
       store.set(ENC_KEY, safeStorage.encryptString(clean).toString('base64'));
-      (store as any).delete(LEGACY_KEY);
+      legacyStore.delete(LEGACY_KEY);
       sessionServerKey = '';
       return;
     } catch (err) {
@@ -124,7 +135,7 @@ export function saveServerKey(key: string): void {
   // Never write plaintext to disk (electron-store). Keep only in memory for this session.
   console.warn('[Security] OS keychain encryption unavailable. Refusing to persist server API key in plaintext to disk. Key held in memory for current session only.');
   sessionServerKey = clean;
-  (store as any).delete(LEGACY_KEY);
+  legacyStore.delete(LEGACY_KEY);
 }
 
 
@@ -138,7 +149,7 @@ let isCloudSyncing = false;
 
 function setupAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
-  const settings: any = store.get('settings');
+  const settings = store.get('settings') as Settings | undefined;
   if (settings?.autoSyncEnabled && settings?.autoSyncFreq && settings.autoSyncFreq !== 'never') {
     let ms = 0;
     if (settings.autoSyncFreq === '1h')  ms = 60 * 60 * 1000;
@@ -148,7 +159,7 @@ function setupAutoSync() {
     if (ms > 0) {
       autoSyncInterval = setInterval(async () => {
         if (isCloudSyncing) return;
-        const creds: any = store.get('cloud');
+        const creds = store.get('cloud') as Cloud | undefined;
         if (creds?.url) {
           isCloudSyncing = true;
           try {
@@ -240,9 +251,9 @@ async function uploadFile(baseUrl: string, gameName: string, localPath: string, 
   }
 }
 
-async function performCloudSync(credentials: any) {
+async function performCloudSync(credentials: Cloud) {
   try {
-    const games: any = store.get('games') || []
+    const games = (store.get('games') || []) as Game[]
     const cleanUrl = normalizeUrl(credentials.url)
 
     let totalAttempted = 0
@@ -343,14 +354,14 @@ async function performCloudSync(credentials: any) {
       return { success: false, message: `Background sync completed with ${totalFailed}/${totalAttempted} file(s) failed.` }
     }
     return { success: true, message: 'Background sync complete.' }
-  } catch (err: any) {
-    return { success: false, message: 'Background sync failed: ' + (err.message || String(err)) }
+  } catch (err) {
+    return { success: false, message: 'Background sync failed: ' + (errorMessage(err) || String(err)) }
   }
 }
 
 type ProgressFn = (percent: number, message: string) => void
 
-async function performCloudSyncWithProgress(credentials: any, progress: ProgressFn) {
+async function performCloudSyncWithProgress(credentials: Cloud, progress: ProgressFn) {
   if (isCloudSyncing) {
     return { success: false, message: 'Sync already in progress.' };
   }
@@ -359,7 +370,7 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
   try {
     progress(5, 'Connecting to Dune Server...')
     const cleanUrl = normalizeUrl(credentials.url)
-    const games: any = store.get('games') || []
+    const games = (store.get('games') || []) as Game[]
 
     const filesToUpload: { game: string, local: string, rel: string }[] = [];
 
@@ -445,9 +456,9 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
       await Promise.all(chunk.map(async (file) => {
         try {
           await uploadFile(cleanUrl, file.game, file.local, file.rel, syncId);
-        } catch (e: any) {
+        } catch (e) {
           failedByGame.set(file.game, [...(failedByGame.get(file.game) || []), file.rel]);
-          console.error(`Sync error on ${file.rel}:`, e.message);
+          console.error(`Sync error on ${file.rel}:`, errorMessage(e));
         }
       }));
     }
@@ -491,7 +502,7 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
     }
 
     // Update status: "In Sync" only when every changed file for that game succeeded.
-    games.forEach((g: any) => {
+    games.forEach((g: Game) => {
       if (!plans.has(g.name)) return;
       const failed = failedByGame.get(g.name)?.length ?? 0;
       if (failed === 0) {
@@ -514,15 +525,15 @@ async function performCloudSyncWithProgress(credentials: any, progress: Progress
       success: true,
       message: total === 0 ? 'Already up to date — no changed files.' : `Synced ${total} changed file(s).`,
     }
-  } catch (err: any) {
+  } catch (err) {
     progress(0, '')
-    return { success: false, message: 'Sync failed: ' + (err.message || String(err)) }
+    return { success: false, message: 'Sync failed: ' + (errorMessage(err) || String(err)) }
   } finally {
     isCloudSyncing = false;
   }
 }
 
-async function performCloudRestoreWithProgress(credentials: any, progress: ProgressFn) {
+async function performCloudRestoreWithProgress(credentials: Cloud, progress: ProgressFn) {
   if (isCloudSyncing) {
     return { success: false, message: 'Sync already in progress.' };
   }
@@ -531,7 +542,7 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
   try {
     progress(5, 'Connecting to Dune Server...')
     const cleanUrl = normalizeUrl(credentials.url)
-    const games: any = store.get('games') || []
+    const games = (store.get('games') || []) as Game[]
 
     let restoredCount = 0;
     const CHUNK_SIZE = 5;
@@ -602,9 +613,9 @@ async function performCloudRestoreWithProgress(credentials: any, progress: Progr
     store.set('games', games)
     progress(100, 'Restore complete! 🎉')
     return { success: true, message: `Successfully restored ${restoredCount} game(s)!` }
-  } catch (err: any) {
+  } catch (err) {
     progress(0, '')
-    return { success: false, message: 'Restore failed: ' + (err.message || String(err)) }
+    return { success: false, message: 'Restore failed: ' + (errorMessage(err) || String(err)) }
   } finally {
     isCloudSyncing = false;
   }
@@ -628,14 +639,17 @@ ipcMain.handle('config:load', () => {
 ipcMain.handle('config:save', (_event, config) => {
   const cfg = (config ?? {}) as Record<string, unknown>;
   if (Array.isArray(cfg.games)) {
-    const clean: any[] = [];
+    const clean: Game[] = [];
     for (const g of cfg.games) {
       try {
         const raw = (g ?? {}) as Record<string, unknown>;
         const id = Number(raw.id);
+        const now = new Date().toISOString();
         clean.push({
           ...sanitizeGame(g),
           id: Number.isFinite(id) ? id : nextId(),
+          createdAt: asString(raw.createdAt, 64) || now,
+          updatedAt: asString(raw.updatedAt, 64) || now,
         });
       } catch { /* drop malformed entries rather than persisting them */ }
     }
@@ -652,8 +666,9 @@ ipcMain.handle('config:save', (_event, config) => {
 });
 
 ipcMain.handle('game:add', (_event, game) => {
-  const games: any = store.get('games') || [];
-  games.push({ ...sanitizeGame(game), id: nextId() });
+  const games = (store.get('games') || []) as Game[];
+  const now = new Date().toISOString();
+  games.push({ ...sanitizeGame(game), id: nextId(), createdAt: now, updatedAt: now });
   store.set('games', games);
   return games;
 });
@@ -661,8 +676,8 @@ ipcMain.handle('game:add', (_event, game) => {
 ipcMain.handle('game:remove', (_event, id) => {
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) throw new Error('Invalid game id');
-  let games: any = store.get('games') || [];
-  games = games.filter((g: any) => g.id !== numericId);
+  let games = (store.get('games') || []) as Game[];
+  games = games.filter((g: Game) => g.id !== numericId);
   store.set('games', games);
   return games;
 });
@@ -680,13 +695,14 @@ ipcMain.handle('dialog:selectDirectory', async () => {
 })
 
 ipcMain.handle('games:autodetect', async (_event, customRoots) => {
-  const storedRoots = (store.get('settings') as any)?.scanRoots || [];
+  const storedRoots = (store.get('settings') as Settings | undefined)?.scanRoots || [];
   const roots = Array.isArray(customRoots) && customRoots.length > 0 ? customRoots : storedRoots;
   const detected = await autoDetectGames(roots);
-  const games: any = store.get('games') || [];
+  const games = (store.get('games') || []) as Game[];
   for (const d of detected) {
-    if (!games.find((g: any) => g.name === d.name)) {
-      games.push({ ...d, thumbnail: '' });
+    if (!games.find((g: Game) => g.name === d.name)) {
+      const now = new Date().toISOString();
+      games.push({ ...d, thumbnail: '', createdAt: now, updatedAt: now });
     }
   }
   store.set('games', games);
@@ -703,7 +719,7 @@ ipcMain.handle('sync:export', async () => {
 
   try {
     const zip = new AdmZip()
-    const games: any = store.get('games') || []
+    const games = (store.get('games') || []) as Game[]
 
     for (const game of games) {
       const rawPath = process.platform === 'win32' ? game.winPath : game.linPath
@@ -719,9 +735,9 @@ ipcMain.handle('sync:export', async () => {
 
     zip.writeZip(filePath)
     return { success: true, path: filePath, message: 'Archive successfully created!' }
-  } catch (e: any) {
+  } catch (e) {
     console.error(e)
-    return { success: false, message: e.message }
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -753,10 +769,13 @@ ipcMain.handle('sync:test', async (_event, credentials) => {
     const res = await axios.get(`${cleanUrl}/api/saves`, { headers: serverHeaders() });
     if (res.data.success) return { success: true, message: '✅ Connection to Dune Server successful!' }
     else return { success: false, message: '❌ Server reached but returned an error response.' }
-  } catch (err: any) {
-    let msg = err.message || String(err);
-    if (err.code === 'ECONNREFUSED') msg = 'Connection refused. Is the server running?';
-    if (err.code === 'ENOTFOUND')    msg = 'Server address not found. Check your URL.';
+  } catch (err) {
+    let msg = errorMessage(err) || String(err);
+    const code = typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code)
+      : '';
+    if (code === 'ECONNREFUSED') msg = 'Connection refused. Is the server running?';
+    if (code === 'ENOTFOUND')    msg = 'Server address not found. Check your URL.';
     return { success: false, message: '❌ ' + msg }
   }
 })
@@ -853,8 +872,8 @@ ipcMain.handle('game:setCustomArt', async (_event, id) => {
   const targetPath = path.join(thumbDir, `${numericId}${ext}`);
   fs.copyFileSync(filePaths[0], targetPath);
 
-  const games: any = store.get('games') || [];
-  const game = games.find((g: any) => g.id === numericId);
+  const games = (store.get('games') || []) as Game[];
+  const game = games.find((g: Game) => g.id === numericId);
   if (game) {
     game.thumbnail = `local://${targetPath}`
     store.set('games', games)
@@ -863,7 +882,7 @@ ipcMain.handle('game:setCustomArt', async (_event, id) => {
 })
 
 ipcMain.handle('game:fetchArt', async (_event, id, name) => {
-  const settings: any = store.get('settings')
+  const settings = store.get('settings') as Settings | undefined
   const apiKey = settings?.steamGridDbKey
   if (!apiKey) return { success: false, message: 'No SteamGridDB API Key found in settings.' }
 
@@ -894,15 +913,15 @@ ipcMain.handle('game:fetchArt', async (_event, id, name) => {
     const targetPath = path.join(thumbDir, `${numericId}${ext}`)
     fs.writeFileSync(targetPath, Buffer.from(response.data))
 
-    const games: any = store.get('games') || []
-    const game = games.find((g: any) => g.id === numericId)
+    const games = (store.get('games') || []) as Game[]
+    const game = games.find((g: Game) => g.id === numericId)
     if (game) {
       game.thumbnail = `local://${targetPath}`
       store.set('games', games)
     }
     return { success: true, thumbnail: `local://${targetPath}` }
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -919,8 +938,8 @@ ipcMain.handle('playtime:record', async (_event, session) => {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -933,8 +952,8 @@ ipcMain.handle('playtime:summary', async (_event, game) => {
     const url = game ? `${cleanUrl}/api/playtime?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/playtime`
     const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, summary: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), summary: [] }
   }
 })
 
@@ -947,8 +966,8 @@ ipcMain.handle('playtime:recent', async (_event, limit) => {
     const url = `${cleanUrl}/api/playtime/recent${limit ? `?limit=${limit}` : ''}`
     const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, sessions: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), sessions: [] }
   }
 })
 
@@ -960,8 +979,8 @@ ipcMain.handle('playtime:total', async () => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/playtime/total`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, totalMinutes: 0 }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), totalMinutes: 0 }
   }
 })
 ipcMain.handle('playtime:graph', async (_event, range, customRange) => {
@@ -974,8 +993,8 @@ ipcMain.handle('playtime:graph', async (_event, range, customRange) => {
     if (customRange?.end) params.set('end', customRange.end)
     const res = await axios.get(`${cleanUrl}/api/playtime/graph?${params.toString()}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, data: { line: [], bar: [], pie: [], heatmap: [], area: [] } }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), data: { line: [], bar: [], pie: [], heatmap: [], area: [] } }
   }
 })
 
@@ -986,8 +1005,8 @@ ipcMain.handle('playtime:comparison', async (_event, range) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/playtime/comparison?range=${encodeURIComponent(range || 'week')}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1001,8 +1020,8 @@ ipcMain.handle('playtime:export', async (_event, format, range, customRange) => 
     if (customRange?.end) params.set('end', customRange.end)
     const res = await axios.get(`${cleanUrl}/api/playtime/export?${params.toString()}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, data: '' }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), data: '' }
   }
 })
 
@@ -1016,8 +1035,8 @@ ipcMain.handle('achievements:get', async (_event, game) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/achievements/${encodeURIComponent(game)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, achievements: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), achievements: [] }
   }
 })
 ipcMain.handle('achievements:detail', async (_event, game: string) => {
@@ -1027,8 +1046,8 @@ ipcMain.handle('achievements:detail', async (_event, game: string) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/achievements/detail/${encodeURIComponent(game)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, achievements: [], progress: null }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), achievements: [], progress: null }
   }
 })
 
@@ -1042,8 +1061,8 @@ ipcMain.handle('achievements:summary', async (_event, game) => {
     const url = game ? `${cleanUrl}/api/achievements?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/achievements`
     const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, summary: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), summary: [] }
   }
 })
 
@@ -1056,8 +1075,8 @@ ipcMain.handle('achievements:recent', async (_event, limit) => {
     const url = `${cleanUrl}/api/achievements/recent${limit ? `?limit=${limit}` : ''}`
     const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, unlocks: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), unlocks: [] }
   }
 })
 
@@ -1070,8 +1089,8 @@ ipcMain.handle('hltb:get', async (_event, gameName) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/hltb/${encodeURIComponent(gameName)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1083,8 +1102,8 @@ ipcMain.handle('saves:listVersions', async (_event, game: string) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/save-versions?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, versions: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), versions: [] }
   }
 })
 
@@ -1095,8 +1114,8 @@ ipcMain.handle('saves:createVersion', async (_event, game: string, deviceId?: st
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/save-versions`, { game, deviceId, changeSummary }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1107,8 +1126,8 @@ ipcMain.handle('saves:getVersion', async (_event, id: string) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/save-versions/${encodeURIComponent(id)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1119,8 +1138,8 @@ ipcMain.handle('saves:diff', async (_event, from: string, to: string) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/save-versions/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1131,8 +1150,8 @@ ipcMain.handle('saves:restore', async (_event, game: string, versionId: string) 
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/restore-version`, { game, versionId }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1145,8 +1164,8 @@ ipcMain.handle('conflicts:list', async (_event, game?: string) => {
     const url = game ? `${cleanUrl}/api/conflicts?game=${encodeURIComponent(game)}` : `${cleanUrl}/api/conflicts`
     const res = await axios.get(url, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, conflicts: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), conflicts: [] }
   }
 })
 
@@ -1157,8 +1176,8 @@ ipcMain.handle('conflicts:detect', async (_event, game: string, localVersionId: 
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/conflicts/detect`, { game, localVersionId, remoteVersionId }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1169,8 +1188,8 @@ ipcMain.handle('conflicts:resolve', async (_event, id: string, resolution: 'loca
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/conflicts/${encodeURIComponent(id)}/resolve`, { resolution }, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1182,20 +1201,20 @@ ipcMain.handle('backupProfile:get', async (_event, game: string) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/backup-profile?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
-ipcMain.handle('backupProfile:set', async (_event, profile: any) => {
+ipcMain.handle('backupProfile:set', async (_event, profile: BackupProfile & { game?: string }) => {
   const cloud = store.get('cloud')
   if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
   try {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/backup-profile`, profile, { headers: serverHeaders({ 'Content-Type': 'application/json' }) })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1207,8 +1226,8 @@ ipcMain.handle('storage:get', async (_event, game: string) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/storage?game=${encodeURIComponent(game)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, entry: null }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), entry: null }
   }
 })
 
@@ -1217,16 +1236,16 @@ ipcMain.handle('game:launch', async (_event, game, options) => {
   try {
     const result = await launchGame(game, options || {});
     return result;
-  } catch (e: any) {
-    return { success: false, message: e.message };
+  } catch (e) {
+    return { success: false, message: errorMessage(e) };
   }
 });
 
 ipcMain.handle('game:launchCommand', async (_event, game, options) => {
   try {
     return { success: true, command: getLaunchCommand(game, options || {}) };
-  } catch (e: any) {
-    return { success: false, message: e.message, command: null };
+  } catch (e) {
+    return { success: false, message: errorMessage(e), command: null };
   }
 });
 
@@ -1234,32 +1253,32 @@ ipcMain.handle('game:launchCommand', async (_event, game, options) => {
 ipcMain.handle('prefix:list', async () => {
   try {
     return { success: true, prefixes: listPrefixes() };
-  } catch (e: any) {
-    return { success: false, message: e.message, prefixes: null };
+  } catch (e) {
+    return { success: false, message: errorMessage(e), prefixes: null };
   }
 });
 
 ipcMain.handle('prefix:create', async (_event, prefixPath: string) => {
   try {
-    return createWinePrefix(prefixPath);
-  } catch (e: any) {
-    return { success: false, message: e.message };
+    return createWinePrefix(expandPath(prefixPath));
+  } catch (e) {
+    return { success: false, message: errorMessage(e) };
   }
 });
 
 ipcMain.handle('prefix:delete', async (_event, prefixPath: string) => {
   try {
     return deleteWinePrefix(prefixPath);
-  } catch (e: any) {
-    return { success: false, message: e.message };
+  } catch (e) {
+    return { success: false, message: errorMessage(e) };
   }
 });
 
 ipcMain.handle('prefix:backup', async (_event, prefixPath: string) => {
   try {
     return backupWinePrefix(prefixPath);
-  } catch (e: any) {
-    return { success: false, message: e.message };
+  } catch (e) {
+    return { success: false, message: errorMessage(e) };
   }
 });
 
@@ -1274,8 +1293,8 @@ ipcMain.handle('ai:analyze', async (_event, { gameName, files }) => {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1288,8 +1307,8 @@ ipcMain.handle('art:search', async (_event, query) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/search-art?query=${encodeURIComponent(query)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1301,8 +1320,8 @@ ipcMain.handle('art:auto-match', async () => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/auto-match-all`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1315,8 +1334,8 @@ ipcMain.handle('local-sync:trigger', async () => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.post(`${cleanUrl}/api/local-sync`, {}, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1328,8 +1347,8 @@ ipcMain.handle('local-sources:get', async () => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/local-sources`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, sources: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), sources: [] }
   }
 })
 
@@ -1343,8 +1362,8 @@ ipcMain.handle('local-sources:add', async (_event, sourcePath) => {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1356,8 +1375,8 @@ ipcMain.handle('local-sources:remove', async (_event, id) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.delete(`${cleanUrl}/api/local-sources/${id}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1370,8 +1389,8 @@ ipcMain.handle('remote-servers:get', async () => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/remote-servers`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, servers: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), servers: [] }
   }
 })
 
@@ -1385,8 +1404,8 @@ ipcMain.handle('remote-servers:add', async (_event, url) => {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1398,8 +1417,8 @@ ipcMain.handle('remote-servers:remove', async (_event, id) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.delete(`${cleanUrl}/api/remote-servers/${id}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1412,8 +1431,8 @@ ipcMain.handle('api-keys:get', async () => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/api-keys`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, keys: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), keys: [] }
   }
 })
 
@@ -1428,8 +1447,8 @@ ipcMain.handle('api-keys:add', async (_event, { description }) => {
       headers: serverHeaders({ 'Content-Type': 'application/json' })
     })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1441,8 +1460,8 @@ ipcMain.handle('api-keys:remove', async (_event, id) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.delete(`${cleanUrl}/api/api-keys/${encodeURIComponent(id)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1455,8 +1474,8 @@ ipcMain.handle('ollama:models', async (_event, endpoint) => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/ollama-models?endpoint=${encodeURIComponent(endpoint)}`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message, models: [] }
+  } catch (e) {
+    return { success: false, message: errorMessage(e), models: [] }
   }
 })
 
@@ -1468,8 +1487,8 @@ ipcMain.handle('ollama:health', async () => {
     const cleanUrl = normalizeUrl(cloud.url)
     const res = await axios.get(`${cleanUrl}/api/ollama-health`, { headers: serverHeaders() })
     return res.data
-  } catch (e: any) {
-    return { success: false, message: e.message }
+  } catch (e) {
+    return { success: false, message: errorMessage(e) }
   }
 })
 
@@ -1543,7 +1562,7 @@ function createWindow() {
   }
 
   win.on('close', (event) => {
-    const settings: any = store.get('settings')
+    const settings = store.get('settings') as Settings | undefined
     if (!isQuitting && settings?.runInBackground) {
       // Hide instead of closing when "run in background" is enabled
       event.preventDefault()
@@ -1567,7 +1586,7 @@ app.on('before-quit', () => {
 
 // Standard cross-platform quit-on-last-window-close
 app.on('window-all-closed', () => {
-  const settings: any = store.get('settings')
+  const settings = store.get('settings') as Settings | undefined
   // On macOS, keep the process alive in tray (always). On others, quit unless background mode.
   if (process.platform !== 'darwin' && !settings?.runInBackground) {
     // Give the tray a moment to register, then quit cleanly

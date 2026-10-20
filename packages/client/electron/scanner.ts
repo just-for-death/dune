@@ -111,21 +111,21 @@ export async function autoDetectGames(customRoots: string[] = []) {
     name: string;
     winPath: string;
     linPath: string;
-    status: string;
+    status: 'Pending Upload' | 'In Sync' | 'Error';
     lastSync: string;
   }[] = [];
 
   try {
     // Use cached manifest — avoids 4MB download on every scan
     const rawManifest = await fetchManifest();
-    const manifest = YAML.parse(rawManifest);
+    const manifest = YAML.parse(rawManifest) as Record<string, { files?: Record<string, unknown> }> | null;
 
     if (!manifest) return [];
 
     const activeRoots = expandCustomRoots(customRoots);
 
-    for (const [gameName, gameData] of Object.entries<any>(manifest)) {
-      if (!gameData.files) continue;
+    for (const [gameName, gameData] of Object.entries(manifest)) {
+      if (!gameData?.files) continue;
 
       let validPath = '';
 

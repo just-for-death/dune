@@ -112,7 +112,7 @@ export function sanitizeGame(input: unknown): {
   winPath: string;
   linPath: string;
   lastSync: string;
-  status: string;
+  status: 'In Sync' | 'Pending Upload' | 'Error';
   thumbnail: string;
 } {
   const g = (input ?? {}) as Record<string, unknown>;
@@ -124,13 +124,15 @@ export function sanitizeGame(input: unknown): {
     winPath: asString(g.winPath),
     linPath: asString(g.linPath),
     lastSync: asString(g.lastSync, 64) || 'Never',
-    status: ['Pending Upload', 'In Sync', 'Error'].includes(status) ? status : 'Pending Upload',
+    status: ['Pending Upload', 'In Sync', 'Error'].includes(status)
+      ? status as 'In Sync' | 'Pending Upload' | 'Error'
+      : 'Pending Upload',
     thumbnail: asString(g.thumbnail),
   };
 }
 
 /** Sanitize settings input from the renderer. Pure function. */
-export function sanitizeSettings(input: unknown, fallback: any): {
+export function sanitizeSettings(input: unknown, fallback: unknown): {
   runInBackground: boolean;
   autoSyncEnabled: boolean;
   autoSyncFreq: string;
@@ -138,9 +140,14 @@ export function sanitizeSettings(input: unknown, fallback: any): {
   scanRoots: string[];
 } {
   const s = (input ?? {}) as Record<string, unknown>;
+  const f = (fallback ?? {}) as Record<string, unknown>;
+  const cleanRoots = (roots: unknown): string[] =>
+    Array.isArray(roots)
+      ? roots.filter((r): r is string => typeof r === 'string').slice(0, 50).map(r => r.slice(0, 2000))
+      : [];
   const scanRoots = Array.isArray(s.scanRoots)
-    ? s.scanRoots.filter((r): r is string => typeof r === 'string').slice(0, 50).map(r => r.slice(0, 2000))
-    : fallback?.scanRoots ?? [];
+    ? cleanRoots(s.scanRoots)
+    : cleanRoots(f.scanRoots);
   const freq = asString(s.autoSyncFreq, 8);
   return {
     runInBackground: s.runInBackground === true,

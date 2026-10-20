@@ -32,6 +32,9 @@ export interface HeroicGame {
   };
 }
 
+export type HeroicGameLike = Pick<HeroicGame, 'id' | 'title'> &
+  Partial<Pick<HeroicGame, 'prefixPath' | 'wineVersion'>>;
+
 export interface HeroicConfig {
   games: HeroicGame[];
   settings?: {
@@ -123,10 +126,12 @@ export function getHeroicGames(): Game[] {
       status: 'In Sync' as const,
       thumbnail: game.artwork?.cover || '',
       platform: game.platform,
+      source: 'heroic',
       heroicId: game.id,
       executable: game.executable,
       installPathOverride: game.installPathOverride,
       prefixPath: game.prefixPath,
+      winePrefix: game.prefixPath,
       wineVersion: game.wineVersion,
       useSystemWine: game.useSystemWine,
       envVars: game.envVars,
@@ -180,7 +185,7 @@ export function getHeroicExecutable(): string | null {
 /**
  * Get Heroic Wine prefix path for a game.
  */
-export function getHeroicWinePrefix(game: any): string | null {
+export function getHeroicWinePrefix(game: HeroicGameLike): string | null {
   if (game.prefixPath && fs.existsSync(game.prefixPath)) {
     return game.prefixPath;
   }
@@ -207,7 +212,7 @@ export function getHeroicWinePrefix(game: any): string | null {
 /**
  * Get Heroic Wine version for a game.
  */
-export function getHeroicWineVersion(game: any): string | null {
+export function getHeroicWineVersion(game: HeroicGameLike): string | null {
   if (game.wineVersion) return game.wineVersion;
   
   // Check Heroic's wine versions directory
@@ -219,7 +224,7 @@ export function getHeroicWineVersion(game: any): string | null {
   
   // Check for specific version
   if (fs.existsSync(path.join(winePath, 'versions', game.wineVersion || ''))) {
-    return game.wineVersion;
+    return game.wineVersion || null;
   }
   
   return null;
@@ -228,7 +233,7 @@ export function getHeroicWineVersion(game: any): string | null {
 /**
  * Get Heroic executable path for a game (for launching).
  */
-export function getHeroicGameLaunchCommand(game: any): string[] | null {
+export function getHeroicGameLaunchCommand(game: HeroicGameLike): string[] | null {
   const heroicExe = getHeroicExecutable();
   if (!heroicExe) return null;
   

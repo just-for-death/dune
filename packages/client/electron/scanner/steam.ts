@@ -107,27 +107,32 @@ function expandCustomRoots(customRoots: string[]): string[] {
   return expanded;
 }
 
-export async function autoDetectGames(customRoots: string[] = []): Promise<any[]> {
-  const discovered: {
-    id: number;
-    name: string;
-    winPath: string;
-    linPath: string;
-    status: string;
-    lastSync: string;
-  }[] = [];
+export interface DetectedGame {
+  id: number;
+  name: string;
+  winPath: string;
+  linPath: string;
+  status: 'Pending Upload' | 'In Sync' | 'Error';
+  lastSync: string;
+}
+
+/** Top-level shape of the Ludusavi manifest: game name -> entry. */
+type LudusaviManifest = Record<string, { files?: Record<string, unknown> } | undefined>;
+
+export async function autoDetectGames(customRoots: string[] = []): Promise<DetectedGame[]> {
+  const discovered: DetectedGame[] = [];
 
   try {
     // Use cached manifest — avoids 4MB download on every scan
     const rawManifest = await fetchManifest();
-    const manifest = YAML.parse(rawManifest);
+    const manifest = YAML.parse(rawManifest) as LudusaviManifest | null;
 
     if (!manifest) return [];
 
     const activeRoots = expandCustomRoots(customRoots);
 
-    for (const [gameName, gameData] of Object.entries<any>(manifest)) {
-      if (!gameData.files) continue;
+    for (const [gameName, gameData] of Object.entries(manifest)) {
+      if (!gameData?.files) continue;
 
       let validPath = '';
 
@@ -243,11 +248,14 @@ export function getSteamLibraryFolders(steamPath: string): SteamLibraryFolder[] 
     if (!parsed.libraryfolders) return [];
 
     const folders: SteamLibraryFolder[] = [];
-    for (const [key, folder] of Object.entries(parsed.libraryfolders as Record<string, any>)) {
-      if (folder.path) {
+    for (const [key, folder] of Object.entries(parsed.libraryfolders)) {
+      if (typeof folder !== 'object' || folder === null) continue;
+      const folderPath = folder.path;
+      if (typeof folderPath === 'string') {
+        const label = typeof folder.label === 'string' ? folder.label : `Library ${key}`;
         folders.push({
-          path: folder.path,
-          label: folder.label || `Library ${key}`,
+          path: folderPath,
+          label,
         });
       }
     }
@@ -258,15 +266,17 @@ export function getSteamLibraryFolders(steamPath: string): SteamLibraryFolder[] 
   }
 }
 
+type VdfObject = { [key: string]: string | VdfObject };
+
 /**
  * Parse VDF (Valve Data Format) text into a JavaScript object.
  * Simplified parser for libraryfolders.vdf format.
  */
-function parseVDF(content: string): any {
-  const result: any = {};
+function parseVDF(content: string): VdfObject {
+  const result: VdfObject = {};
   const lines = content.split('\n');
-  let currentObj: any = result;
-  const stack: any[] = [result];
+  let currentObj: VdfObject = result;
+  const stack: VdfObject[] = [result];
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -274,7 +284,7 @@ function parseVDF(content: string): any {
 
     if (trimmed.endsWith('{')) {
       const key = trimmed.slice(0, -1).trim().replace(/"/g, '');
-      const newObj: any = {};
+      const newObj: VdfObject = {};
       currentObj[key] = newObj;
       stack.push(newObj);
       currentObj = newObj;
@@ -297,7 +307,16 @@ function parseVDF(content: string): any {
 export function parseAppManifest(content: string): SteamGameInfo | null {
   try {
     const lines = content.split('\n');
-    const data: any = {};
+    const data: {
+      appId?: string;
+      name?: string;
+      installDir?: string;
+      sizeOnDisk?: number;
+      lastUpdated?: number;
+      buildId?: string;
+      autoUpdateBehavior?: number;
+      allowOtherDownloadsWhileRunning?: boolean;
+    } = {};
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;

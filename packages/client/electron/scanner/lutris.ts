@@ -28,14 +28,14 @@ export interface LutrisGame {
   version?: string;
   installed: boolean;
   installed_size?: number;
-  last_played?: number;
+  last_played?: number | string | null;
   playtime?: number;
   cover_url?: string;
   banner_url?: string;
   logo_url?: string;
   icon_url?: string;
-  created_at?: number;
-  updated_at?: number;
+  created_at?: number | string | null;
+  updated_at?: number | string | null;
 }
 
 export interface LutrisConfig {
@@ -87,7 +87,7 @@ export function getLutrisDB(): DatabaseSync | null {
 /**
  * Get all installed games from Lutris database.
  */
-export function getLutrisGames(): any[] {
+export function getLutrisGames(): LutrisGame[] {
   const db = getLutrisDB();
   if (!db) return [];
 
@@ -102,15 +102,20 @@ export function getLutrisGames(): any[] {
       FROM games
       WHERE installed = 1
       ORDER BY name ASC
-    `).all();
+    `).all() as Array<Record<string, unknown>>;
 
-    return rows.map((row: any) => ({
+    const toIso = (value: unknown): string | null =>
+      typeof value === 'number' ? new Date(value * 1000).toISOString() : null;
+
+    return rows.map((row) => ({
       ...row,
-      env_vars: row.env_vars ? JSON.parse(row.env_vars) : {},
-      last_played: row.last_played ? new Date(row.last_played * 1000).toISOString() : null,
-      created_at: row.created_at ? new Date(row.created_at * 1000).toISOString() : null,
-      updated_at: row.updated_at ? new Date(row.updated_at * 1000).toISOString() : null,
-    }));
+      env_vars: typeof row.env_vars === 'string'
+        ? JSON.parse(row.env_vars) as Record<string, string>
+        : {},
+      last_played: toIso(row.last_played),
+      created_at: toIso(row.created_at),
+      updated_at: toIso(row.updated_at),
+    } as unknown as LutrisGame));
   } catch (e) {
     console.error('Failed to query Lutris games:', e);
     return [];
@@ -148,7 +153,7 @@ export function getLutrisExecutable(): string | null {
 /**
  * Get Lutris Wine prefix path for a game.
  */
-export function getLutrisWinePrefix(game: any): string | null {
+export function getLutrisWinePrefix(game: Partial<LutrisGame>): string | null {
   if (game.wine_prefix && fs.existsSync(game.wine_prefix)) {
     return game.wine_prefix;
   }
@@ -158,7 +163,7 @@ export function getLutrisWinePrefix(game: any): string | null {
   
   // Check default prefixes directory
   const prefixesPath = path.join(dataDir, 'prefixes');
-  if (fs.existsSync(path.join(prefixesPath, game.slug))) {
+  if (game.slug && fs.existsSync(path.join(prefixesPath, game.slug))) {
     return path.join(prefixesPath, game.slug);
   }
   
@@ -172,7 +177,7 @@ export function getLutrisWinePrefix(game: any): string | null {
 /**
  * Get Lutris Wine version for a game.
  */
-export function getLutrisWineVersion(game: any): string | null {
+export function getLutrisWineVersion(game: Partial<LutrisGame>): string | null {
   if (game.wine_version) return game.wine_version;
   return null;
 }
@@ -180,7 +185,7 @@ export function getLutrisWineVersion(game: any): string | null {
 /**
  * Get Lutris executable path for a game (for launching).
  */
-export function getLutrisGameLaunchCommand(game: any): string[] | null {
+export function getLutrisGameLaunchCommand(game: Partial<LutrisGame>): string[] | null {
   const lutrisExe = getLutrisExecutable();
   if (!lutrisExe) return null;
   
@@ -235,7 +240,7 @@ export function getLutrisWineVersions(): string[] {
 /**
  * Get Lutris game by slug.
  */
-export function getLutrisGameBySlug(slug: string): any | null {
+export function getLutrisGameBySlug(slug: string): LutrisGame | null {
   const db = getLutrisDB();
   if (!db) return null;
   
@@ -243,7 +248,7 @@ export function getLutrisGameBySlug(slug: string): any | null {
     const row = db.prepare(`
       SELECT * FROM games WHERE slug = ?
     `).get(slug);
-    return row || null;
+    return row ? (row as unknown as LutrisGame) : null;
   } catch (e) {
     console.error('Failed to query Lutris game by slug:', e);
     return null;
@@ -255,7 +260,7 @@ export function getLutrisGameBySlug(slug: string): any | null {
 /**
  * Get Lutris game by ID.
  */
-export function getLutrisGameById(id: number): any | null {
+export function getLutrisGameById(id: number): LutrisGame | null {
   const db = getLutrisDB();
   if (!db) return null;
   
@@ -263,7 +268,7 @@ export function getLutrisGameById(id: number): any | null {
     const row = db.prepare(`
       SELECT * FROM games WHERE id = ?
     `).get(id);
-    return row || null;
+    return row ? (row as unknown as LutrisGame) : null;
   } catch (e) {
     console.error('Failed to query Lutris game by ID:', e);
     return null;
@@ -283,7 +288,7 @@ export function isLutrisGameInstalled(slug: string): boolean {
 /**
  * Get the install path for a Lutris game.
  */
-export function getLutrisGamePath(game: any): string | null {
+export function getLutrisGamePath(game: Partial<LutrisGame>): string | null {
   if (game.install_path && fs.existsSync(game.install_path)) {
     return game.install_path;
   }
@@ -301,7 +306,7 @@ export function getLutrisGamePath(game: any): string | null {
 /**
  * Get Lutris executable for a game (wine command).
  */
-export function getLutrisGameExecutable(game: any): string | null {
+export function getLutrisGameExecutable(game: Partial<LutrisGame>): string | null {
   if (game.executable && fs.existsSync(game.executable)) {
     return game.executable;
   }

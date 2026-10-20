@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { BackupProfile } from '@dune/shared';
 
 interface Game {
   id: number;
@@ -110,9 +111,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('hltb:get', gameName),
 
   // Launcher
-  launchGame: (game: any, options?: any) =>
+  launchGame: (game: Game, options?: Record<string, unknown>) =>
     ipcRenderer.invoke('game:launch', game, options),
-  getLaunchCommand: (game: any, options?: any) =>
+  getLaunchCommand: (game: Game, options?: Record<string, unknown>) =>
     ipcRenderer.invoke('game:launchCommand', game, options),
 
   // Prefix manager
@@ -148,7 +149,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Backup profiles
   getBackupProfile: (game: string) =>
     ipcRenderer.invoke('backupProfile:get', game),
-  setBackupProfile: (profile: any) =>
+  setBackupProfile: (profile: BackupProfile & { game?: string }) =>
     ipcRenderer.invoke('backupProfile:set', profile),
 
   // Storage

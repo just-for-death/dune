@@ -92,10 +92,6 @@ function getGamesForUser(user: User): Game[] {
   return user.role === 'admin' ? readGamesRows() : readGamesRows(user.id);
 }
 
-function getGameById(id: number, ownerId?: string): Game | undefined {
-  return getGames(ownerId).find((g) => g.id === id);
-}
-
 export function writeDB(data: { games: Game[]; settings: Settings }): void {
   const database = getDb();
   const insertGame = database.prepare(
@@ -380,21 +376,6 @@ function resolveUserByKey(rawKey: string | null | undefined): User | null {
   if (!matched) return null;
   const row = rows.find((r) => r.hash === matched);
   return row ? getUserById(row.userId) ?? null : null;
-}
-
-/** Constant-time check of a raw candidate against every stored key hash. */
-function isValidApiKey(candidate: string | undefined | null): boolean {
-  return matchStoredHash(candidate, listKeyHashes()) !== null;
-}
-
-/** Every stored key hash (all users). */
-function getApiKeys(): string[] {
-  return listKeyHashes();
-}
-
-/** Revoke a key across all users, by its plaintext value. */
-function removeApiKey(key: string): boolean {
-  return removeUserKeyByHash(hashApiKey(key));
 }
 
 function getLocalSources(): LocalSource[] {

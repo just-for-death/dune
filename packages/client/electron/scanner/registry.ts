@@ -3,6 +3,7 @@ import type { Game } from '@dune/shared';
 import { autoDetectGames as steamAutoDetect } from './steam.js';
 import { getHeroicGames } from './heroic.js';
 import { getLutrisGames } from './lutris.js';
+import type { LutrisGame } from './lutris.js';
 import { getEpicGames, getGogGames, getUbisoftGames, getEaGames, getBattleNetGames, getXboxGames, getMinecraftGames } from './external.js';
 import { getEmulatorGames } from '../emulators/roms.js';
 
@@ -59,7 +60,7 @@ class GameRegistryImpl implements GameRegistry {
   }
 
   getGamesBySource(sourceId: string): Game[] {
-    return Array.from(this.games.values()).filter(g => (g as any).sourceId === sourceId);
+    return Array.from(this.games.values()).filter(g => g.sourceId === sourceId);
   }
 
   setLastScan(time: string): void {
@@ -74,6 +75,42 @@ class GameRegistryImpl implements GameRegistry {
 }
 
 export const gameRegistry = new GameRegistryImpl();
+
+/** Fill in the metadata required by the shared Game shape for scanner results. */
+function withGameMetadata(
+  game: Omit<Game, 'thumbnail' | 'createdAt' | 'updatedAt' | 'sourceId'>,
+  sourceId: string,
+): Game {
+  const now = new Date().toISOString();
+  return {
+    ...game,
+    thumbnail: '',
+    sourceId,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** Project a Lutris database row onto the shared Game shape. */
+function fromLutris(game: LutrisGame): Game {
+  const now = new Date().toISOString();
+  return {
+    id: game.id,
+    name: game.name,
+    winPath: '',
+    linPath: game.install_path || game.executable || '',
+    lastSync: typeof game.last_played === 'string' ? game.last_played : 'Never',
+    status: 'In Sync',
+    thumbnail: game.cover_url || '',
+    sourceId: 'lutris',
+    source: 'lutris',
+    lutrisSlug: game.slug,
+    winePrefix: game.wine_prefix,
+    executable: game.executable,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 // Initialize default sources
 function initializeSources() {
@@ -179,13 +216,13 @@ export async function fullScan(_customRoots: string[] = []): Promise<Game[]> {
     try {
       switch (source.type) {
         case 'steam':
-          games = await steamAutoDetect([]);
+          games = (await steamAutoDetect([])).map(g => withGameMetadata(g, 'steam'));
           break;
         case 'heroic':
           games = getHeroicGames().map(g => ({ ...g, sourceId: 'heroic' } as Game));
           break;
         case 'lutris':
-          games = getLutrisGames().map(g => ({ ...g, sourceId: 'lutris' } as Game));
+          games = getLutrisGames().map(fromLutris);
           break;
         case 'epic':
           games = getEpicGames().map(g => ({ ...g, sourceId: 'epic' } as Game));
@@ -213,7 +250,7 @@ export async function fullScan(_customRoots: string[] = []): Promise<Game[]> {
           break;
         case 'manual':
           // Manual games are already in registry
-          games = Array.from(gameRegistry.games.values()).filter(g => (g as any).sourceId === 'manual');
+          games = Array.from(gameRegistry.games.values()).filter(g => g.sourceId === 'manual');
           break;
       }
 
@@ -249,11 +286,11 @@ export async function scanSource(sourceId: string): Promise<Game[]> {
   try {
     switch (source.type) {
       case 'steam':
-        return steamAutoDetect([]);
+        return (await steamAutoDetect([])).map(g => withGameMetadata(g, 'steam'));
       case 'heroic':
         return getHeroicGames().map(g => ({ ...g, sourceId: 'heroic' } as Game));
       case 'lutris':
-        return getLutrisGames().map(g => ({ ...g, sourceId: 'lutris' } as Game));
+        return getLutrisGames().map(fromLutris);
       case 'epic':
         return getEpicGames().map(g => ({ ...g, sourceId: 'epic' } as Game));
       case 'gog':
@@ -271,7 +308,7 @@ export async function scanSource(sourceId: string): Promise<Game[]> {
       case 'emulator':
         return getEmulatorGames().map(g => ({ ...g, sourceId: 'emulator' } as Game));
       case 'manual':
-        return Array.from(gameRegistry.games.values()).filter(g => (g as any).sourceId === 'manual');
+        return Array.from(gameRegistry.games.values()).filter(g => g.sourceId === 'manual');
     }
   } catch (error) {
     console.error(`Failed to scan ${source.name}:`, error);
