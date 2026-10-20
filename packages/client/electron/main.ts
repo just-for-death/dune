@@ -1020,6 +1020,18 @@ ipcMain.handle('achievements:get', async (_event, game) => {
     return { success: false, message: e.message, achievements: [] }
   }
 })
+ipcMain.handle('achievements:detail', async (_event, game: string) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', achievements: [], progress: null }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/achievements/detail/${encodeURIComponent(game)}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, achievements: [], progress: null }
+  }
+})
+
 
 ipcMain.handle('achievements:summary', async (_event, game) => {
   const cloud = store.get('cloud')

@@ -98,6 +98,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Achievements
   getAchievements: (game: string) => 
     ipcRenderer.invoke('achievements:get', game),
+  getAchievementDetail: (game: string) =>
+    ipcRenderer.invoke('achievements:detail', game),
   getAchievementSummary: (game?: string) => 
     ipcRenderer.invoke('achievements:summary', game),
   getRecentUnlocks: (limit?: number) => 

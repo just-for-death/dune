@@ -27,6 +27,7 @@ if (process.versions.node) {
 
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime, getPlaytimeGraphData, getPlaytimeComparison, exportPlaytimeData } from './services/playtime.js';
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks } from './services/achievements.js';
+import { getAchievementDetails, getAchievementProgress } from './services/achievementDetail.js';
 import { getHLTBTimes } from './services/hltb.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from './services/ollama.js';
 import { searchArt, autoMatchAll } from './services/steamGridDB.js';
@@ -309,6 +310,15 @@ app.get('/api/achievements/recent', authMiddleware, (req: AuthenticatedRequest, 
 app.get('/api/achievements/:game', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     res.json({ success: true, achievements: getGameAchievements(req.params.game.toString(), ownerScope(req)) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.get('/api/achievements/detail/:game', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const game = req.params.game.toString();
+    res.json({ success: true, achievements: getAchievementDetails(game, ownerScope(req)), progress: getAchievementProgress(game, ownerScope(req)) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
