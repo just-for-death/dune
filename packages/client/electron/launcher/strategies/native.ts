@@ -3,15 +3,16 @@ import type { LaunchCommand, LaunchStrategy } from './types.js';
 
 export const nativeStrategy: LaunchStrategy = {
   canLaunch(game) {
-    return Boolean(game.linPath) && (game.source === undefined || game.source === 'manual');
+    return Boolean(game.executable || game.linPath) && (game.source === undefined || game.source === 'manual');
   },
   getCommand(game): LaunchCommand | null {
-    if (!game.linPath) return null;
+    const executable = game.executable || game.linPath;
+    if (!executable) return null;
     try {
-      if (!fs.statSync(game.linPath).isFile()) return null;
+      if (!fs.statSync(executable).isFile()) return null;
     } catch {
       return null;
     }
-    return { command: game.linPath, args: [], cwd: undefined };
+    return { command: executable, args: [], cwd: undefined };
   },
 };

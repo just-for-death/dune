@@ -64,6 +64,15 @@ test.beforeEach(async ({ page }) => {
       checkOllamaHealth: async () => ({ success: false, message: 'offline (e2e stub)' }),
       getServerKey: async () => ({ success: true, key: '' }),
       setServerKey: async () => ({ success: true }),
+      launchGame: async (game: { name: string }) => ({ success: true, message: `Launched ${game.name}`, pid: 1234 }),
+      getLaunchCommand: async () => ({ success: true, command: null }),
+      listPrefixes: async () => ({
+        success: true,
+        prefixes: { wine: [], proton: [], heroic: [], lutris: [] },
+      }),
+      createPrefix: async () => ({ success: true, message: 'Prefix created' }),
+      deletePrefix: async () => ({ success: true, message: 'Prefix deleted' }),
+      backupPrefix: async () => ({ success: true, message: 'Prefix backed up', backupPath: '/tmp/prefix.backup' }),
     };
   });
 });
@@ -115,4 +124,26 @@ test('settings exposes the server API key field', async ({ page }) => {
   await expect(keyInput).toBeVisible();
   await keyInput.fill('test-key-123');
   await expect(keyInput).toHaveValue('test-key-123');
+});
+
+test('runtime manager lists prefix groups and create controls', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Prefixes', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Prefix & Runtime Manager' })).toBeVisible();
+  await expect(page.getByText('No Wine runtimes found.')).toBeVisible();
+  await expect(page.getByText('No Proton runtimes found.')).toBeVisible();
+  await expect(page.locator('#new-prefix-path')).toBeVisible();
+});
+
+test('game launch goes through the IPC bridge', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Game Paths', exact: true }).click();
+  await page.locator('#new-game-title').fill('Test Game');
+  await page.locator('#new-game-lin').fill('/tmp/test-game.sh');
+  await page.getByRole('button', { name: 'Save Mapping' }).click();
+  await expect(page.locator('.toast.toast-success')).toContainText('Added Test Game');
+
+  await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+  await page.getByRole('button', { name: 'Launch', exact: true }).click();
+  await expect(page.locator('.toast.toast-success').filter({ hasText: 'Launched Test Game' })).toBeVisible();
 });

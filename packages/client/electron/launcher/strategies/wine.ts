@@ -3,17 +3,20 @@ import type { LaunchStrategy } from './types.js';
 
 export const wineStrategy: LaunchStrategy = {
   canLaunch(game, options) {
-    return Boolean(game.linPath && (options?.winePrefix || game.source === 'manual'));
+    return Boolean((game.executable || game.linPath) && (options?.winePrefix || game.winePrefix || game.source === 'manual'));
   },
   getCommand(game, options) {
-    if (!game.linPath || !options?.winePrefix) return null;
+    const opts = options ?? {};
+    const executable = game.executable || game.linPath;
+    const prefix = opts.winePrefix || game.winePrefix;
+    if (!executable || !prefix) return null;
     const env = {
-      ...options.env,
-      WINEPREFIX: options.winePrefix,
-      ...(options.protonPath ? { PROTONPATH: options.protonPath } : {}),
+      ...opts.env,
+      WINEPREFIX: prefix,
+      ...(opts.protonPath || game.protonPath ? { PROTONPATH: opts.protonPath || game.protonPath } : {}),
     };
-    const command = options.useUmu ? 'umu-run' : 'wine';
-    return { command, args: [game.linPath], env, cwd: options.cwd || path.dirname(game.linPath) };
+    const command = opts.useUmu ? 'umu-run' : 'wine';
+    return { command, args: [executable], env, cwd: opts.cwd || path.dirname(executable) };
   },
 };
 

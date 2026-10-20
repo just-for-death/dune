@@ -473,6 +473,9 @@ label {
   border: 1px solid var(--line);
 }
 .path-main { min-width: 0; flex: 1; }
+.prefix-group { margin-top: 18px; }
+.prefix-group:first-of-type { margin-top: 8px; }
+.prefix-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .path-sub {
   font-size: 12px; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

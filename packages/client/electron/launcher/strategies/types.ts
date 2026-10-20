@@ -16,7 +16,20 @@ export interface LaunchCommand {
   cwd?: string;
 }
 
+export type LaunchableGame = {
+  source?: string;
+  sourceId?: string;
+  linPath?: string;
+  winPath?: string;
+  steamAppId?: string;
+  heroicId?: string;
+  lutrisSlug?: string;
+  winePrefix?: string;
+  protonPath?: string;
+  executable?: string;
+};
+
 export interface LaunchStrategy {
-  canLaunch(game: { source?: string; sourceId?: string; linPath?: string; winPath?: string }, options?: LaunchOptions): boolean;
-  getCommand(game: { source?: string; sourceId?: string; linPath?: string; winPath?: string }, options?: LaunchOptions): LaunchCommand | null;
+  canLaunch(game: LaunchableGame, options?: LaunchOptions): boolean;
+  getCommand(game: LaunchableGame, options?: LaunchOptions): LaunchCommand | null;
 }

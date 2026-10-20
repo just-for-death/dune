@@ -33,6 +33,17 @@ describe('launcher strategies', () => {
     expect(command?.args[0]).toBe('steam://run/12345');
   });
 
+  it('uses scanner metadata when launch options are omitted', () => {
+    const steamGame = { ...baseGame, sourceId: 'steam', steamAppId: '67890' };
+    expect(getLaunchCommand(steamGame)?.args[0]).toBe('steam://run/67890');
+
+    const heroicGame = { ...baseGame, sourceId: 'heroic', heroicId: 'heroic-game-id' };
+    expect(getLaunchCommand(heroicGame)?.args).toEqual(['--run', 'heroic-game-id']);
+
+    const lutrisGame = { ...baseGame, sourceId: 'lutris', lutrisSlug: 'my-game' };
+    expect(getLaunchCommand(lutrisGame)?.args).toEqual(['lutris:rungame/my-game']);
+  });
+
   it('generates Heroic command', () => {
     const game = { ...baseGame, source: 'heroic' as const };
     const command = getLaunchCommand(game, { heroicId: 'heroic-game-id' });

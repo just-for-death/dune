@@ -16,6 +16,7 @@ import type {
   ConflictRecord,
   StorageEntry,
   BackupProfile,
+  PrefixSummary,
 } from '@dune/shared';
 import { nextId } from '@dune/shared';
 import { Icon } from './Icon';
@@ -39,13 +40,20 @@ declare global {
   }
 }
 
-type Tab = 'dashboard' | 'mapping' | 'sync' | 'saves' | 'bigpicture' | 'hltb' | 'playtime' | 'achievements' | 'settings';
+type Tab = 'dashboard' | 'mapping' | 'prefixes' | 'sync' | 'saves' | 'bigpicture' | 'hltb' | 'playtime' | 'achievements' | 'settings';
 
 function formatMinutes(min: number): string {
   if (min < 60) return `${min}m`;
   const h = Math.floor(min / 60);
   const m = min % 60;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
 function formatDate(iso: string): string {
@@ -162,6 +170,13 @@ export default function App() {
   const [backupProfile, setBackupProfile] = useState<BackupProfile | null>(null);
   const [conflicts, setConflicts] = useState<ConflictRecord[]>([]);
   const [showConflictModal, setShowConflictModal] = useState(false);
+
+  // Launcher and prefix state
+  const [launchingGameId, setLaunchingGameId] = useState<number | null>(null);
+  const [prefixSummary, setPrefixSummary] = useState<PrefixSummary | null>(null);
+  const [isLoadingPrefixes, setIsLoadingPrefixes] = useState(false);
+  const [newPrefixPath, setNewPrefixPath] = useState('');
+  const [pendingPrefixDelete, setPendingPrefixDelete] = useState<string | null>(null);
 
   const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
     const id = nextId();
@@ -548,9 +563,93 @@ export default function App() {
   };
 
 
+  const loadPrefixes = async () => {
+    setIsLoadingPrefixes(true);
+    try {
+      const res = await window.electronAPI.listPrefixes();
+      if (res.success && res.prefixes) {
+        setPrefixSummary(res.prefixes);
+      } else {
+        showToast(res.message || 'Failed to load prefixes', 'error');
+      }
+    } catch {
+      showToast('Failed to load prefixes', 'error');
+    }
+    setIsLoadingPrefixes(false);
+  };
+
+  const handleCreatePrefix = async () => {
+    const prefixPath = newPrefixPath.trim();
+    if (!prefixPath) {
+      showToast('Prefix path is required', 'error');
+      return;
+    }
+    try {
+      const res = await window.electronAPI.createPrefix(prefixPath);
+      showToast(res.message, res.success ? 'success' : 'error');
+      if (res.success) {
+        setNewPrefixPath('');
+        await loadPrefixes();
+      }
+    } catch {
+      showToast('Failed to create prefix', 'error');
+    }
+  };
+
+  const handleDeletePrefix = async (prefixPath: string) => {
+    if (pendingPrefixDelete !== prefixPath) {
+      setPendingPrefixDelete(prefixPath);
+      return;
+    }
+    setPendingPrefixDelete(null);
+    try {
+      const res = await window.electronAPI.deletePrefix(prefixPath);
+      showToast(res.message, res.success ? 'success' : 'error');
+      if (res.success) await loadPrefixes();
+    } catch {
+      showToast('Failed to delete prefix', 'error');
+    }
+  };
+
+  const handleBackupPrefix = async (prefixPath: string) => {
+    try {
+      const res = await window.electronAPI.backupPrefix(prefixPath);
+      showToast(res.backupPath ? `${res.message}: ${res.backupPath}` : res.message, res.success ? 'success' : 'error');
+    } catch {
+      showToast('Failed to back up prefix', 'error');
+    }
+  };
+
+  const handleLaunch = async (game: Game) => {
+    if (launchingGameId !== null) return;
+    setLaunchingGameId(game.id);
+    try {
+      const options: Record<string, unknown> = {};
+      if (game.steamAppId) options.appId = game.steamAppId;
+      if (game.heroicId) options.heroicId = game.heroicId;
+      if (game.lutrisSlug) options.lutrisSlug = game.lutrisSlug;
+      if (game.winePrefix) options.winePrefix = game.winePrefix;
+      if (game.protonPath) options.protonPath = game.protonPath;
+      const res = await window.electronAPI.launchGame(game, options);
+      showToast(res.success ? `Launched ${game.name}` : res.message, res.success ? 'success' : 'error');
+    } catch {
+      showToast(`Failed to launch ${game.name}`, 'error');
+    }
+    setLaunchingGameId(null);
+  };
+
   const filteredGames = games.filter(g =>
     g.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const prefixGroups: { label: string; entries: PrefixSummary['wine']; canManage: boolean }[] = prefixSummary
+    ? [
+        { label: 'Wine', entries: prefixSummary.wine, canManage: true },
+        { label: 'Proton', entries: prefixSummary.proton, canManage: false },
+        { label: 'Heroic', entries: prefixSummary.heroic, canManage: false },
+        { label: 'Lutris', entries: prefixSummary.lutris, canManage: false },
+      ]
+    : [];
 
   const inSyncCount = games.filter(g => g.status === 'In Sync').length;
 
@@ -565,6 +664,10 @@ export default function App() {
         <button className={`nav-item ${activeTab === 'mapping' ? 'active' : ''}`} onClick={() => setActiveTab('mapping')}>
           <Icon name="paths" />
           <span>Game Paths</span>
+        </button>
+        <button className={`nav-item ${activeTab === 'prefixes' ? 'active' : ''}`} onClick={() => { setActiveTab('prefixes'); loadPrefixes(); }}>
+          <Icon name="folder" />
+          <span>Prefixes</span>
         </button>
         <button className={`nav-item ${activeTab === 'sync' ? 'active' : ''}`} onClick={() => setActiveTab('sync')}>
           <Icon name="sync" />
@@ -675,6 +778,10 @@ export default function App() {
                       </div>
                     )}
                     <div className="game-actions">
+                      <button className="btn btn-primary" onClick={() => handleLaunch(game)} disabled={launchingGameId !== null}>
+                        <Icon name="play" size={14} />
+                        {launchingGameId === game.id ? 'Launching...' : 'Launch'}
+                      </button>
                       <button className="btn btn-secondary" onClick={() => handleFetchArt(game)}>Auto Art</button>
                       <button className="btn btn-secondary" onClick={() => handleSetCustomArt(game)}>Set Art</button>
                       <button className="btn btn-secondary" onClick={() => loadHLTB(game.name)} disabled={!!hltbCache[game.name] || !!hltbLoading[game.name]}>
@@ -754,6 +861,9 @@ export default function App() {
                         <strong>{g.name}</strong>
                         <div className="path-sub">{g.linPath || g.winPath || 'No path set'}</div>
                       </div>
+                      <button className="btn btn-secondary btn-sm" onClick={() => handleLaunch(g)} disabled={launchingGameId !== null}>
+                        <Icon name="play" size={14} />{launchingGameId === g.id ? 'Launching...' : 'Launch'}
+                      </button>
                       <button className="btn btn-secondary btn-sm" onClick={() => pendingRemoveId === g.id ? handleRemoveGame(g) : setPendingRemoveId(g.id)}>
                         {pendingRemoveId === g.id ? 'Confirm?' : 'Remove'}
                       </button>
@@ -763,6 +873,86 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'prefixes' && (
+          <div>
+            <div className="section-header">
+              <div>
+                <h2>Prefix &amp; Runtime Manager</h2>
+                <p className="text-muted">Wine, Proton, Heroic, and Lutris runtimes detected on this device.</p>
+              </div>
+              <button className="btn btn-secondary" onClick={loadPrefixes} disabled={isLoadingPrefixes}>
+                <Icon name="refresh" />
+                {isLoadingPrefixes ? 'Scanning...' : 'Rescan'}
+              </button>
+            </div>
+
+            <div className="card">
+              <h3 className="card-title"><Icon name="add" />Create Wine Prefix</h3>
+              <div className="form-group">
+                <label htmlFor="new-prefix-path">Prefix path</label>
+                <input
+                  id="new-prefix-path"
+                  type="text"
+                  value={newPrefixPath}
+                  onChange={e => setNewPrefixPath(e.target.value)}
+                  placeholder="~/.local/share/wineprefixes/MyGame"
+                />
+              </div>
+              <button className="btn btn-primary" onClick={handleCreatePrefix} disabled={!newPrefixPath.trim()}>
+                <Icon name="check" />Create Prefix
+              </button>
+            </div>
+
+            <div className="card">
+              <h3 className="card-title"><Icon name="folder" />Detected Runtimes</h3>
+              {!prefixSummary ? (
+                <div className="empty-state">
+                  <Icon name="folder" size={28} />
+                  <p>{isLoadingPrefixes ? 'Scanning runtimes...' : 'Run a scan to discover installed runtimes.'}</p>
+                  {!isLoadingPrefixes && <button className="btn btn-secondary" onClick={loadPrefixes}>Scan now</button>}
+                </div>
+              ) : (
+                prefixGroups.map(group => (
+                  <div className="prefix-group" key={group.label}>
+                    <h4 className="section-subtitle">
+                      {group.label} <span className="badge">{group.entries.length}</span>
+                    </h4>
+                    {group.entries.length === 0 ? (
+                      <p className="text-muted text-sm">No {group.label} runtimes found.</p>
+                    ) : (
+                      <div className="path-list">
+                        {group.entries.map(entry => (
+                          <div className="path-row" key={entry.path}>
+                            <div className="path-main">
+                              <strong>{entry.name}</strong>
+                              <div className="path-sub">
+                                {entry.path}
+                                {entry.version ? ` · ${entry.version}` : ''}
+                                {typeof entry.sizeBytes === 'number' ? ` · ${formatBytes(entry.sizeBytes)}` : ''}
+                              </div>
+                            </div>
+                            {group.canManage && (
+                              <div className="prefix-actions">
+                                <button className="btn btn-secondary btn-sm" onClick={() => handleBackupPrefix(entry.path)}>Backup</button>
+                                <button className="btn btn-secondary btn-sm btn-danger-full" onClick={() => handleDeletePrefix(entry.path)}>
+                                  {pendingPrefixDelete === entry.path ? 'Confirm delete' : 'Delete'}
+                                </button>
+                                {pendingPrefixDelete === entry.path && (
+                                  <button className="btn btn-secondary btn-sm" onClick={() => setPendingPrefixDelete(null)}>Cancel</button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))
               )}
             </div>
           </div>
@@ -855,7 +1045,7 @@ export default function App() {
         )}
         <ConflictModal conflict={conflicts.find((c) => !c.resolution) ?? null} localVersion={saveVersions[1]} remoteVersion={saveVersions[0]} open={showConflictModal} onClose={() => setShowConflictModal(false)} onResolve={async (resolution) => { const conflict = conflicts.find((c) => !c.resolution); if (conflict) { const res = await window.electronAPI.resolveConflict(conflict.id, resolution); if (res?.success) { setConflicts((prev) => prev.map((c) => c.id === conflict.id ? { ...c, resolution, resolvedAt: new Date().toISOString() } : c)); setShowConflictModal(false); showToast('Conflict resolved', 'success'); } else showToast(res?.message || 'Failed to resolve conflict', 'error'); } }} />
         {activeTab === 'bigpicture' && (
-          <BigPicture games={games} onLaunch={(game) => showToast(`Launch requested: ${game.name}`, 'info')} />
+          <BigPicture games={games} onLaunch={handleLaunch} />
         )}
         {activeTab === 'hltb' && (
           <HLTBView games={games} cache={hltbCache} loading={hltbLoading} onLoad={loadHLTB} />
