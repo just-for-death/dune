@@ -246,10 +246,12 @@
   <symbol id="i-log-out" viewBox="0 0 24 24"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></symbol>
 </svg>
 
-<div class="login" id="login">
+<!-- DUN-051: modal sign-in. While open, the header, outage banner and main
+     content are `inert`; a keydown trap keeps Tab inside as a fallback. -->
+<div class="login" id="login" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-describedby="login-desc">
   <div class="login-card">
-    <h1><svg class="icon icon-lg" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg>Dune</h1>
-    <p>Game save sync server. Paste a server API key to continue.</p>
+    <h1 id="login-title"><svg class="icon icon-lg" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg>Dune</h1>
+    <p id="login-desc">Game save sync server. Paste a server API key to continue.</p>
     <label for="login-key">Server API key</label>
     <input id="login-key" type="password" placeholder="x-api-key" autocomplete="off" />
     <div class="err" id="login-err" role="alert"></div>
@@ -257,7 +259,7 @@
   </div>
 </div>
 
-<header class="topbar">
+<header class="topbar" id="topbar">
   <div class="brand">
     <span class="brand-mark" aria-hidden="true"></span>
     <span>Dune</span>
@@ -345,6 +347,9 @@
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-gamepad-2"></use></svg>Tracked games
         <button class="btn btn-ghost btn-sm push" id="sync" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh-cw"></use></svg>Run local sync</button>
       </h2>
+      <!-- DUN-052: POST /api/local-sync and DELETE /api/saves are admin-only. -->
+      <p class="card-desc" id="sync-admin-note" hidden>Only admins can run a local sync.</p>
+      <p class="card-desc" id="delete-admin-note" hidden>Only admins can delete saves.</p>
       <div class="table-wrap">
         <table>
           <caption class="sr-only">Tracked games with status, last sync, file and version counts</caption>
@@ -499,6 +504,11 @@
   var outageRetry = document.getElementById('outage-retry');
   var settingsErr = document.getElementById('settings-err');
   var outageActive = false;
+  var topbarEl = document.getElementById('topbar');
+  var loginConnect = document.getElementById('login-connect');
+  var syncBtn = document.getElementById('sync');
+  /** null until /api/users/me has answered; then true/false. */
+  var viewerIsAdmin = null;
 
   // User-facing copy. REST errors are `{ error, code }`; `code` is for
   // branching only and is never shown.
@@ -688,7 +698,7 @@
     var dirOnly = checks.database && checks.database.ok === true && checks.dataDir && checks.dataDir.ok === false;
     var first = !outageActive;
     outageActive = true;
-    loginOverlay.style.display = 'none';
+    closeLogin(); // DUN-099 wins over the login dialog, and nothing stays inert
     mainEl.hidden = true;
     tabsEl.hidden = true;
     topActions.hidden = true;
@@ -743,10 +753,42 @@
     return e.message || MSG.generic;
   }
 
-  function openLogin(message) {
-    loginOverlay.style.display = 'flex';
-    if (message) loginErr.textContent = message;
+  // DUN-051: everything behind the dialog. The toaster stays live so status
+  // announcements still reach screen readers.
+  function setBackgroundInert(on) {
+    [topbarEl, outageEl, mainEl].forEach(function (el) {
+      if (on) el.setAttribute('inert', '');
+      else el.removeAttribute('inert');
+    });
   }
+  function loginOpen() { return loginOverlay.style.display === 'flex'; }
+  function openLogin(message) {
+    if (outageActive) return; // the outage banner overrides the login gate
+    loginOverlay.style.display = 'flex';
+    setBackgroundInert(true);
+    loginErr.textContent = message || '';
+    loginKey.focus();
+  }
+  function closeLogin() {
+    loginOverlay.style.display = 'none';
+    setBackgroundInert(false);
+  }
+  function focusFirstTab() {
+    for (var i = 0; i < TABS.length; i++) {
+      var b = tabButton(TABS[i]);
+      if (b && !b.hidden) { b.focus(); return; }
+    }
+  }
+  // Fallback focus trap for browsers without `inert`.
+  loginOverlay.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Tab' || !loginOpen()) return;
+    var items = [loginKey, loginConnect].filter(function (el) { return !el.disabled; });
+    if (!items.length) { ev.preventDefault(); return; }
+    var first = items[0], last = items[items.length - 1];
+    var at = items.indexOf(document.activeElement);
+    if (ev.shiftKey && (at <= 0)) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && (at === -1 || at === items.length - 1)) { ev.preventDefault(); first.focus(); }
+  });
 
   async function tryAutoLogin() {
     var k = (localStorage.getItem('dune_api_key') || '').trim();
@@ -759,7 +801,7 @@
       return;
     }
     keyInput.value = k;
-    loginOverlay.style.display = 'none';
+    closeLogin();
     refresh();
   }
 
@@ -774,7 +816,7 @@
   async function connect(key) {
     loginErr.textContent = '';
     if (!key) { loginErr.textContent = 'Enter a key.'; return; }
-    var btn = document.getElementById('login-connect');
+    var btn = loginConnect;
     busy(btn, true);
     try {
       await verifyKey(key);
@@ -787,7 +829,8 @@
     busy(btn, false);
     localStorage.setItem('dune_api_key', key);
     keyInput.value = key;
-    loginOverlay.style.display = 'none';
+    closeLogin();
+    focusFirstTab();
     refresh();
   }
 
@@ -824,6 +867,7 @@
       ]);
       var me = head[0], health = head[1], saves = head[2];
       var isAdmin = !!(me && me.user && me.user.role === 'admin');
+      viewerIsAdmin = me && me.user ? isAdmin : null;
 
       var ownerNames = {};
       if (isAdmin) {
@@ -862,8 +906,9 @@
           + '<td class="num">' + files.length + '</td>'
           + '<td class="num">' + versions.length + '</td>'
           + '<td class="muted">' + esc(ownerLabel) + '</td>'
-          + '<td><button class="btn btn-quiet btn-sm" data-delgameid="' + esc(String(g.id)) + '"'
-          + ' data-delgamename="' + esc(g.name) + '" aria-label="Delete ' + esc(g.name) + '">'
+          + '<td><button class="btn btn-quiet btn-sm" type="button" data-delgameid="' + esc(String(g.id)) + '"'
+          + ' data-delgamename="' + esc(g.name) + '" aria-label="Delete ' + esc(g.name) + '"'
+          + (viewerIsAdmin === false ? ' disabled aria-describedby="delete-admin-note"' : '') + '>'
           + icon('trash-2') + 'Delete</button></td>'
           + '</tr>';
       });
@@ -871,6 +916,7 @@
       document.getElementById('games').innerHTML = rows
         || '<tr><td colspan="7" class="table-empty">' + icon('gamepad-2', 'icon-lg')
           + 'No games tracked yet. Push saves from the desktop app, or run a local sync once sources are configured.</td></tr>';
+      renderGameAdmin();
 
       setTabVisible('users', isAdmin);
       // Settings is visible to everyone for the SteamGridDB key status; the
@@ -892,9 +938,36 @@
   }
 
   // ── Games ─────────────────────────────────────────────────────────────────
+  // DUN-052: members see sync/delete disabled with a visible reason, the same
+  // pattern as the SteamGridDB card. Unknown role (null) leaves them enabled;
+  // a 403 then shows the admin message and flips to the member view.
+  function renderGameAdmin() {
+    var member = viewerIsAdmin === false;
+    document.getElementById('sync-admin-note').hidden = !member;
+    document.getElementById('delete-admin-note').hidden = !member;
+    if (!syncBtn.classList.contains('is-busy')) syncBtn.disabled = member;
+    if (member) syncBtn.setAttribute('aria-describedby', 'sync-admin-note');
+    else syncBtn.removeAttribute('aria-describedby');
+    var dels = document.getElementById('games').querySelectorAll
+      ? document.getElementById('games').querySelectorAll('[data-delgameid]') : [];
+    Array.prototype.forEach.call(dels, function (b) {
+      b.disabled = member;
+      if (member) b.setAttribute('aria-describedby', 'delete-admin-note');
+      else b.removeAttribute('aria-describedby');
+    });
+  }
+  function adminFailure(e) {
+    if (e && e.status === 403 && e.code !== 'INVALID_API_KEY') {
+      viewerIsAdmin = false;
+      sgdb.admin = false;
+      renderGameAdmin();
+      renderSgdb();
+    }
+  }
+
   document.getElementById('games').addEventListener('click', async function (ev) {
     var t = ev.target.closest ? ev.target.closest('[data-delgameid]') : null;
-    if (!t) return;
+    if (!t || t.disabled) return;
     var delId = t.getAttribute('data-delgameid');
     var delName = t.getAttribute('data-delgamename');
     if (!window.confirm('Delete game "' + (delName || delId) + '" and all its saves?')) return;
@@ -903,7 +976,7 @@
       await request('/api/saves?id=' + encodeURIComponent(delId), { method: 'DELETE' });
       toast('ok', 'Deleted ' + (delName || delId));
       refresh();
-    } catch (e) { fail(e); }
+    } catch (e) { fail(e); adminFailure(e); }
   });
 
   async function runLocalSync(btn) {
@@ -915,11 +988,16 @@
       await refresh();
     } catch (e) {
       fail(e);
+      adminFailure(e);
     } finally {
       busy(btn, false);
+      renderGameAdmin();
     }
   }
-  document.getElementById('sync').addEventListener('click', function (ev) { runLocalSync(ev.currentTarget); });
+  syncBtn.addEventListener('click', function (ev) {
+    if (viewerIsAdmin === false) return;
+    runLocalSync(ev.currentTarget);
+  });
 
   // ── Users (admin only) ────────────────────────────────────────────────────
   async function loadUsers() {
