@@ -87,6 +87,57 @@ function openSchema(file: string): DatabaseSync {
     // Safe only after ensureOwnerColumn: pre-multi-user DBs lack the column
     // until the ALTER runs.
     handle.exec('CREATE INDEX IF NOT EXISTS idx_games_owner ON games(ownerId);');
+
+    // Save versioning (Arcane-inspired)
+    handle.exec(`
+      CREATE TABLE IF NOT EXISTS save_versions (
+        id TEXT PRIMARY KEY,
+        gameId REAL NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        ownerId TEXT REFERENCES users(id) ON DELETE SET NULL,
+        deviceId TEXT,
+        createdAt TEXT NOT NULL,
+        sizeBytes REAL NOT NULL DEFAULT 0,
+        fileCount INTEGER NOT NULL DEFAULT 0,
+        parentVersionId TEXT,
+        changeSummary TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'complete'
+      );
+      CREATE TABLE IF NOT EXISTS save_file_snapshots (
+        id TEXT PRIMARY KEY,
+        versionId TEXT NOT NULL REFERENCES save_versions(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        size REAL NOT NULL DEFAULT 0,
+        hash TEXT NOT NULL,
+        mtime TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS conflict_records (
+        id TEXT PRIMARY KEY,
+        gameId REAL NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        localVersionId TEXT NOT NULL,
+        remoteVersionId TEXT NOT NULL,
+        detectedAt TEXT NOT NULL,
+        resolution TEXT,
+        resolvedAt TEXT
+      );
+      CREATE TABLE IF NOT EXISTS backup_profiles (
+        gameId REAL PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+        includeGlobs TEXT NOT NULL DEFAULT '[]',
+        excludeGlobs TEXT NOT NULL DEFAULT '[]',
+        autoExcludeCache INTEGER NOT NULL DEFAULT 1,
+        maxFileSizeMB REAL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY,
+        ownerId TEXT REFERENCES users(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        lastSeen TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_save_versions_game ON save_versions(gameId);
+      CREATE INDEX IF NOT EXISTS idx_save_snapshots_version ON save_file_snapshots(versionId);
+      CREATE INDEX IF NOT EXISTS idx_conflicts_game ON conflict_records(gameId);
+    `);
     return handle;
   } catch (err) {
     handle.close();

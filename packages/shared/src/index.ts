@@ -240,6 +240,64 @@ export interface UploadHeaders {
 }
 
 // Electron IPC API
+// Save versioning (Arcane-inspired)
+export interface SaveFileSnapshot {
+  versionId: string;
+  path: string;
+  size: number;
+  hash: string;
+  mtime: string;
+}
+
+export interface SaveVersion {
+  id: string;
+  gameId: number;
+  ownerId?: string;
+  deviceId?: string;
+  createdAt: string;
+  sizeBytes: number;
+  fileCount: number;
+  parentVersionId?: string;
+  changeSummary: string;
+  status: 'complete' | 'partial' | 'restored';
+}
+
+export interface ConflictRecord {
+  id: string;
+  gameId: number;
+  localVersionId: string;
+  remoteVersionId: string;
+  detectedAt: string;
+  resolution?: 'local' | 'remote' | 'both' | 'later';
+  resolvedAt?: string;
+}
+
+export interface BackupProfile {
+  gameId: number;
+  includeGlobs: string[];
+  excludeGlobs: string[];
+  autoExcludeCache: boolean;
+  maxFileSizeMB?: number;
+  updatedAt: string;
+}
+
+export interface Device {
+  id: string;
+  ownerId?: string;
+  name: string;
+  platform: string;
+  lastSeen: string;
+}
+
+export interface StorageEntry {
+  gameId: number;
+  installBytes: number;
+  saveBytes: number;
+  cacheBytes: number;
+  lastPlayed: string | null;
+  drive: string;
+}
+
 export interface ElectronAPI {
   // Config
   loadConfig: () => Promise<{ games: Game[]; cloud: Cloud; settings: Settings } | null>;
