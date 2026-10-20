@@ -104,6 +104,13 @@ test.beforeEach(async ({ page }) => {
       createPrefix: async () => ({ success: true, message: 'Prefix created' }),
       deletePrefix: async () => ({ success: true, message: 'Prefix deleted' }),
       backupPrefix: async () => ({ success: true, message: 'Prefix backed up', backupPath: '/tmp/prefix.backup' }),
+      getSaveVersions: async () => ({ success: true, versions: [] }),
+      getStorage: async () => ({ success: true, entry: null }),
+      getBackupProfile: async () => ({ success: true, profile: null }),
+      setBackupProfile: async (profile: Record<string, unknown>) => ({ success: true, profile }),
+      getConflicts: async () => ({ success: true, conflicts: [] }),
+      resolveConflict: async () => ({ success: true }),
+      restoreSaveVersion: async () => ({ success: true, message: 'Restored' }),
     };
   });
 });
@@ -155,6 +162,27 @@ test('settings exposes the server API key field', async ({ page }) => {
   await expect(keyInput).toBeVisible();
   await keyInput.fill('test-key-123');
   await expect(keyInput).toHaveValue('test-key-123');
+});
+
+test('save manager switches between tracked games', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('#server-url').fill('http://localhost:3030');
+
+  await page.getByRole('button', { name: 'Game Paths', exact: true }).click();
+  for (const name of ['Alpha', 'Beta']) {
+    await page.locator('#new-game-title').fill(name);
+    await page.locator('#new-game-lin').fill(`/tmp/${name.toLowerCase()}.sh`);
+    await page.getByRole('button', { name: 'Save Mapping' }).click();
+    await expect(page.locator('.toast.toast-success').filter({ hasText: `Added ${name}` })).toBeVisible();
+  }
+
+  await page.getByRole('button', { name: 'Saves', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Save Management' })).toBeVisible();
+  const picker = page.locator('#save-game-select');
+  await expect(picker).toHaveValue('Alpha');
+  await picker.selectOption('Beta');
+  await expect(picker).toHaveValue('Beta');
 });
 
 test('achievements show rarity tiers and detail', async ({ page }) => {
