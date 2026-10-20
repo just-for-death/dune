@@ -87,6 +87,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('playtime:recent', limit),
   getTotalPlaytime: () => 
     ipcRenderer.invoke('playtime:total'),
+
+  getPlaytimeGraphData: (range: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) =>
+    ipcRenderer.invoke('playtime:graph', range, customRange),
+  getPlaytimeComparison: (range: 'week' | 'month' | 'year') =>
+    ipcRenderer.invoke('playtime:comparison', range),
+  exportPlaytimeData: (format: 'csv' | 'json', range?: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) =>
+    ipcRenderer.invoke('playtime:export', format, range, customRange),
   
   // Achievements
   getAchievements: (game: string) => 

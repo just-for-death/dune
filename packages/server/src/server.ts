@@ -25,7 +25,7 @@ if (process.versions.node) {
   }
 }
 
-import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from './services/playtime.js';
+import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime, getPlaytimeGraphData, getPlaytimeComparison, exportPlaytimeData } from './services/playtime.js';
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks } from './services/achievements.js';
 import { getHLTBTimes } from './services/hltb.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels } from './services/ollama.js';
@@ -843,6 +843,39 @@ app.get('/api/storage', authMiddleware, (req: AuthenticatedRequest, res) => {
       ...scanStorage(root, row.lastSync === 'Never' ? null : row.lastSync),
     };
     res.json({ success: true, entry, freeBytes: getDriveFreeBytes(root) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+
+app.get('/api/playtime/graph', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const range = (req.query.range?.toString() || 'all') as 'all' | 'year' | 'month' | 'week' | 'custom';
+    const customRange = req.query.start && req.query.end ? { start: req.query.start.toString(), end: req.query.end.toString() } : undefined;
+    res.json(getPlaytimeGraphData(range, customRange, ownerScope(req)));
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.get('/api/playtime/comparison', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const range = (req.query.range?.toString() || 'week') as 'week' | 'month' | 'year';
+    res.json(getPlaytimeComparison(range, ownerScope(req)));
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+app.get('/api/playtime/export', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const format = (req.query.format?.toString() || 'json') as 'csv' | 'json';
+    const range = (req.query.range?.toString() || 'all') as 'all' | 'year' | 'month' | 'week' | 'custom';
+    const customRange = req.query.start && req.query.end ? { start: req.query.start.toString(), end: req.query.end.toString() } : undefined;
+    const result = exportPlaytimeData(format, range, customRange, ownerScope(req));
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }

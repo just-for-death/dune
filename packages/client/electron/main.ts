@@ -964,6 +964,48 @@ ipcMain.handle('playtime:total', async () => {
     return { success: false, message: e.message, totalMinutes: 0 }
   }
 })
+ipcMain.handle('playtime:graph', async (_event, range, customRange) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', data: { line: [], bar: [], pie: [], heatmap: [], area: [] } }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const params = new URLSearchParams({ range: range || 'all' })
+    if (customRange?.start) params.set('start', customRange.start)
+    if (customRange?.end) params.set('end', customRange.end)
+    const res = await axios.get(`${cleanUrl}/api/playtime/graph?${params.toString()}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, data: { line: [], bar: [], pie: [], heatmap: [], area: [] } }
+  }
+})
+
+ipcMain.handle('playtime:comparison', async (_event, range) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const res = await axios.get(`${cleanUrl}/api/playtime/comparison?range=${encodeURIComponent(range || 'week')}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('playtime:export', async (_event, format, range, customRange) => {
+  const cloud = store.get('cloud')
+  if (!cloud?.url) return { success: false, message: 'No Dune Server configured', data: '' }
+  try {
+    const cleanUrl = normalizeUrl(cloud.url)
+    const params = new URLSearchParams({ format: format || 'json', range: range || 'all' })
+    if (customRange?.start) params.set('start', customRange.start)
+    if (customRange?.end) params.set('end', customRange.end)
+    const res = await axios.get(`${cleanUrl}/api/playtime/export?${params.toString()}`, { headers: serverHeaders() })
+    return res.data
+  } catch (e: any) {
+    return { success: false, message: e.message, data: '' }
+  }
+})
+
 
 // Achievements
 ipcMain.handle('achievements:get', async (_event, game) => {

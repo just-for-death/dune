@@ -357,7 +357,7 @@ export interface ElectronAPI {
   getAchievementDetail: (game: string) => Promise<{ success: boolean; achievements: AchievementDetail[]; message?: string }>;
   
   // HLTB
-  getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string }>;
+  getHLTBTimes: (gameName: string) => Promise<{ success: boolean; times?: HLTBTimes; message?: string; stale?: boolean }>;
 
   // Launcher
   launchGame: (game: Game, options?: Record<string, unknown>) => Promise<{ success: boolean; message: string; pid?: number }>;

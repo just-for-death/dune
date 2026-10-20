@@ -5,6 +5,8 @@ import type {
   Toast,
   HLTBTimes,
   PlaytimeSummary,
+  PlaytimeGraphData,
+  PlaytimeComparison,
   AchievementSummary,
   Game,
   Settings,
@@ -17,6 +19,7 @@ import type {
 } from '@dune/shared';
 import { nextId } from '@dune/shared';
 import { Icon } from './Icon';
+import { PlaytimeCharts } from './components/PlaytimeCharts';
 import { applyTheme, loadThemes, getActiveThemeId, setActiveThemeId } from './theme/manager';
 import { t, availableLocales, type Locale } from './i18n';
 import { SaveVersionTimeline } from './components/saves/SaveVersionTimeline';
@@ -137,6 +140,8 @@ export default function App() {
   // Playtime state
   const [playtimeSummary, setPlaytimeSummary] = useState<PlaytimeSummary[]>([]);
   const [totalPlaytime, setTotalPlaytime] = useState(0);
+  const [playtimeGraph, setPlaytimeGraph] = useState<PlaytimeGraphData | null>(null);
+  const [playtimeComparison, setPlaytimeComparison] = useState<PlaytimeComparison | null>(null);
   const [isLoadingPlaytime, setIsLoadingPlaytime] = useState(false);
 
   // Achievements state
@@ -454,16 +459,41 @@ export default function App() {
     }
     setIsLoadingPlaytime(true);
     try {
-      const [summaryRes, totalRes] = await Promise.all([
+      const [summaryRes, totalRes, graphRes, comparisonRes] = await Promise.all([
         window.electronAPI.getPlaytimeSummary(),
-        window.electronAPI.getTotalPlaytime()
+        window.electronAPI.getTotalPlaytime(),
+        window.electronAPI.getPlaytimeGraphData('month'),
+        window.electronAPI.getPlaytimeComparison('month')
       ]);
       if (summaryRes.success) setPlaytimeSummary(summaryRes.summary);
       if (totalRes.success) setTotalPlaytime(totalRes.totalMinutes);
+      if (graphRes.success) setPlaytimeGraph(graphRes.data);
+      if (comparisonRes.success) setPlaytimeComparison(comparisonRes.comparison);
     } catch {
       showToast('Failed to load playtime', 'error');
     }
     setIsLoadingPlaytime(false);
+  };
+
+
+  const handleExportPlaytime = async () => {
+    try {
+      const res = await window.electronAPI.exportPlaytimeData('csv', 'month');
+      if (!res.success || !res.data) {
+        showToast(res.message || 'Playtime export failed', 'error');
+        return;
+      }
+      const blob = new Blob([res.data], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'dune-playtime.csv';
+      link.click();
+      URL.revokeObjectURL(url);
+      showToast('Playtime exported', 'success');
+    } catch {
+      showToast('Playtime export failed', 'error');
+    }
   };
 
   const loadAchievements = async () => {
@@ -848,6 +878,12 @@ export default function App() {
                 <div className="stat-value">{playtimeSummary.length}</div>
                 <div className="stat-label">Games Tracked</div>
               </div>
+            </div>
+            <div className="card">
+              <div className="btn-row" style={{ justifyContent: 'flex-end', marginBottom: '12px' }}>
+                <button className="btn btn-secondary btn-sm" onClick={handleExportPlaytime}><Icon name="export" />Export CSV</button>
+              </div>
+              <PlaytimeCharts data={playtimeGraph} comparison={playtimeComparison} />
             </div>
             <div className="card">
               {playtimeSummary.length === 0 ? (
