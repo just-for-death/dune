@@ -155,3 +155,126 @@ export function getVersionDiff(fromVersionId: string, toVersionId: string): {
 
   return { added, removed, changed, unchanged };
 }
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { getGameRoot } from '../utils/path.js';
+import { getBackupProfile, filterBackupFiles } from './backupProfiles.js';
+
+function hashFile(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+function walkFiles(root: string): Array<{ path: string; size: number; hash: string; mtime: string }> {
+  const files: Array<{ path: string; size: number; hash: string; mtime: string }> = [];
+  if (!fs.existsSync(root)) return files;
+
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      const rel = path.relative(root, full);
+      if (rel === '.versions' || rel.startsWith(`.versions${path.sep}`)) continue;
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else {
+        try {
+          const stat = fs.statSync(full);
+          files.push({
+            path: rel.replace(/\\/g, '/'),
+            size: stat.size,
+            hash: hashFile(full),
+            mtime: stat.mtime.toISOString(),
+          });
+        } catch {
+          // Ignore unreadable files.
+        }
+      }
+    }
+  }
+  return files;
+}
+
+export function createVersionFromDirectory(input: {
+  gameId: number;
+  gameName: string;
+  ownerId?: string;
+  deviceId?: string;
+  changeSummary?: string;
+  parentVersionId?: string;
+  profileGameId?: number;
+}): SaveVersion {
+  const gameRoot = getGameRoot(input.gameName, input.ownerId);
+  const profile = getBackupProfile(input.profileGameId ?? input.gameId);
+  const allFiles = walkFiles(gameRoot);
+  const { included } = filterBackupFiles(allFiles.map((file) => ({ path: file.path, size: file.size })), profile);
+  const includedSet = new Set(included.map((file) => file.path));
+  const files = allFiles.filter((file) => includedSet.has(file.path));
+
+  // Store a restorable snapshot directory, matching the DB version id.
+  const version = createSaveVersion({
+    gameId: input.gameId,
+    ownerId: input.ownerId,
+    deviceId: input.deviceId,
+    files,
+    changeSummary: input.changeSummary ?? 'directory snapshot',
+    parentVersionId: input.parentVersionId,
+  });
+
+  const snapshotDir = path.join(gameRoot, '.versions', version.id);
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  for (const file of files) {
+    const src = path.join(gameRoot, file.path);
+    const dest = path.join(snapshotDir, file.path);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+  }
+
+  return version;
+}
+
+export function restoreVersion(gameName: string, versionId: string, ownerId?: string): { success: boolean; message: string; restoredFiles: number } {
+  const detail = getSaveVersion(versionId);
+  if (!detail) return { success: false, message: 'Version not found', restoredFiles: 0 };
+
+  const gameRoot = getGameRoot(gameName, ownerId);
+  const snapshotDir = path.join(gameRoot, '.versions', versionId);
+  if (!fs.existsSync(snapshotDir)) {
+    return { success: false, message: 'Version snapshot files not found', restoredFiles: 0 };
+  }
+
+  let restoredFiles = 0;
+  const stack: string[] = [snapshotDir];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else {
+        const rel = path.relative(snapshotDir, full);
+        const dest = path.join(gameRoot, rel);
+        const resolvedDest = path.resolve(dest);
+        const resolvedRoot = path.resolve(gameRoot);
+        if (resolvedDest !== resolvedRoot && !resolvedDest.startsWith(resolvedRoot + path.sep)) {
+          return { success: false, message: 'Unsafe restore path detected', restoredFiles };
+        }
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(full, dest);
+        restoredFiles += 1;
+      }
+    }
+  }
+
+  return { success: true, message: 'Version restored', restoredFiles };
+}

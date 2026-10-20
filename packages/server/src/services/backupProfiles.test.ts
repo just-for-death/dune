@@ -1,0 +1,33 @@
+import { describe, it, expect } from 'vitest';
+import { matchesGlob, filterBackupFiles, calculateBackupSizes, DEFAULT_EXCLUDE_GLOBS } from './backupProfiles.js';
+
+describe('backupProfiles', () => {
+  it('matches common exclusion globs', () => {
+    expect(matchesGlob('foo.log', '**/*.log')).toBe(true);
+    expect(matchesGlob('ShaderCache/file.bin', '**/ShaderCache/**')).toBe(true);
+    expect(matchesGlob('saves/slot1.sav', '**/*.sav')).toBe(true);
+  });
+
+  it('filters and calculates sizes', () => {
+    const files = [
+      { path: 'saves/slot1.sav', size: 100 },
+      { path: 'cache/shader.bin', size: 200 },
+      { path: 'logs/game.log', size: 50 },
+    ];
+    const profile = {
+      gameId: 1,
+      includeGlobs: ['**/*'],
+      excludeGlobs: DEFAULT_EXCLUDE_GLOBS,
+      autoExcludeCache: true,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const result = filterBackupFiles(files, profile);
+    expect(result.included).toHaveLength(1);
+    expect(result.excluded).toHaveLength(2);
+
+    const sizes = calculateBackupSizes(files, profile);
+    expect(sizes.backupBytes).toBe(100);
+    expect(sizes.excludedBytes).toBe(250);
+  });
+});
