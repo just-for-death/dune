@@ -137,6 +137,8 @@ export const en = {
   // hltb
   'hltb.cached': 'Cached',
   'hltb.completionist': 'Completionist',
+  'hltb.disabled': 'HowLongToBeat is turned off in Settings.',
+  'hltb.disabledHint': 'An admin can turn it on under Settings → Privacy.',
   'hltb.load': 'Load',
   'hltb.loadLabel': 'Load times for {game}',
   'hltb.loaded': 'Loaded',
@@ -220,6 +222,13 @@ export const en = {
   'privacy.artworkOff': 'Off: Dune never contacts SteamGridDB, even if a key is saved.',
   'privacy.artworkOn': 'On: Dune contacts SteamGridDB to find covers, using your key.',
   'privacy.artworkDisabled': 'Artwork downloads are off. Turn on “Download game artwork (SteamGridDB)” under Settings → Privacy to fetch covers.',
+  'privacy.hltbLabel': 'Look up completion times (HowLongToBeat)',
+  'privacy.hltbOff': 'Off: the Dune server never contacts HowLongToBeat. This applies to everyone on this server.',
+  'privacy.hltbOn': 'On: the Dune server sends game names to HowLongToBeat to look up completion times. This applies to everyone on this server.',
+  'privacy.artworkServerOff': 'Off: the Dune server never contacts SteamGridDB. This applies to everyone on this server.',
+  'privacy.artworkServerOn': 'On: the Dune server contacts SteamGridDB to find covers, using its key. This applies to everyone on this server.',
+  'privacy.flagSaveAdminOnly': 'Couldn’t change this setting: only an admin can change it on this Dune server. The previous value is kept.',
+  'privacy.flagSaveFailed': 'Couldn’t save this setting on the Dune server. The previous value is kept; try again.',
   // paths
   'paths.install': 'Install folder',
   'paths.noSave': 'No save folder found',

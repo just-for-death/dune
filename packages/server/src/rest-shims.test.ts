@@ -203,7 +203,9 @@ describe('REST shims happy paths', () => {
   });
 
   it('hltb returns offline-shaped failure hermetically', async () => {
+    await api(request(app).post('/api/settings')).send({ hltbEnabled: true });
     const res = await api(request(app).get('/api/hltb/NopeNope'));
+    expect(res.status).toBe(200);
     expect(res.body.success).toBe(false);
   });
 

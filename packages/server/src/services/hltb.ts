@@ -9,14 +9,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHltbProvider, hltbCacheKey, type CacheEntry, type HltbTimes, type ProviderCache } from '@dune/providers';
 import { database } from '../db/index.js';
+import { ApiError } from '../utils/apiError.js';
 import { dataDir } from '../utils/path.js';
 import { logger, redactText } from '../middleware/logging.js';
 import { axiosTransport } from './providerTransport.js';
 
 export type HLTBTimes = HltbTimes;
 
-/** Typed failure (DUN-105): no match vs. unreachable/unreadable; PROVIDER_DISABLED when Settings.hltbEnabled is not true. */
-export type HLTBFailureCode = 'HLTB_NOT_FOUND' | 'HLTB_UNAVAILABLE' | 'PROVIDER_DISABLED';
+/** Typed failure (DUN-105): no match vs. unreachable/unreadable. Disabled is not a lookup result: 403 PROVIDER_DISABLED. */
+export type HLTBFailureCode = 'HLTB_NOT_FOUND' | 'HLTB_UNAVAILABLE';
 
 export interface HLTBResponse {
   success: boolean;
@@ -82,9 +83,8 @@ export async function getHLTBTimes(gameName: string): Promise<HLTBResponse> {
       ? { success: true, times: r.value, stale: true, message: 'Using cached HowLongToBeat data' }
       : { success: true, times: r.value };
   }
-  if (r.code === 'PROVIDER_DISABLED') {
-    return { success: false, code: 'PROVIDER_DISABLED', message: 'HowLongToBeat lookups are disabled (Settings.hltbEnabled)' };
-  }
+  // Lead rule: every turned-off provider answers 403 { error, code: 'PROVIDER_DISABLED' } via ApiError.
+  if (r.code === 'PROVIDER_DISABLED') throw new ApiError(403, 'PROVIDER_DISABLED', 'HowLongToBeat lookups are disabled (Settings.hltbEnabled)');
   return r.code === 'PROVIDER_NOT_FOUND'
     ? { success: false, code: 'HLTB_NOT_FOUND', message: 'Game not found on HowLongToBeat' }
     : { success: false, code: 'HLTB_UNAVAILABLE', message: 'HowLongToBeat is unavailable' };

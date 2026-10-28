@@ -7,15 +7,28 @@ interface Props {
   cache: Record<string, HLTBTimes>;
   loading: Record<string, boolean>;
   onLoad: (gameName: string) => void;
+  /**
+   * The server answered PROVIDER_DISABLED (Settings.hltbEnabled is off). Shown
+   * as a calm status, not an error; Load stays available so a retry after an
+   * admin turns it on just works.
+   */
+  providerDisabled?: boolean;
 }
 
-export function HLTBView({ games, cache, loading, onLoad }: Props) {
+export function HLTBView({ games, cache, loading, onLoad, providerDisabled }: Props) {
   const { t } = useI18n();
   return (
     <div>
       <div className="section-header">
         <h2>{t('hltb.title')}</h2>
         <p className="text-muted">{t('hltb.subtitle')}</p>
+      </div>
+      <div role="status" aria-live="polite">
+        {providerDisabled && (
+          <div className="card no-server-card">
+            <p className="no-server-text">{t('hltb.disabled')} {t('hltb.disabledHint')}</p>
+          </div>
+        )}
       </div>
       <div className="card">
         <div className="table-wrapper">

@@ -1,5 +1,6 @@
 import { DEFAULT_TRACKERS_ENABLED, type Settings, type TrackersEnabled } from '@dune/shared';
 import { defaultTranslator, type Translator } from '../../i18n';
+import { isProviderDisabled } from '../../services/hltbStatus';
 
 /**
  * DUN-135 privacy helpers for PrivacyToggles.tsx (kept apart so the .tsx
@@ -7,28 +8,27 @@ import { defaultTranslator, type Translator } from '../../i18n';
  */
 
 export type TrackerId = keyof TrackersEnabled;
-export const TRACKER_IDS: readonly TrackerId[] = ['steam', 'retroAchievements', 'gog', 'epic'];
+export const TRACKER_IDS: readonly TrackerId[] = ['steam', 'retroAchievements', 'gog'];
 
 /** Service names are brand names, the same in every language. */
 export const TRACKER_NAMES: Readonly<Record<TrackerId, string>> = {
   steam: 'Steam',
   retroAchievements: 'RetroAchievements',
   gog: 'GOG',
-  epic: 'Epic Games',
 };
 
 export type PrivacySettings = Pick<Settings, 'trackersEnabled' | 'artworkEnabled'>;
 
-export const ARTWORK_DISABLED = 'ARTWORK_DISABLED';
-
-/** True for `{ ok: false, code: 'ARTWORK_DISABLED' }` from game:fetchArt, art:search, art:auto-match. */
+/**
+ * True when an artwork call (game:fetchArt, art:search, art:auto-match) says
+ * artwork is turned off: the server's 403 `{ code: 'PROVIDER_DISABLED' }` or
+ * main's local pre-check with the same code. Same check as HLTB (services/hltbStatus).
+ */
 export function isArtworkDisabled(res: unknown): boolean {
-  return !!res && typeof res === 'object'
-    && (res as { ok?: unknown }).ok === false
-    && (res as { code?: unknown }).code === ARTWORK_DISABLED;
+  return isProviderDisabled(res);
 }
 
-/** Readable message for ARTWORK_DISABLED that points to the artwork switch (English without a translator). */
+/** Readable message for PROVIDER_DISABLED on artwork that points to the artwork switch (English without a translator). */
 export function artworkDisabledMessage(t: Translator = defaultTranslator): string {
   return t('privacy.artworkDisabled');
 }

@@ -582,8 +582,8 @@ describe('DUN-105: HLTB route', () => {
     const settings = await api(request(app).get('/api/settings'));
     expect(settings.body.settings).toMatchObject({ hltbEnabled: false, artworkEnabled: false });
     const off = await api(request(app).get('/api/hltb/Offline%20Game'));
-    expect(off.status).toBe(200);
-    expect(off.body).toMatchObject({ success: false, code: 'PROVIDER_DISABLED' });
+    expect(off.status).toBe(403);
+    expect(off.body).toEqual({ error: 'HowLongToBeat lookups are disabled (Settings.hltbEnabled)', code: 'PROVIDER_DISABLED' });
     expect(getMock).not.toHaveBeenCalled();
     expect(postMock).not.toHaveBeenCalled();
     for (const bad of ['true', 1, null]) {

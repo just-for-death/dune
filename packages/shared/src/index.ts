@@ -99,15 +99,14 @@ export interface Settings {
   hltbEnabled: boolean;
 }
 
-/** Per-tracker opt-in; every field defaults to false. */
+/** Per-tracker opt-in; every field defaults to false. (Epic remote achievements dropped by Lead decision, 2026-10-28.) */
 export interface TrackersEnabled {
   steam: boolean;
   retroAchievements: boolean;
   gog: boolean;
-  epic: boolean;
 }
 
-export const DEFAULT_TRACKERS_ENABLED: TrackersEnabled = { steam: false, retroAchievements: false, gog: false, epic: false };
+export const DEFAULT_TRACKERS_ENABLED: TrackersEnabled = { steam: false, retroAchievements: false, gog: false };
 
 // Local source for dual-boot sync
 export interface LocalSource {
@@ -592,6 +591,8 @@ export interface ElectronAPI {
   removeApiKey: (id: string) => Promise<ServerResult<{ success: boolean; message?: string }>>;
   /** DUN-115: the signed-in user; role gates admin-only UI. */
   getCurrentUser(): Promise<ServerResult<{ id: string; name: string; role: 'admin' | 'member' }>>;
+  getServerProviderFlags(): Promise<ServerResult<{hltbEnabled: boolean; artworkEnabled: boolean}>>;
+  setServerProviderFlags(patch: Partial<{hltbEnabled: boolean; artworkEnabled: boolean}>): Promise<ServerResult<{hltbEnabled: boolean; artworkEnabled: boolean}>>;
   
   // Ollama
   /** DUN-095/057: the server uses its stored endpoint only (admin-only). */

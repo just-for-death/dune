@@ -214,8 +214,10 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         localSources: [],
         remoteServers: [],
         // DUN-135: every tracker and artwork lookup is off by default.
-        trackersEnabled: { steam: false, retroAchievements: false, gog: false, epic: false },
+        trackersEnabled: { steam: false, retroAchievements: false, gog: false },
         artworkEnabled: false,
+        // Server-wide HowLongToBeat opt-in (admin); off by default.
+        hltbEnabled: false,
       } satisfies Settings,
     };
     const calls: { method: string; args: unknown[] }[] = [];
@@ -235,6 +237,7 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
     let serverKey = opts.serverKey ?? 'e2e-key';
     let serverKeyUnreadable = opts.serverKeyUnreadable === true;
     let steamGridKeySet = opts.steamGridKeySet === true;
+    let providerFlags = { hltbEnabled: false, artworkEnabled: false };
     const serverWait = () => new Promise((r) => setTimeout(r, opts.server?.delayMs ?? 0));
     // Shapes and codes as main / the server emit them (net/serverError.ts, middleware/auth.ts, server.ts).
     const noServer = { ok: false as const, code: 'NO_SERVER', message: 'No Dune Server configured' };
@@ -435,6 +438,13 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       },
       // DUN-115: signed-in user; admin so server-wide controls stay enabled (403 fallback still covers srv.admin=false).
       getCurrentUser: async () => ({ ok: true, id: 'u1', name: 'Admin', role: 'admin' }),
+      // Server provider flags (admin-only writes): both off by default; set merges the patch and returns the saved flags.
+      getServerProviderFlags: async () => ({ ok: true, ...providerFlags }),
+      setServerProviderFlags: async (patch: Partial<{ hltbEnabled: boolean; artworkEnabled: boolean }>) => {
+        record('setServerProviderFlags', patch);
+        providerFlags = { ...providerFlags, ...patch };
+        return { ok: true, ...providerFlags };
+      },
       launchGame: async (gameId: number) => {
         const game = store.games.find((g) => g.id === gameId);
         calls.push({ method: 'launchGame', args: [gameId] });

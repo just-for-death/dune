@@ -129,10 +129,10 @@ describe('SteamGridDB key (DUN-092, write-only)', () => {
 });
 
 describe('artwork opt-in (settings.artworkEnabled)', () => {
-  it('art routes answer ARTWORK_DISABLED and send nothing while artwork is off', async () => {
+  it('art routes answer PROVIDER_DISABLED and send nothing while artwork is off', async () => {
     const { handlers, calls } = setup(undefined, false);
-    expect(await handlers['art:search']({}, 'Hades')).toMatchObject({ ok: false, code: 'ARTWORK_DISABLED' });
-    expect(await handlers['art:auto-match']({})).toMatchObject({ ok: false, code: 'ARTWORK_DISABLED' });
+    expect(await handlers['art:search']({}, 'Hades')).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
+    expect(await handlers['art:auto-match']({})).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
     expect(calls).toHaveLength(0);
   });
 });
@@ -204,5 +204,67 @@ describe('current user (DUN-115)', () => {
     const res = await handlers['users:me']({});
     expect(res).toMatchObject({ ok: false, code: 'NETWORK' });
     expect(res).not.toHaveProperty('status');
+  });
+});
+
+describe('server provider flags (settings:providerFlags:*)', () => {
+  const settings = { maxVersions: 5, ollamaEndpoint: 'http://x', apiKeys: ['****'], localSources: [], steamGridApiKeySet: true, hltbEnabled: true, artworkEnabled: false };
+  const ok = (cfg: Record<string, unknown>) => (cfg.method === 'GET' ? { status: 200, data: { success: true, settings } } : { status: 200, data: { success: true } });
+
+  it('get GETs /api/settings and returns only the two flags', async () => {
+    const { handlers, calls } = setup(ok);
+    expect(await handlers['settings:providerFlags:get']({})).toEqual({ ok: true, hltbEnabled: true, artworkEnabled: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: 'GET', url: 'http://nas:3030/api/settings' });
+    expect(calls[0].data).toBeUndefined();
+  });
+
+  it('get rejects a response with missing or non-boolean flags', async () => {
+    for (const bad of [{ hltbEnabled: 'true', artworkEnabled: false }, { hltbEnabled: true }, null]) {
+      const { handlers } = setup(() => ({ status: 200, data: { success: true, settings: bad } }));
+      const res = await handlers['settings:providerFlags:get']({});
+      expect(res).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+      expect(res).not.toHaveProperty('hltbEnabled');
+    }
+  });
+
+  it('set POSTs only the patch to /api/settings, then reads the flags back', async () => {
+    const { handlers, calls } = setup(ok);
+    expect(await handlers['settings:providerFlags:set']({}, { hltbEnabled: true })).toEqual({ ok: true, hltbEnabled: true, artworkEnabled: false });
+    expect(calls.map((c) => [c.method, c.url, c.data])).toEqual([
+      ['POST', 'http://nas:3030/api/settings', { hltbEnabled: true }],
+      ['GET', 'http://nas:3030/api/settings', undefined],
+    ]);
+    await handlers['settings:providerFlags:set']({}, { hltbEnabled: false, artworkEnabled: true });
+    expect(calls[2].data).toEqual({ hltbEnabled: false, artworkEnabled: true });
+  });
+
+  it('invalid patches are refused locally and nothing is sent', async () => {
+    const { handlers, calls } = setup(ok);
+    for (const bad of [
+      undefined, null, 'hltbEnabled', true, [], {},
+      { hltbEnabled: 'true' }, { artworkEnabled: 1 }, { hltbEnabled: null },
+      { maxVersions: 3 }, { hltbEnabled: true, ollamaEndpoint: 'http://169.254.169.254/' }, { __proto__: { hltbEnabled: true } },
+    ]) {
+      expect(await handlers['settings:providerFlags:set']({}, bad)).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('403 codes pass through unchanged and nothing is read back', async () => {
+    for (const code of ['FORBIDDEN', 'PROVIDER_DISABLED']) {
+      const { handlers, calls } = setup(() => httpError(403, { error: 'No', code }));
+      expect(await handlers['settings:providerFlags:set']({}, { artworkEnabled: true })).toEqual({ ok: false, status: 403, code, message: 'No' });
+      expect(calls).toHaveLength(1);
+      expect(await handlers['settings:providerFlags:get']({})).toEqual({ ok: false, status: 403, code, message: 'No' });
+    }
+  });
+
+  it('no response is NETWORK with no status', async () => {
+    const { handlers } = setup(() => Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, request: {} }));
+    for (const res of [await handlers['settings:providerFlags:get']({}), await handlers['settings:providerFlags:set']({}, { hltbEnabled: false })]) {
+      expect(res).toMatchObject({ ok: false, code: 'NETWORK' });
+      expect(res).not.toHaveProperty('status');
+    }
   });
 });

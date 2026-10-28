@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AutoSyncEvent, BackupProfile, Game, NewGameInput, ScannerSourceId, UpdateStatus } from '@dune/shared';
 
+/** Server-side provider opt-ins (settings:providerFlags:*); mirrors the ElectronAPI members. */
+interface ServerProviderFlags {
+  hltbEnabled: boolean;
+  artworkEnabled: boolean;
+}
+
 interface Cloud {
   url: string;
 }
@@ -11,7 +17,7 @@ interface Settings {
   autoSyncFreq: string;
   scanRoots: string[];
   updateChecks?: boolean;
-  trackersEnabled?: { steam: boolean; retroAchievements: boolean; gog: boolean; epic: boolean };
+  trackersEnabled?: { steam: boolean; retroAchievements: boolean; gog: boolean };
   artworkEnabled?: boolean;
   // Server settings
   maxVersions?: number;
@@ -207,6 +213,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Current user (DUN-115: role for renderer gating)
   getCurrentUser: () =>
     ipcRenderer.invoke('users:me'),
+
+  // Server provider flags (GET/POST /api/settings; writes are admin-only)
+  getServerProviderFlags: () =>
+    ipcRenderer.invoke('settings:providerFlags:get'),
+  setServerProviderFlags: (patch: Partial<ServerProviderFlags>) =>
+    ipcRenderer.invoke('settings:providerFlags:set', patch),
   
   // Ollama
   // DUN-095/057: the server uses its stored endpoint; none is sent.

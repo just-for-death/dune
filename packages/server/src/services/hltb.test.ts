@@ -103,7 +103,7 @@ describe('Settings.hltbEnabled opt-in gate', () => {
     writeCache('Gated Game', { mainStory: 1, mainExtra: 2, completionist: 3 });
     for (const off of [false, undefined, 'true', 1]) {
       setHltbEnabled(off);
-      expect(await getHLTBTimes('Gated Game')).toEqual({ success: false, code: 'PROVIDER_DISABLED', message: 'HowLongToBeat lookups are disabled (Settings.hltbEnabled)' });
+      await expect(getHLTBTimes('Gated Game')).rejects.toMatchObject({ status: 403, code: 'PROVIDER_DISABLED', message: 'HowLongToBeat lookups are disabled (Settings.hltbEnabled)' });
     }
     expect(getMock).not.toHaveBeenCalled();
     expect(postMock).not.toHaveBeenCalled();

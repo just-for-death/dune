@@ -109,7 +109,6 @@ export function sanitizeTrackersEnabled(input: unknown): TrackersEnabled {
     steam: t.steam === true,
     retroAchievements: t.retroAchievements === true,
     gog: t.gog === true,
-    epic: t.epic === true,
   };
 }
 

@@ -4,7 +4,7 @@ export type MaybePromise<T> = T | Promise<T>;
 
 export type ProviderId =
   | 'hltb' | 'steamgriddb' | 'appUpdate'
-  | 'steam' | 'retroAchievements' | 'gog' | 'epic'
+  | 'steam' | 'retroAchievements' | 'gog'
   | 'manifest';
 
 export type HttpMethod = 'GET' | 'POST';

@@ -1035,11 +1035,11 @@ ipcMain.handle('game:setCustomArt', async (_event, id) => {
 function artworkEnabled(): boolean {
   return (store.get('settings') as Settings | undefined)?.artworkEnabled === true
 }
-const ARTWORK_DISABLED: ServerFailure = { ok: false, code: 'ARTWORK_DISABLED', message: 'Artwork lookups are turned off in Settings.' }
+const PROVIDER_DISABLED: ServerFailure = { ok: false, code: 'PROVIDER_DISABLED', message: 'Artwork lookups are turned off in Settings.' }
 
 // SteamGridDB art through the Dune Server (its write-only provider key; DUN-092).
 ipcMain.handle('game:fetchArt', async (_event, id: unknown): Promise<FetchArtResult> => {
-  if (!artworkEnabled()) return ARTWORK_DISABLED
+  if (!artworkEnabled()) return PROVIDER_DISABLED
   const gameId = parseGameId(id)
   if (gameId === null) return { ok: false, code: 'INVALID_GAME_ID', message: 'Invalid game id' }
   await gameStoreMigration

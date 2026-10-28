@@ -48,6 +48,8 @@ import { MAX_PREFIX_NAME, prefixFailureMessage, validateNewPrefixName } from './
 import { ConfirmDialog } from './components/settings/ConfirmDialog';
 import { WhereItRuns } from './components/settings/WhereItRuns';
 import { isLockedForRole, useIsAdmin } from './services/currentUser';
+import { isProviderDisabled } from './services/hltbStatus';
+import { flagSaveErrorKey, saveProviderFlags, useProviderFlags, type ProviderFlagPatch } from './services/providerFlags';
 import { NoServerNotice } from './components/NoServerNotice';
 import { PrivacyToggles } from './components/settings/PrivacyToggles';
 import { artworkDisabledMessage, isArtworkDisabled } from './components/settings/privacyToggleHelpers';
@@ -276,6 +278,8 @@ export default function App() {
   // HLTB cache
   const [hltbCache, setHltbCache] = useState<Record<string, HLTBTimes>>({});
   const [hltbLoading, setHltbLoading] = useState<Record<string, boolean>>({});
+  // HLTB opt-in is off on the server for this connection key (url#version), or null.
+  const [hltbDisabledFor, setHltbDisabledFor] = useState<string | null>(null);
   const [themeId, setThemeId] = useState(getActiveThemeId());
 
   // Save version state
@@ -794,7 +798,7 @@ export default function App() {
         await loadConfig();
         showToast(t('art.updated'), 'success');
       } else if (isArtworkDisabled(res)) {
-        // DUN-135: artwork is opt-in; say where to turn it on, as info rather than an error.
+        // DUN-135: artwork is opt-in (403 PROVIDER_DISABLED); say where to turn it on, as info rather than an error.
         showToast(artworkDisabledMessage(t), 'info');
       } else {
         showToast(serverFailureMessage(res, t), 'error');
@@ -947,9 +951,13 @@ export default function App() {
     setHltbLoading(prev => ({ ...prev, [gameName]: true }));
     try {
       const res = await window.electronAPI.getHLTBTimes(gameName);
-      if (res.ok && res.times) {
+      if (isProviderDisabled(res)) {
+        // 403 PROVIDER_DISABLED: calm "turned off" state, not an error.
+        setHltbDisabledFor(`${cloud.url}#${serverConnectionVersion}`);
+      } else if (res.ok && res.times) {
         const times = res.times;
         setHltbCache(prev => ({ ...prev, [gameName]: times }));
+        setHltbDisabledFor(null);
       }
     } catch {
       // Silently ignore HLTB failures
@@ -1046,6 +1054,30 @@ export default function App() {
   // member is locked out; 'unknown' keeps controls on and the server's 403 explains.
   const adminState = useIsAdmin(hasServer, `${cloud.url}#${serverConnectionVersion}`);
   const adminLocked = isLockedForRole(adminState);
+  // Server provider flags (hltbEnabled/artworkEnabled), loaded once per connection
+  // like the role. With a server these switches show the server copy; members read-only.
+  const { flags: providerFlags, setFlags: setProviderFlags } = useProviderFlags(hasServer, `${cloud.url}#${serverConnectionVersion}`);
+  const [providerFlagSaving, setProviderFlagSaving] = useState(false);
+  const toggleProviderFlag = async (patch: ProviderFlagPatch) => {
+    if (providerFlagSaving) return;
+    setProviderFlagSaving(true);
+    const out = await saveProviderFlags(window.electronAPI, patch);
+    setProviderFlagSaving(false);
+    if (!out.ok) {
+      // The switch keeps the last saved value (flags unchanged); say why.
+      showToast(t(flagSaveErrorKey(out.code)), 'error');
+      return;
+    }
+    setProviderFlags(out.flags);
+    // HLTB just turned on: drop the "turned off" card so Load retries for real.
+    if (out.flags.hltbEnabled) setHltbDisabledFor(null);
+  };
+  const serverSwitch = (flag: keyof ProviderFlagPatch) => (hasServer ? {
+    checked: providerFlags?.[flag] === true,
+    locked: adminLocked,
+    pending: !providerFlags || providerFlagSaving,
+    onToggle: (enabled: boolean) => { void toggleProviderFlag({ [flag]: enabled }); },
+  } : undefined);
 
   useEffect(() => {
     if (activeTab !== 'settings' || !hasServer) return;
@@ -1711,7 +1743,13 @@ export default function App() {
         )}
         {activeTab === 'hltb' && (
           hasServer ? (
-            <HLTBView games={games} cache={hltbCache} loading={hltbLoading} onLoad={loadHLTB} />
+            <HLTBView
+              games={games}
+              cache={hltbCache}
+              loading={hltbLoading}
+              onLoad={loadHLTB}
+              providerDisabled={hltbDisabledFor === `${cloud.url}#${serverConnectionVersion}`}
+            />
           ) : (
             <div>
               <div className="section-header">
@@ -1934,6 +1972,8 @@ export default function App() {
               <PrivacyToggles
                 settings={settings}
                 onChange={next => saveSettings({ trackersEnabled: next.trackersEnabled, artworkEnabled: next.artworkEnabled })}
+                artwork={serverSwitch('artworkEnabled')}
+                hltb={serverSwitch('hltbEnabled')}
               />
 
               <h4 className="section-subtitle">{t('settings.steamGridTitle')}</h4>

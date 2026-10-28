@@ -61,18 +61,36 @@ function plainObject(v: unknown, name: string): Record<string, unknown> {
 }
 
 export interface ServerIpcOptions {
-  /** settings.artworkEnabled; art routes answer ARTWORK_DISABLED until it is on. */
+  /** settings.artworkEnabled; art routes answer PROVIDER_DISABLED until it is on. */
   artworkEnabled: () => boolean;
 }
 
 const USER_ROLES = ['admin', 'member'] as const;
 type CurrentUser = { id: string; name: string; role: (typeof USER_ROLES)[number] };
 
-const ARTWORK_DISABLED = { ok: false as const, code: 'ARTWORK_DISABLED', message: 'Artwork lookups are turned off in Settings.' };
+const PROVIDER_DISABLED = { ok: false as const, code: 'PROVIDER_DISABLED', message: 'Artwork lookups are turned off in Settings.' };
+
+const PROVIDER_FLAGS = ['hltbEnabled', 'artworkEnabled'] as const;
+type ProviderFlags = { [K in (typeof PROVIDER_FLAGS)[number]]: boolean };
+
+/** A provider-flag patch: a plain object with one or both flags, booleans only, nothing else. */
+function providerFlagPatch(v: unknown): Partial<ProviderFlags> {
+  const p = plainObject(v, 'provider flags');
+  const keys = Object.keys(p);
+  if (keys.length === 0) throw new ServerCallError(invalidArgument('No provider flags to change'));
+  const patch: Partial<ProviderFlags> = {};
+  for (const key of keys) {
+    if (!(PROVIDER_FLAGS as readonly string[]).includes(key)) throw new ServerCallError(invalidArgument(`Unknown provider flag: ${key.slice(0, 40)}`));
+    const value = p[key];
+    if (typeof value !== 'boolean') throw new ServerCallError(invalidArgument(`${key} must be true or false`));
+    patch[key as keyof ProviderFlags] = value;
+  }
+  return patch;
+}
 
 export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOptions): Record<string, Handler> {
   // Build the request from the arguments (may throw INVALID_ARGUMENT), then call.
-  const art = (handler: Handler): Handler => async (event, ...args) => (opts.artworkEnabled() ? handler(event, ...args) : ARTWORK_DISABLED);
+  const art = (handler: Handler): Handler => async (event, ...args) => (opts.artworkEnabled() ? handler(event, ...args) : PROVIDER_DISABLED);
   const h = (build: (...args: unknown[]) => ServerRequest): Handler => async (_event, ...args) => {
     let req: ServerRequest;
     try {
@@ -109,6 +127,38 @@ export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOpt
       return { ok: false, code: UNKNOWN_SERVER_CODE, message: 'The Dune Server sent an invalid user record.' };
     }
     return { ok: true, id: u.id, name: u.name, role: u.role as CurrentUser['role'] };
+  };
+
+  /**
+   * Server provider flags: GET /api/settings answers `{ success, settings: {...} }`.
+   * Resolves to exactly `{ ok, hltbEnabled, artworkEnabled }`; no other settings
+   * field is passed on. A missing or non-boolean flag is a failure.
+   */
+  const readProviderFlags = async (): Promise<ServerResult<ProviderFlags>> => {
+    const res = await client.call<{ settings?: unknown }>({ method: 'GET', path: '/api/settings' });
+    if (!res.ok) return res as ServerFailure;
+    const s = res.settings && typeof res.settings === 'object' ? (res.settings as Record<string, unknown>) : null;
+    if (!s || typeof s.hltbEnabled !== 'boolean' || typeof s.artworkEnabled !== 'boolean') {
+      return { ok: false, code: UNKNOWN_SERVER_CODE, message: 'The Dune Server sent invalid settings.' };
+    }
+    return { ok: true, hltbEnabled: s.hltbEnabled, artworkEnabled: s.artworkEnabled };
+  };
+
+  /**
+   * POST /api/settings (admin only) with just the validated flags. The server
+   * answers `{ success: true }` only, so the saved flags are read back with a GET.
+   * 403 FORBIDDEN / PROVIDER_DISABLED / INVALID_SETTINGS pass through.
+   */
+  const writeProviderFlags = async (_event: unknown, patch: unknown): Promise<ServerResult<ProviderFlags>> => {
+    let body: Partial<ProviderFlags>;
+    try {
+      body = providerFlagPatch(patch);
+    } catch (err) {
+      return toServerFailure(err);
+    }
+    const res = await client.call({ method: 'POST', path: '/api/settings', body });
+    if (!res.ok) return res as ServerFailure;
+    return readProviderFlags();
   };
 
   return {
@@ -197,6 +247,10 @@ export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOpt
 
     // Current user (DUN-115: renderer role gating)
     'users:me': currentUser,
+
+    // Server provider flags (admin writes; only hltbEnabled/artworkEnabled cross IPC)
+    'settings:providerFlags:get': readProviderFlags,
+    'settings:providerFlags:set': writeProviderFlags,
 
     // Ollama
     // DUN-095/057: the server uses only its stored Ollama endpoint (admin-only);
