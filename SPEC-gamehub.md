@@ -5,7 +5,7 @@
 Transform Dune from a game-save sync tool into a **unified game hub** (like Playnite/Heroic) that:
 - **Discovers** games from Steam, Heroic, Lutris, and manual entries on Linux
 - **Launches** games via native executables, Steam protocol, Heroic, Lutris, Wine/Proton
-- **Tracks** achievements from Steam, RetroAchievements, GOG, Epic, and offline / local achievement files
+- **Tracks** achievements from Steam, RetroAchievements, GOG (Epic dropped 2026-10-28), and offline / local achievement files
 - **Syncs** saves to Dune Server (existing functionality, enhanced)
 - **Manages** Wine/Proton prefixes, Heroic/Lutris prefixes
 - **Integrates** with Steam (add non-Steam games), Heroic, Lutris
@@ -76,7 +76,7 @@ Dune should absorb the best ideas from these projects while staying focused on *
 | Backend | Express 5 (REST), Zod 4, Node 22+ |
 | Database | SQLite (node:sqlite), existing schema extended |
 | Game Detection | Custom scanners for Steam, Heroic, Lutris |
-| Achievement Sources | Steam Web API, RetroAchievements API, local .ini parsers, GOG API, Epic API |
+| Achievement Sources | Steam Web API, RetroAchievements API, local .ini parsers, GOG API |
 | Playtime Sources | Steam Web API (session history), local session tracking, manual entry |
 | HLTB Source | HowLongToBeat scraping (steamcommunity.com or hlbt API) |
 | Launch Methods | Steam protocol, Heroic CLI, Lutris CLI, Steam protocol, Wine/Proton, umu-launcher |
@@ -177,6 +177,14 @@ dune/
 ```
 
 > **Decision 2026-10-20 (monitor) — supersedes the `electron/achievements/` remote-tracker entry above:** remote achievement trackers (Steam, RetroAchievements, GOG, Epic) run on the server, not Electron, so API keys stay off clients. Per-user credentials go in a server-side `user_tracker_credentials` table; keys encrypted at rest with the server secret, write-only, masked in all responses. Local .ini import stays in Electron and feeds the server merge. Sync on play-session end and manual Sync now; optional background poll off by default, min interval 6h.
+
+## Decisions 2026-10-28 (Lead): providers, manifest, updates, downloads
+- One switch per provider (HLTB, artwork, manifest). With a server connected the server flag decides (admin-only to change, read-only for members); with no server the local `Settings.*Enabled` flag decides (all default false). A disabled provider makes no network call and answers 403 `{error, code:'PROVIDER_DISABLED'}`.
+- Clients fall back to local providers only when no server is configured or it is unreachable (network error or timeout), never on 401, 403 or `PROVIDER_DISABLED`.
+- Remote Epic achievements are dropped; GOG stays (opt-in OAuth). The Epic library scanner and the rarity tier are unaffected.
+- Save-path manifest: the Ludusavi manifest (PCGamingWiki data, CC BY-NC-SA 3.0, noted in THIRD_PARTY_NOTICES.md; the code licence is unchanged). With a server, `GET /api/manifest/:gameId` serves the parsed entries; with no server, Desktop fetches it. Path expansion stays in Electron main and only suggests paths, never applying one without the user confirming. Games get nullable `steamAppId`/`gogId`, and lookups try ids before the title.
+- Update checks: `Settings.updateCheckEnabled` (default false, replaces `updateChecks`, no alias) gates only the automatic check; a manual click always runs one check. Metadata only from api.github.com; notes are plain text; release links open only if https.
+- Downloads: `setBaseDir` affects only new downloads (existing items keep their folder and state); a missing base or override folder fails with `IO_ERROR` and is never recreated.
 
 ---
 
