@@ -167,7 +167,7 @@ describe('Security: Authentication & Key Extraction', () => {
   });
 
   it('rejects a valid API key in the query string with 400 API_KEY_IN_QUERY (DUN-102)', async () => {
-    for (const url of [`/api/saves?api_key=${VALID_KEY}`, `/trpc/games.list?api_key=${VALID_KEY}`]) {
+    for (const url of [`/api/saves?api_key=${VALID_KEY}`, `/api/settings?api_key=${VALID_KEY}`]) {
       const res = await request(app).get(url);
       expect(res.status).toBe(400);
       expect(res.body).toEqual({ error: expect.any(String), code: 'API_KEY_IN_QUERY' });

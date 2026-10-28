@@ -1,6 +1,5 @@
 // Structured client errors (DUN-061, DUN-086/087/088/093). REST answers
-// `status` with exactly `{ error, code }`; tRPC maps `status` to a TRPC code
-// and exposes `code` as `error.data.code` (see trpc/trpc.ts errorFormatter).
+// `status` with exactly `{ error, code }` (see apiErrorBody).
 
 export class ApiError extends Error {
   readonly status: number;

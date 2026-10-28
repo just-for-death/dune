@@ -1,7 +1,20 @@
 import { useId } from 'react';
 import type { PlaytimeGraphData, PlaytimeComparison } from '@dune/shared';
 import { useI18n } from '../i18n/context';
-import { describeChange, formatChange, formatMinutes, formatShare, lineChartLabel, pieChartLabel, sliceColor } from '../services/playtimeFormat';
+import {
+  bucketTexts,
+  describeChange,
+  formatBucketDate,
+  formatChange,
+  formatMinutes,
+  formatShare,
+  lineChartLabel,
+  pieChartLabel,
+  playtimeBucket,
+  sliceColor,
+  tickIndexes,
+  type PlaytimeBucket,
+} from '../services/playtimeFormat';
 
 interface Props {
   data: PlaytimeGraphData | null;
@@ -11,24 +24,44 @@ interface Props {
 // DUN-049: each chart is one named image for assistive tech, with its data
 // available as text (a visually hidden table, or the visible legend / labels).
 
-function LineChart({ values }: { values: { date: string; minutes: number }[] }) {
-  const { t } = useI18n();
+// DUN-096: points are days or months (bucket); the ticks, axis title, data
+// table and accessible name all say which.
+function LineChart({ values, bucket }: { values: { date: string; minutes: number }[]; bucket: PlaytimeBucket }) {
+  const { t, locale } = useI18n();
   if (values.length === 0) return <div className="empty-state">{t('playtime.noData')}</div>;
   const width = 520;
-  const height = 180;
+  const plotHeight = 180;
+  const height = plotHeight + 40;
   const max = Math.max(...values.map((item) => item.minutes), 1);
-  const points = values.map((item, index) => `${(index / Math.max(1, values.length - 1)) * width},${height - (item.minutes / max) * (height - 20)}`).join(' ');
+  const xOf = (index: number) => (index / Math.max(1, values.length - 1)) * width;
+  const points = values.map((item, index) => `${xOf(index)},${plotHeight - (item.minutes / max) * (plotHeight - 20)}`).join(' ');
+  const texts = bucketTexts(bucket, t);
+  const ticks = tickIndexes(values.length);
   return (
     <>
-      <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label={lineChartLabel(values, t)}>
+      <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg" role="img" aria-label={lineChartLabel(values, t, bucket, locale)}>
         <polyline points={points} fill="none" stroke="var(--sand)" strokeWidth="3" />
+        <g className="chart-axis" fill="var(--muted)" fontSize="12">
+          {ticks.map((index, i) => (
+            <text
+              key={values[index].date}
+              className="chart-tick"
+              x={xOf(index)}
+              y={plotHeight + 16}
+              textAnchor={ticks.length === 1 ? 'start' : i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle'}
+            >
+              {formatBucketDate(values[index].date, bucket, locale, 'tick')}
+            </text>
+          ))}
+          <text className="chart-axis-title" x={width / 2} y={plotHeight + 36} textAnchor="middle">{texts.axis}</text>
+        </g>
       </svg>
       <table className="sr-only">
-        <caption>{t('playtime.tableCaption')}</caption>
-        <thead><tr><th scope="col">{t('playtime.tableDate')}</th><th scope="col">{t('playtime.tableTotal')}</th></tr></thead>
+        <caption>{texts.caption}</caption>
+        <thead><tr><th scope="col">{texts.column}</th><th scope="col">{t('playtime.tableTotal')}</th></tr></thead>
         <tbody>
           {values.map((item) => (
-            <tr key={item.date}><td>{item.date}</td><td>{formatMinutes(item.minutes)}</td></tr>
+            <tr key={item.date}><td>{formatBucketDate(item.date, bucket, locale)}</td><td>{formatMinutes(item.minutes)}</td></tr>
           ))}
         </tbody>
       </table>
@@ -92,7 +125,7 @@ export function PlaytimeCharts({ data, comparison }: Props) {
   const id = useId();
   const { t } = useI18n();
   const sections = [
-    { key: 'line', title: t('playtime.chartLine'), body: <LineChart values={data?.line ?? []} /> },
+    { key: 'line', title: t('playtime.chartLine'), body: <LineChart values={data?.line ?? []} bucket={playtimeBucket(data)} /> },
     { key: 'bar', title: t('playtime.chartBar'), body: <BarChart values={data?.bar ?? []} /> },
     { key: 'pie', title: t('playtime.chartPie'), body: <PieChart values={data?.pie ?? []} /> },
   ];

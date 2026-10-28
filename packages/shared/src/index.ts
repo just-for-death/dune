@@ -90,7 +90,21 @@ export interface Settings {
   updateChecks?: boolean;
   /** Client-only (DUN-077): saved scanner source toggles; written by main via scanner:setSource only. */
   scannerSources?: ScannerSourceToggles;
+  /** Remote achievement trackers, each off until the user turns it on. Backend reads the same flags. */
+  trackersEnabled?: TrackersEnabled;
+  /** SteamGridDB artwork lookups; off until the user turns them on. Backend reads the same flag. */
+  artworkEnabled?: boolean;
 }
+
+/** Per-tracker opt-in; every field defaults to false. */
+export interface TrackersEnabled {
+  steam: boolean;
+  retroAchievements: boolean;
+  gog: boolean;
+  epic: boolean;
+}
+
+export const DEFAULT_TRACKERS_ENABLED: TrackersEnabled = { steam: false, retroAchievements: false, gog: false, epic: false };
 
 // Local source for dual-boot sync
 export interface LocalSource {
@@ -536,15 +550,11 @@ export interface ElectronAPI {
   setScannerSource: (id: ScannerSourceId, enabled: boolean) => Promise<SetScannerSourceResult>;
 
   // Save versions
-  getSaveVersions: (game: string) => Promise<ServerResult<{ success: boolean; versions?: SaveVersion[]; message?: string }>>;
-  createSaveVersion: (game: string, deviceId?: string, changeSummary?: string) => Promise<ServerResult<{ success: boolean; version?: SaveVersion; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>>;
-  getSaveVersion: (id: string) => Promise<ServerResult<{ success: boolean; version?: SaveVersion; files?: SaveFileSnapshot[]; message?: string }>>;
-  getSaveVersionDiff: (from: string, to: string) => Promise<ServerResult<{ success: boolean; diff?: { added: string[]; removed: string[]; changed: string[]; unchanged: number }; message?: string }>>;
-  restoreSaveVersion: (game: string, versionId: string) => Promise<ServerResult<{ success: boolean; message?: string; restoredFiles?: number }>>;
+  getSaveVersions: (gameId: number) => Promise<ServerResult<{ success: boolean; versions?: SaveVersion[]; message?: string }>>;
+  restoreSaveVersion: (gameId: number, versionId: string) => Promise<ServerResult<{ success: boolean; message?: string; restoredFiles?: number }>>;
 
   // Conflicts
   getConflicts: (game?: string) => Promise<ServerResult<{ success: boolean; conflicts?: ConflictRecord[]; hasUnresolved?: boolean; message?: string }>>;
-  detectConflict: (game: string, localVersionId: string, remoteVersionId: string) => Promise<ServerResult<{ success: boolean; conflict?: ConflictRecord | null; hasUnresolved?: boolean; message?: string }>>;
   resolveConflict: (id: string, resolution: 'local' | 'remote' | 'both' | 'later') => Promise<ServerResult<{ success: boolean; conflict?: ConflictRecord; message?: string }>>;
 
   // Backup profiles
@@ -590,7 +600,6 @@ export interface ElectronAPI {
 
   // Renderer diagnostics, secret store, and help (client-only bridge methods)
   reportRendererError: (report: { message: string; stack?: string; url?: string }) => Promise<unknown>;
-  openErrorLog: () => Promise<unknown>;
   /** DUN-073: write-only; never returns the key. */
   getServerKey: () => Promise<ServerKeyStatus>;
   setServerKey: (key: string) => Promise<ServerKeyStatus>;
@@ -611,3 +620,4 @@ export interface ElectronAPI {
 // for every importer. Renderers declare their own Window binding instead.
 
 export * from './pathRules.js';
+export * from './backupGlob.js';

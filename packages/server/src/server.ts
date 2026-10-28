@@ -16,14 +16,14 @@ import type { Game } from './types/index.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
 import { listSaveVersions, getSaveVersion, getVersionDiff, createVersionFromDirectory, restoreVersion, VERSION_DIR_ID } from './services/saveVersions.js';
 import { listConflicts, detectConflict, resolveConflict, hasUnresolvedConflict } from './services/conflicts.js';
-import { getBackupProfile, upsertBackupProfile, DEFAULT_EXCLUDE_GLOBS } from './services/backupProfiles.js';
+import { getBackupProfile, upsertBackupProfile } from './services/backupProfiles.js';
+import { DEFAULT_EXCLUDE_GLOBS } from '@dune/shared';
 import {
   parseInput, playtimeSessionSchema, playtimeGraphQuery, playtimeExportQuery, playtimeComparisonQuery,
-  globListSchema, backupProfileOptionsSchema, analyzeFilesSchema,
+  globListSchema, backupProfileOptionsSchema, analyzeFilesSchema, saveVersionsListQuery, saveVersionCreateBody, restoreVersionBody,
 } from './schemas.js';
 import { scanStorage, getDriveFreeBytes } from './services/storage.js';
 import { manifestForGame, removeGameFile } from './services/manifest.js';
-import { handler as trpcHandler } from './trpc/http.js';
 import { logger, requestLogger, type LoggedRequest } from './middleware/logging.js';
 import { checkReadiness } from './services/health.js';
 import { database, withDbLock } from './db/index.js';
@@ -71,24 +71,20 @@ app.get('/ready', (_req, res) => {
   res.status(result.ready ? 200 : 503).json(result);
 });
 
-// DUN-102: rate limits cover the API only (/api, /trpc), never the static
+// DUN-102: rate limits cover the API only (/api), never the static
 // dashboard assets. The general limiter is skipped under Vitest (flaky 429s);
 // the auth-failure guard always runs (an IP that keeps presenting bad keys
 // is 429 RATE_LIMITED until its window ends).
 if (!process.env.VITEST) {
-  app.use(['/api', '/trpc'], apiRateLimiter);
+  app.use('/api', apiRateLimiter);
 }
-app.use(['/api', '/trpc'], authFailureLimiter.guard);
+app.use('/api', authFailureLimiter.guard);
 app.use(optionalAuthMiddleware);
 
 const FRONTEND_DIR = path.join(__dirname, '..', 'frontend', 'dist');
 if (fs.existsSync(FRONTEND_DIR)) {
   app.use(express.static(FRONTEND_DIR));
 }
-
-// tRPC endpoint. Mounted with app.use so Express strips the /trpc prefix
-// before the standalone handler resolves the procedure path.
-app.use('/trpc', trpcHandler);
 
 // Legacy REST endpoints for file operations (streaming)
 // Skip upload rate limiting in test environment
@@ -196,10 +192,8 @@ app.get('/api/download-version-file', authMiddleware, (req, res) => {
   }
 });
 
-// ── REST shims for the Electron client ───────────────────────────────────────
-// The desktop client speaks REST (not tRPC). Every route below mirrors an
-// existing tRPC procedure / service so the app works against a real server.
-// All require x-api-key via authMiddleware, like the file routes above.
+// ── REST API ─────────────────────────────────────────────────────────────────
+// All routes below require x-api-key via authMiddleware, like the file routes above.
 
 /**
  * DUN-064/127: the ONE place a game/path header is decoded. Clients send
@@ -275,6 +269,17 @@ function canSeeGame(req: AuthenticatedRequest, gameId: number): boolean {
 function requireGame(req: AuthenticatedRequest, rawTitle: unknown): Game {
   const game = database.findGame(targetOwnerId(req), gameParam(rawTitle));
   if (!game) throw gameNotFound();
+  return game;
+}
+
+/**
+ * DUN-038: the target owner's game with this id (same owner logic as
+ * requireGame). Missing or another owner's game -> 404 GAME_NOT_FOUND.
+ */
+function requireGameById(req: AuthenticatedRequest, gameId: number): Game {
+  const ownerId = targetOwnerId(req);
+  const game = database.getGameById(gameId);
+  if (!game || game.ownerId !== ownerId) throw gameNotFound();
   return game;
 }
 
@@ -815,9 +820,9 @@ app.delete('/api/saves', authMiddleware, requireAdmin, (req: AuthenticatedReques
 // ── Save versioning REST shims ─────────────────────────────────────────────
 app.get('/api/save-versions', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    const game = req.query.game?.toString();
-    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
-    const row = requireGame(req, game);
+    // DUN-038: by game id only (400 INVALID_GAME_ID, 404 GAME_NOT_FOUND).
+    const { gameId } = parseInput(saveVersionsListQuery, req.query, 'INVALID_GAME_ID');
+    const row = requireGameById(req, gameId);
     res.json({ success: true, versions: listSaveVersions(row.id) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -853,9 +858,9 @@ app.get('/api/save-versions/:id', authMiddleware, (req: AuthenticatedRequest, re
 app.post('/api/save-versions', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     assertNoLaunchFields(req.body); // DUN-061
-    const { game, deviceId, changeSummary } = req.body ?? {};
-    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
-    const row = requireGame(req, game.toString());
+    // DUN-038: by game id only (400 INVALID_GAME_ID, 404 GAME_NOT_FOUND).
+    const { gameId, deviceId, changeSummary } = parseInput(saveVersionCreateBody, req.body ?? {}, 'INVALID_GAME_ID');
+    const row = requireGameById(req, gameId);
     const resolvedDeviceId = typeof deviceId === 'string' ? deviceId : req.user?.id;
     // Serialized with uploads/restores (DUN-090).
     const version = await withDbLock(() => createVersionFromDirectory({
@@ -877,12 +882,12 @@ app.post('/api/save-versions', authMiddleware, async (req: AuthenticatedRequest,
 app.post('/api/restore-version', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     assertNoLaunchFields(req.body); // DUN-061
-    const { game, versionId } = req.body ?? {};
-    if (!game || !versionId) return sendError(res, 400, 'BAD_REQUEST', 'game and versionId required');
-    const row = requireGame(req, game.toString());
+    // DUN-137: by game id only (400 INVALID_GAME_ID, 404 GAME_NOT_FOUND).
+    const { gameId, versionId } = parseInput(restoreVersionBody, req.body ?? {}, 'INVALID_GAME_ID');
+    const row = requireGameById(req, gameId);
     // DUN-125: restoreVersion validates versionId format (400
     // INVALID_VERSION_ID) + containment; a version of another game is 404.
-    const result = await restoreVersion(row.id, versionId.toString(), row.ownerId);
+    const result = await restoreVersion(row.id, typeof versionId === 'string' ? versionId : '', row.ownerId);
     if (!result.success) return sendError(res, 404, 'VERSION_NOT_FOUND', result.message);
     res.json(result);
   } catch (e) {

@@ -67,7 +67,7 @@ describe('REST shims auth gate', () => {
     ['delete', '/api/api-keys/x'],
     ['get', '/api/ollama-models'],
     ['get', '/api/ollama-health'],
-    ['get', '/api/save-versions?game=x'],
+    ['get', '/api/save-versions?gameId=1'],
     ['get', '/api/save-versions/1'],
     ['post', '/api/save-versions'],
     ['post', '/api/restore-version'],
@@ -397,29 +397,34 @@ describe('save version, conflict, profile, and storage endpoints', () => {
         .set('x-sync-id', syncId),
     ).send(Buffer.from(contents));
 
+  let gameId = 0;
+
   it('creates, lists, reads, and restores snapshots', async () => {
-    expect((await upload('one', '100')).status).toBe(200);
+    const up = await upload('one', '100');
+    expect(up.status).toBe(200);
+    gameId = up.body.gameId as number;
+    expect(gameId).toEqual(expect.any(Number));
     // Upload lands in the owner-scoped save dir inside the temp DATA_DIR.
     expect(fs.readFileSync(path.join(gameDir, 'slot1.sav'), 'utf-8')).toBe('one');
     const first = await api(request(app).post('/api/save-versions')).send({
-      game,
+      gameId,
       deviceId: 'device-a',
       changeSummary: 'first snapshot',
     });
     expect(first.status).toBe(201);
-    expect(first.body.version).toMatchObject({ gameId: expect.any(Number), fileCount: 1 });
+    expect(first.body.version).toMatchObject({ gameId, fileCount: 1 });
     expect(first.body.hasUnresolved).toBe(false);
 
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect((await upload('two', '101')).status).toBe(200);
     expect(fs.readFileSync(path.join(gameDir, 'slot1.sav'), 'utf-8')).toBe('two');
     const second = await api(request(app).post('/api/save-versions')).send({
-      game,
+      gameId,
       deviceId: 'device-b',
     });
     expect(second.status).toBe(201);
 
-    const listed = await api(request(app).get(`/api/save-versions?game=${encodeURIComponent(game)}`));
+    const listed = await api(request(app).get(`/api/save-versions?gameId=${gameId}`));
     expect(listed.status).toBe(200);
     const versionIds = listed.body.versions.map((v: { id: string }) => v.id);
     expect(versionIds).toContain(second.body.version.id);
@@ -430,22 +435,60 @@ describe('save version, conflict, profile, and storage endpoints', () => {
     expect(detail.body.files.map((f: { path: string }) => f.path)).toContain('slot1.sav');
 
     // Error cases
-    expect((await api(request(app).get('/api/save-versions'))).status).toBe(400);
     expect((await api(request(app).get('/api/save-versions/does-not-exist'))).status).toBe(404);
-    expect((await api(request(app).post('/api/save-versions')).send({})).status).toBe(400);
     expect((await api(request(app).post('/api/restore-version')).send({})).status).toBe(400);
     // DUN-125: a malformed id is 400 INVALID_VERSION_ID; a well-formed unknown id is 404.
-    const malformed = await api(request(app).post('/api/restore-version')).send({ game, versionId: 'missing' });
+    const malformed = await api(request(app).post('/api/restore-version')).send({ gameId, versionId: 'missing' });
     expect(malformed.status).toBe(400);
     expect(malformed.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
-    const unknown = await api(request(app).post('/api/restore-version')).send({ game, versionId: '00000000-0000-4000-8000-000000000000' });
+    const unknown = await api(request(app).post('/api/restore-version')).send({ gameId, versionId: '00000000-0000-4000-8000-000000000000' });
     expect(unknown.status).toBe(404);
     expect(unknown.body).toEqual({ error: 'Version not found', code: 'VERSION_NOT_FOUND' });
   });
 
+  it('DUN-038: save-versions take gameId only (400 INVALID_GAME_ID, 404 GAME_NOT_FOUND)', async () => {
+    const invalid = { error: expect.any(String), code: 'INVALID_GAME_ID' };
+    for (const q of ['', '?gameId=', '?gameId=abc', '?gameId=0', '?gameId=-1', '?gameId=Infinity', `?game=${encodeURIComponent(game)}`]) {
+      const res = await api(request(app).get(`/api/save-versions${q}`));
+      expect(res.status, q).toBe(400);
+      expect(res.body, q).toEqual(invalid);
+    }
+    for (const body of [{}, { game }, { gameId: String(gameId) }, { gameId: 0 }, { gameId: -2 }, { gameId: null }]) {
+      const res = await api(request(app).post('/api/save-versions')).send(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body, JSON.stringify(body)).toEqual(invalid);
+    }
+    const notFound = { error: 'Game not found', code: 'GAME_NOT_FOUND' };
+    const missingList = await api(request(app).get('/api/save-versions?gameId=987654'));
+    expect(missingList.status).toBe(404);
+    expect(missingList.body).toEqual(notFound);
+    const missingCreate = await api(request(app).post('/api/save-versions')).send({ gameId: 987654 });
+    expect(missingCreate.status).toBe(404);
+    expect(missingCreate.body).toEqual(notFound);
+    // A non-integer id is well-formed (games.id is REAL) but matches no row.
+    expect((await api(request(app).get('/api/save-versions?gameId=1.5'))).status).toBe(404);
+  });
+
+  it('DUN-137: restore-version takes gameId only (400 INVALID_GAME_ID, 404 GAME_NOT_FOUND)', async () => {
+    const versionId = '00000000-0000-4000-8000-000000000000';
+    for (const body of [{}, { game, versionId }, { gameId: String(gameId), versionId }, { gameId: 0, versionId }, { gameId: -2, versionId }, { gameId: null, versionId }]) {
+      const res = await api(request(app).post('/api/restore-version')).send(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(res.body, JSON.stringify(body)).toEqual({ error: expect.any(String), code: 'INVALID_GAME_ID' });
+    }
+    const missing = await api(request(app).post('/api/restore-version')).send({ gameId: 987654, versionId });
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({ error: 'Game not found', code: 'GAME_NOT_FOUND' });
+    for (const bad of [undefined, '', 7]) {
+      const res = await api(request(app).post('/api/restore-version')).send({ gameId, versionId: bad });
+      expect(res.status, String(bad)).toBe(400);
+      expect(res.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
+    }
+  });
+
   it('detects, lists, and resolves conflicts', async () => {
     const { recordConflict } = await import('./services/conflicts.js');
-    const versions = await api(request(app).get(`/api/save-versions?game=${encodeURIComponent(game)}`));
+    const versions = await api(request(app).get(`/api/save-versions?gameId=${gameId}`));
     expect(versions.status).toBe(200);
     expect(Array.isArray(versions.body.versions)).toBe(true);
     if (versions.body.versions.length < 2) {

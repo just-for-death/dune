@@ -55,9 +55,10 @@ describe('toServerFailure (Dune UI contract)', () => {
     expect(toServerFailure(axiosError(404, { error: 'Game not found', code: 'GAME_NOT_FOUND' }))).toEqual({ ok: false, status: 404, code: 'GAME_NOT_FOUND', message: 'Game not found' });
   });
 
-  it('tRPC errors: the app code comes from error.data.code (single and batch)', () => {
-    const trpc = { error: { message: 'Unknown key: winPath', code: -32600, data: { code: 'UNKNOWN_KEYS', httpStatus: 400 } } };
-    expect(toServerFailure(axiosError(400, trpc))).toEqual({ ok: false, status: 400, code: 'UNKNOWN_KEYS', message: 'Unknown key: winPath' });
-    expect(failureFromResponse(undefined, [trpc])).toEqual({ ok: false, status: 400, code: 'UNKNOWN_KEYS', message: 'Unknown key: winPath' });
+  it('only the REST { error, code } shape is parsed; anything else is UNKNOWN with the HTTP status (DUN-038)', () => {
+    const f = toServerFailure(axiosError(400, { error: { message: 'x', data: { code: 'UNKNOWN_KEYS' } } }));
+    expect(f.status).toBe(400);
+    expect(f.code).not.toBe('UNKNOWN_KEYS');
+    expect(f.message).toBe('Server error (HTTP 400)');
   });
 });

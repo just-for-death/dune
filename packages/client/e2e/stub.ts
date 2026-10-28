@@ -493,9 +493,13 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         const [gone] = prefixes.splice(index, 1);
         return { ok: true, trashedPath: `/home/jane/.local/share/Trash/files/${gone.name}` };
       },
-      getSaveVersions: async (game: string) => {
-        await wait(game);
-        return { ok: true, success: true, versions: versionsFor(game) };
+      getSaveVersions: async (gameId: number) => {
+        // Keyed on the numeric id (shared ElectronAPI); name-keyed fixtures
+        // (perGame/delayMs) are reached through the id's game row.
+        const row = store.games.find((g) => g.id === gameId);
+        if (!row) return { ok: false, status: 404, code: 'GAME_NOT_FOUND', message: 'Game not found' };
+        await wait(row.name);
+        return { ok: true, success: true, versions: versionsFor(row.name) };
       },
       getStorage: async (game: string) => {
         await wait(game);
@@ -519,7 +523,7 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         calls.push({ method: 'resolveConflict', args: [id, resolution] });
         return { ok: true, success: true };
       },
-      restoreSaveVersion: async () => ({ ok: true, success: true, message: 'Restored' }),
+      restoreSaveVersion: async (_gameId: number, _versionId: string) => ({ ok: true, success: true, message: 'Restored' }),
     };
     (window as unknown as { electronAPI: Partial<ElectronAPI> }).electronAPI = api;
   }, options);

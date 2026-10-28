@@ -5,7 +5,10 @@ import * as os from 'os';
 
 vi.mock('axios');
 import axios from 'axios';
-import { getHLTBTimes, bulkFetchHLTB, readCache, writeCache, getCachePath, normalizeTitle, secondsToMinutes } from './hltb.js';
+import {
+  getHLTBTimes, readCache, writeCache, getCachePath, normalizeTitle, secondsToMinutes,
+  resetHLTBSession, extractChunkPaths, extractSearchApi, HLTB_BASE_URL,
+} from './hltb.js';
 
 /**
  * DUN-043: real HowLongToBeat record for Hollow Knight (comp_* in SECONDS),
@@ -16,14 +19,52 @@ const FIXTURE = JSON.parse(fs.readFileSync(new URL('./hltb.fixture.json', import
   data: Array<{ game_name: string; comp_main: number; comp_plus: number; comp_100: number }>;
 };
 
+/**
+ * DUN-132: real site responses (homepage script tags, the search chunk excerpt,
+ * the init body with its token redacted, and a trimmed search body).
+ */
+const FLOW = JSON.parse(fs.readFileSync(new URL('./hltb.flow.fixture.json', import.meta.url), 'utf-8')) as {
+  searchChunkPath: string;
+  homepageHtml: string;
+  searchChunk: string;
+  init: { token: string };
+  search: { count: number; data: Array<{ game_name: string; comp_main: number; comp_plus: number; comp_100: number }> };
+};
+
 const HLTB_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-hltb-test-'));
 const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
 process.env.DATA_DIR = HLTB_TMP;
 const postMock = vi.mocked(axios.post);
+const getMock = vi.mocked(axios.get);
+
+type Reply = { status: number; data: unknown };
+const ok = (data: unknown): Reply => ({ status: 200, data });
+
+/**
+ * Serve the real homepage and bundle from the fixture; every other chunk is a
+ * 404. `inits` are the successive /init replies (the last one repeats).
+ */
+function mockSite(inits: Reply[] = [ok(FLOW.init)], site = { html: FLOW.homepageHtml, chunk: FLOW.searchChunk }) {
+  let i = 0;
+  getMock.mockImplementation(async (url: string) => {
+    const u = new URL(url);
+    if (u.pathname === '/') return ok(site.html);
+    if (u.pathname === FLOW.searchChunkPath) return ok(site.chunk);
+    if (u.pathname.startsWith('/_next/')) return { status: 404, data: 'Not Found' };
+    if (u.pathname.endsWith('/init')) return inits[Math.min(i++, inits.length - 1)];
+    throw new Error(`unexpected GET ${url}`);
+  });
+}
+
+const initCalls = () => getMock.mock.calls.filter(([url]) => String(url).includes('/init'));
+const homeCalls = () => getMock.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/');
 const CACHE_DIR = path.join(process.env.DATA_DIR as string, 'hltb-cache');
 
 beforeEach(() => {
   postMock.mockReset();
+  getMock.mockReset();
+  resetHLTBSession();
+  mockSite();
   if (fs.existsSync(CACHE_DIR)) fs.rmSync(CACHE_DIR, { recursive: true });
 });
 
@@ -90,7 +131,7 @@ describe('getHLTBTimes', () => {
   });
 
   it('should fetch, convert seconds to minutes, and cache on miss', async () => {
-    postMock.mockResolvedValue({ data: { data: [apiGame()] } });
+    postMock.mockResolvedValue({ status: 200, data: { data: [apiGame()] } });
 
     const result = await getHLTBTimes('Some Game');
     expect(result.success).toBe(true);
@@ -101,17 +142,17 @@ describe('getHLTBTimes', () => {
   });
 
   it('should return not found when API has no match', async () => {
-    postMock.mockResolvedValue({ data: { data: [] } });
+    postMock.mockResolvedValue({ status: 200, data: { data: [] } });
 
     const result = await getHLTBTimes('This Game Does Not Exist 12345');
-    expect(result.success).toBe(false);
+    expect(result).toMatchObject({ success: false, code: 'HLTB_NOT_FOUND', message: 'Game not found on HowLongToBeat' });
   });
 
-  it('should return not found when the network fails', async () => {
+  it('should return unavailable when the network fails', async () => {
     postMock.mockRejectedValue(new Error('network down'));
 
     const result = await getHLTBTimes('Any Game');
-    expect(result.success).toBe(false);
+    expect(result).toMatchObject({ success: false, code: 'HLTB_UNAVAILABLE' });
   });
 
   it('should fall back to stale cache when the network fails', async () => {
@@ -130,28 +171,6 @@ describe('getHLTBTimes', () => {
   });
 });
 
-describe('bulkFetchHLTB', () => {
-  it('should return cached times and skip HTTP for cached games', async () => {
-    writeCache('Game A', { mainStory: 600, mainExtra: 900, completionist: 1200 });
-    writeCache('Game B', { mainStory: 1200, mainExtra: 1800, completionist: 2400 });
-    postMock.mockResolvedValue({ data: { data: [] } });
-
-    const results = await bulkFetchHLTB(['Game A', 'Game B', 'Game C']);
-
-    expect(results.size).toBe(2);
-    expect(results.get('Game A')).toEqual({ mainStory: 600, mainExtra: 900, completionist: 1200 });
-    expect(results.get('Game B')).toEqual({ mainStory: 1200, mainExtra: 1800, completionist: 2400 });
-    expect(results.has('Game C')).toBe(false);
-    // Only the uncached name triggers a request
-    expect(postMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('should handle empty array without network', async () => {
-    const results = await bulkFetchHLTB([]);
-    expect(results.size).toBe(0);
-    expect(postMock).not.toHaveBeenCalled();
-  });
-});
 
 describe('DUN-043: HowLongToBeat units (real fixture)', () => {
   it('comp_* are seconds: the real Hollow Knight record matches the site hours', async () => {
@@ -162,7 +181,7 @@ describe('DUN-043: HowLongToBeat units (real fixture)', () => {
     expect(Math.abs(hk.comp_plus / 3600 - 41.5)).toBeLessThan(0.5);
     expect(Math.abs(hk.comp_100 / 3600 - 65.5)).toBeLessThan(0.5);
 
-    postMock.mockResolvedValue({ data: { data: FIXTURE.data } });
+    postMock.mockResolvedValue({ status: 200, data: { data: FIXTURE.data } });
     const result = await getHLTBTimes('Hollow Knight');
     expect(result.success).toBe(true);
     // HLTBTimes is minutes.
@@ -197,9 +216,9 @@ describe('DUN-105: cache keys and typed failures', () => {
   it('surfaces HLTB_UNAVAILABLE on network errors and HLTB_NOT_FOUND on no match', async () => {
     postMock.mockRejectedValue(new Error('network down'));
     expect(await getHLTBTimes('Net Fail Game')).toMatchObject({ success: false, code: 'HLTB_UNAVAILABLE' });
-    postMock.mockResolvedValue({ data: { unexpected: true } });
+    postMock.mockResolvedValue({ status: 200, data: { unexpected: true } });
     expect(await getHLTBTimes('Bad Shape Game')).toMatchObject({ success: false, code: 'HLTB_UNAVAILABLE' });
-    postMock.mockResolvedValue({ data: { data: [] } });
+    postMock.mockResolvedValue({ status: 200, data: { data: [] } });
     expect(await getHLTBTimes('No Match Game')).toMatchObject({ success: false, code: 'HLTB_NOT_FOUND' });
   });
 
@@ -207,5 +226,151 @@ describe('DUN-105: cache keys and typed failures', () => {
     writeCache('Corrupt Game', { mainStory: 1, mainExtra: 1, completionist: 1 });
     fs.writeFileSync(getCachePath('Corrupt Game'), '{not json');
     expect(readCache('Corrupt Game')).toBeNull();
+  });
+});
+
+describe('DUN-132: token-gated search discovered from the site bundle', () => {
+  it('finds the init and search paths in the real homepage + chunk', () => {
+    const chunks = extractChunkPaths(FLOW.homepageHtml);
+    expect(chunks).toContain(FLOW.searchChunkPath);
+    expect(chunks.every((c) => c.startsWith('/_next/static/chunks/'))).toBe(true);
+    expect(extractSearchApi(FLOW.searchChunk)).toEqual({ initPath: '/api/search/site/init', searchPath: '/api/search/site' });
+    expect(extractSearchApi('fetch("/api/user",{method:"GET"})')).toBeNull();
+  });
+
+  it('scans the live load order: the search chunk is the 2nd eager chunk, then discovery stops', async () => {
+    const chunks = extractChunkPaths(FLOW.homepageHtml);
+    expect(chunks.indexOf(FLOW.searchChunkPath)).toBe(1);
+    postMock.mockResolvedValue(ok(FLOW.search));
+    await getHLTBTimes('Hollow Knight');
+    const chunkGets = getMock.mock.calls.map(([url]) => new URL(String(url)).pathname).filter((p) => p.startsWith('/_next/'));
+    expect(chunkGets).toEqual(chunks.slice(0, 2)); // same 2 chunk GETs the live run made
+  });
+
+  it('reads the Turbopack otherChunks bootstrap when the chunk has no <script> tag', async () => {
+    const bootstrapOnly = FLOW.homepageHtml.replace(/<script[^>]+src="[^"]*"[^>]*><\/script>/g, '');
+    expect(bootstrapOnly).not.toContain('src="/_next/');
+    const chunks = extractChunkPaths(bootstrapOnly);
+    expect(chunks).toContain(FLOW.searchChunkPath);
+    expect(chunks.every((c) => c.startsWith('/_next/static/chunks/') && c.endsWith('.js'))).toBe(true);
+
+    mockSite([ok(FLOW.init)], { html: bootstrapOnly, chunk: FLOW.searchChunk });
+    postMock.mockResolvedValue(ok(FLOW.search));
+    expect(await getHLTBTimes('Hollow Knight')).toMatchObject({ success: true });
+    expect(postMock.mock.calls[0][0]).toBe(`${HLTB_BASE_URL}/api/search/site`);
+  });
+
+  it('follows a rotated endpoint without code changes', () => {
+    const rotated = FLOW.searchChunk.replaceAll('/api/search/site', '/api/lookup/v9');
+    expect(extractSearchApi(rotated)).toEqual({ initPath: '/api/lookup/v9/init', searchPath: '/api/lookup/v9' });
+  });
+
+  it('discovers, mints a token, and POSTs the search with it (real Hollow Knight shape)', async () => {
+    postMock.mockResolvedValue(ok(FLOW.search));
+    const result = await getHLTBTimes('Hollow Knight');
+
+    expect(result.success).toBe(true);
+    const [hk] = FLOW.search.data;
+    expect(hk.game_name).toBe('Hollow Knight');
+    expect(result.times).toMatchObject({
+      mainStory: secondsToMinutes(hk.comp_main),
+      mainExtra: secondsToMinutes(hk.comp_plus),
+      completionist: secondsToMinutes(hk.comp_100),
+    });
+    expect(result.times!.mainStory / 60).toBeCloseTo(27, 0);
+
+    expect(homeCalls()).toHaveLength(1);
+    expect(initCalls()).toHaveLength(1);
+    expect(String(initCalls()[0][0])).toMatch(new RegExp(`^${HLTB_BASE_URL}/api/search/site/init\\?t=\\d+$`));
+    expect(postMock).toHaveBeenCalledTimes(1);
+    const [url, body, config] = postMock.mock.calls[0] as [string, Record<string, unknown>, { headers: Record<string, string> }];
+    expect(url).toBe(`${HLTB_BASE_URL}/api/search/site`);
+    expect(body).toMatchObject({ searchType: 'games', searchTerms: ['Hollow', 'Knight'] });
+    expect(config.headers).toMatchObject({ 'x-auth-token': FLOW.init.token, Origin: HLTB_BASE_URL, Referer: `${HLTB_BASE_URL}/` });
+    // The token is minted and used with the same User-Agent.
+    const initConfig = initCalls()[0][1] as { headers: Record<string, string> };
+    expect(config.headers['User-Agent']).toBe(initConfig.headers['User-Agent']);
+  });
+
+  it('reuses the cached endpoint and token for later searches', async () => {
+    postMock.mockResolvedValue(ok(FLOW.search));
+    await getHLTBTimes('Hollow Knight');
+    await getHLTBTimes('Celeste');
+    await getHLTBTimes('Hades');
+
+    expect(postMock).toHaveBeenCalledTimes(3);
+    expect(homeCalls()).toHaveLength(1);
+    expect(initCalls()).toHaveLength(1);
+  });
+
+  it('echoes a honeypot pair only when init issues one', async () => {
+    mockSite([ok({ token: 'tok-hp', hpKey: 'ign_abc', hpVal: 'v123' })]);
+    postMock.mockResolvedValue(ok(FLOW.search));
+    await getHLTBTimes('Hollow Knight');
+    const [, body, config] = postMock.mock.calls[0] as [string, Record<string, unknown>, { headers: Record<string, string> }];
+    expect(body.ign_abc).toBe('v123');
+    expect(config.headers).toMatchObject({ 'x-auth-token': 'tok-hp', 'x-hp-key': 'ign_abc', 'x-hp-val': 'v123' });
+  });
+
+  it('on 403 refreshes the token once and retries', async () => {
+    mockSite([ok({ token: 'expired' }), ok({ token: 'fresh' })]);
+    postMock.mockResolvedValueOnce({ status: 403, data: { error: 'IFW-U01' } }).mockResolvedValueOnce(ok(FLOW.search));
+
+    const result = await getHLTBTimes('Hollow Knight');
+    expect(result.success).toBe(true);
+    expect(postMock).toHaveBeenCalledTimes(2);
+    expect(initCalls()).toHaveLength(2);
+    expect(homeCalls()).toHaveLength(1); // a 403 is a token problem, not a moved endpoint
+    const headers = (n: number) => (postMock.mock.calls[n][2] as { headers: Record<string, string> }).headers['x-auth-token'];
+    expect([headers(0), headers(1)]).toEqual(['expired', 'fresh']);
+  });
+
+  it('on 404 rediscovers the endpoint once and retries', async () => {
+    postMock.mockResolvedValueOnce({ status: 404, data: 'Not Found' }).mockResolvedValueOnce(ok(FLOW.search));
+    const result = await getHLTBTimes('Hollow Knight');
+    expect(result.success).toBe(true);
+    expect(homeCalls()).toHaveLength(2);
+    expect(postMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a refresh that still fails is HLTB_UNAVAILABLE after exactly one retry', async () => {
+    postMock.mockResolvedValue({ status: 403, data: { error: 'IFW-U01' } });
+    const result = await getHLTBTimes('Hollow Knight');
+    expect(result).toEqual({ success: false, code: 'HLTB_UNAVAILABLE', message: 'HowLongToBeat is unavailable' });
+    expect(postMock).toHaveBeenCalledTimes(2);
+    expect(initCalls()).toHaveLength(2);
+  });
+
+  it('a failed token refresh is HLTB_UNAVAILABLE', async () => {
+    mockSite([ok({ token: 'expired' }), { status: 403, data: { error: 'IFW-U01' } }]);
+    postMock.mockResolvedValue({ status: 403, data: { error: 'IFW-U01' } });
+    const result = await getHLTBTimes('Hollow Knight');
+    expect(result).toMatchObject({ success: false, code: 'HLTB_UNAVAILABLE' });
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(initCalls()).toHaveLength(2);
+  });
+
+  it('an init reply without a token is HLTB_UNAVAILABLE and nothing is searched', async () => {
+    mockSite([ok({ message: 'nope' })]);
+    expect(await getHLTBTimes('Hollow Knight')).toMatchObject({ success: false, code: 'HLTB_UNAVAILABLE' });
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it('a bundle without the search client is HLTB_UNAVAILABLE and nothing is searched', async () => {
+    mockSite([ok(FLOW.init)], { html: FLOW.homepageHtml, chunk: 'console.log("no search here")' });
+    expect(await getHLTBTimes('Hollow Knight')).toMatchObject({ success: false, code: 'HLTB_UNAVAILABLE' });
+    expect(initCalls()).toHaveLength(0);
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it('a real-shaped empty result is HLTB_NOT_FOUND', async () => {
+    postMock.mockResolvedValue(ok({ ...FLOW.search, count: 0, pageTotal: 0, data: [] }));
+    expect(await getHLTBTimes('zzzz no such game 98765')).toEqual({ success: false, code: 'HLTB_NOT_FOUND', message: 'Game not found on HowLongToBeat' });
+  });
+
+  it('a 429 is HLTB_UNAVAILABLE without a refresh', async () => {
+    postMock.mockResolvedValue({ status: 429, data: {} });
+    expect(await getHLTBTimes('Hollow Knight')).toMatchObject({ success: false, code: 'HLTB_UNAVAILABLE' });
+    expect(postMock).toHaveBeenCalledTimes(1);
   });
 });

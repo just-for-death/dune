@@ -33,7 +33,6 @@ const getMock = vi.mocked(axios.get);
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 const { closeDbForTests } = await import('./db/sqlite.js');
-const { appRouter } = await import('./trpc/router.js');
 
 const ADMIN_KEY = 'provkeys-admin-key-0123456789';
 database.addApiKey(ADMIN_KEY);
@@ -78,10 +77,6 @@ describe('SteamGridDB key (DUN-092)', () => {
       expect(settings.body.settings.steamGridApiKeySet).toBe(true);
       responses.push(JSON.stringify(st.body), JSON.stringify(settings.body));
     }
-    const caller = appRouter.createCaller({
-      db: database.getGames(), settings: database.getSettings(), apiKey: ADMIN_KEY, apiKeyValid: true, user: database.listUsers()[0],
-    } as never);
-    responses.push(JSON.stringify(await caller.settings.get()), JSON.stringify(await caller.providerKeys.steamGridDb.status()));
 
     // Server-side use: the provider client receives the key as a Bearer token.
     getMock.mockImplementation(async (url: string) => {

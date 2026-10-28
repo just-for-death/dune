@@ -130,7 +130,7 @@ test.beforeEach(async ({ page }) => {
       setBackupProfile: async (profile: Record<string, unknown>) => ({ ok: true, success: true, profile }),
       getConflicts: async () => ({ ok: true, success: true, conflicts: [] }),
       resolveConflict: async () => ({ ok: true, success: true }),
-      restoreSaveVersion: async () => ({ ok: true, success: true, message: 'Restored' }),
+      restoreSaveVersion: async (_gameId: number, _versionId: string) => ({ ok: true, success: true, message: 'Restored' }),
     };
   });
 });

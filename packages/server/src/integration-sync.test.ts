@@ -29,11 +29,6 @@ describe('Integration: Full Client-Server Save Sync Lifecycle', () => {
   const syncId1 = '1729000000001';
   const syncId2 = '1729000000002';
 
-  const trpcGet = (procPath: string, input: unknown) =>
-    request(app)
-      .get(`/trpc/${procPath}?batch=1&input=${encodeURIComponent(JSON.stringify({ 0: input ?? null }))}`)
-      .set('x-api-key', AUTH_KEY);
-
   it('step 1: uploads initial save and config files via REST upload-file', async () => {
     // Upload save file
     const res1 = await request(app)
@@ -95,13 +90,8 @@ describe('Integration: Full Client-Server Save Sync Lifecycle', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-
-    // List versions via tRPC files.versions.list
-    const verRes = await trpcGet('files.versions.list', { game: gameName });
-    expect(verRes.status).toBe(200);
-    const versions = verRes.body[0].result.data.versions;
-    expect(versions.length).toBeGreaterThanOrEqual(1);
-    expect(versions.some((v: { id: string }) => v.id === syncId2)).toBe(true);
+    // The snapshot dir is named by the sync id (.versions/<syncId2>); step 5
+    // downloads the archived bytes from it over REST.
   });
 
   it('step 4: downloads active version and verifies exact byte identity', async () => {

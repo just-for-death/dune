@@ -64,7 +64,7 @@ describe('requestLogger', () => {
   it('logs method/path/status/latency with the reqId on finish', () => {
     const { lines, stream } = capture();
     const log = createLogger(stream);
-    const req = { method: 'POST', path: '/trpc/games.list' } as LoggedRequest;
+    const req = { method: 'POST', path: '/api/saves' } as LoggedRequest;
     const res = fakeRes(200);
     requestLogger(req, res, () => {}, log);
     (res as unknown as EventEmitter).emit('finish');
@@ -72,7 +72,7 @@ describe('requestLogger', () => {
     const parsed = JSON.parse(lines[0]);
     expect(parsed.msg).toBe('request');
     expect(parsed.method).toBe('POST');
-    expect(parsed.path).toBe('/trpc/games.list');
+    expect(parsed.path).toBe('/api/saves');
     expect(parsed.status).toBe(200);
     expect(parsed.reqId).toBe(req.reqId);
     expect(typeof parsed.latencyMs).toBe('number');
@@ -130,10 +130,10 @@ describe('error serializer + redaction (DUN-009)', () => {
 
     const { lines, stream } = capture();
     const log = createLogger(stream);
-    // The exact call shapes used by server.ts, sync.ts, trpc/http.ts, remoteSync.ts.
+    // The exact call shapes used by server.ts, sync.ts, remoteSync.ts, plus an `error` key.
     log.error({ err }, 'Remote sync error');
     log.error({ reqId: 'r1', err }, 'API internal error');
-    log.error({ error: err }, 'tRPC-style key');
+    log.error({ error: err }, 'error-key shape');
     log.error(err, 'error passed directly');
     const out = lines.join('');
 

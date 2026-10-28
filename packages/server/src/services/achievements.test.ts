@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { dataDir } from '../utils/path.js';
-import { upsertAchievements, getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from './achievements.js';
+import { upsertAchievements, getGameAchievements, getAchievementSummary, getRecentUnlocks } from './achievements.js';
 
 // Lives in the per-file temp DATA_DIR from src/test/setup.ts, never the real ./data (DUN-005).
 const ACHIEVEMENTS_DB = path.join(dataDir(), 'achievements.json');
@@ -172,17 +172,3 @@ describe('getRecentUnlocks', () => {
   });
 });
 
-describe('handleSentinelWebhook', () => {
-  it('should upsert achievements from Sentinel', () => {
-    const result = handleSentinelWebhook('Test Game', [
-      { apiName: 'ACH_001', displayName: 'First', unlocked: true, unlockTime: '2024-01-01T10:00:00.000Z' }
-    ]);
-    
-    expect(result.success).toBe(true);
-    expect(result.count).toBe(1);
-    
-    const achievements = getGameAchievements('Test Game');
-    expect(achievements[0].apiName).toBe('ACH_001');
-    expect(achievements[0].unlocked).toBe(true);
-  });
-});

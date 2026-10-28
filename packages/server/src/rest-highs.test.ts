@@ -72,12 +72,12 @@ describe('upload-file', () => {
 
 describe('restore-version (DUN-090)', () => {
   it('returns restoredFiles, removedFiles and preRestoreVersionId', async () => {
-    await upload('REST Restore', 'a.sav', 'one');
-    const v = await request(app).post('/api/save-versions').set('x-api-key', KEY).send({ game: 'REST Restore' });
+    const up = await upload('REST Restore', 'a.sav', 'one');
+    const v = await request(app).post('/api/save-versions').set('x-api-key', KEY).send({ gameId: up.body.gameId });
     expect(v.status).toBe(201);
     const versionId = (v.body.version ?? v.body).id as string;
     await upload('REST Restore', 'b.sav', 'two');
-    const res = await request(app).post('/api/restore-version').set('x-api-key', KEY).send({ game: 'REST Restore', versionId });
+    const res = await request(app).post('/api/restore-version').set('x-api-key', KEY).send({ gameId: up.body.gameId, versionId });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ success: true, restoredFiles: 1, removedFiles: 1, preRestoreVersionId: expect.any(String) });
   });

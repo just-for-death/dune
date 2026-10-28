@@ -440,7 +440,7 @@ export default function App() {
     const ticket = gate.begin(gameId);
     const loadSaves = async () => {
       const [versionsRes, storageRes, profileRes, conflictsRes] = await Promise.allSettled([
-        window.electronAPI.getSaveVersions(game),
+        window.electronAPI.getSaveVersions(gameId),
         window.electronAPI.getStorage(game),
         window.electronAPI.getBackupProfile(game),
         window.electronAPI.getConflicts(game),
@@ -1610,7 +1610,7 @@ export default function App() {
         {activeTab === 'saves' && (
           <div className="card">
             <h3 className="card-title">{t('saves.versions')}</h3>
-            <SaveVersionTimeline versions={visibleSaveVersions.length ? visibleSaveVersions : DEMO_SAVE_VERSIONS} onRestore={async (id) => { const res = await window.electronAPI.restoreSaveVersion(selectedSaveGameName, id); if (res.ok) showToast(res.message || t('saves.restoreRequested'), 'success'); else showToast(serverFailureMessage(res, t), 'error'); }} />
+            <SaveVersionTimeline versions={visibleSaveVersions.length ? visibleSaveVersions : DEMO_SAVE_VERSIONS} onRestore={async (id) => { if (selectedSaveGameId === null) return; const res = await window.electronAPI.restoreSaveVersion(selectedSaveGameId, id); if (res.ok) showToast(res.message || t('saves.restoreRequested'), 'success'); else showToast(serverFailureMessage(res, t), 'error'); }} />
           </div>
         )}
         {activeTab === 'saves' && (

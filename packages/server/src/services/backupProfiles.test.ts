@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { matchesGlob, filterBackupFiles, calculateBackupSizes, DEFAULT_EXCLUDE_GLOBS } from './backupProfiles.js';
+import { matchesGlob, DEFAULT_EXCLUDE_GLOBS } from '@dune/shared';
+import { filterBackupFiles, calculateBackupSizes } from './backupProfiles.js';
 
 describe('backupProfiles', () => {
   it('matches common exclusion globs', () => {
@@ -17,7 +18,7 @@ describe('backupProfiles', () => {
     const profile = {
       gameId: 1,
       includeGlobs: ['**/*'],
-      excludeGlobs: DEFAULT_EXCLUDE_GLOBS,
+      excludeGlobs: [...DEFAULT_EXCLUDE_GLOBS],
       autoExcludeCache: true,
       updatedAt: new Date().toISOString(),
     };

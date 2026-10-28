@@ -1,52 +1,8 @@
 import { getDb } from '../db/sqlite.js';
-import type { BackupProfile } from '@dune/shared';
-
-/**
- * Cache/log/screenshot rules applied whenever a profile has
- * `autoExcludeCache: true` (DUN-103), on top of the profile's own
- * `excludeGlobs` (which hold only the user's extra rules).
- */
-export const DEFAULT_EXCLUDE_GLOBS = [
-  '**/*.log',
-  '**/*.tmp',
-  '**/*.cache',
-  '**/cache/**',
-  '**/Cache/**',
-  '**/ShaderCache/**',
-  '**/crashdumps/**',
-  '**/CrashDumps/**',
-  '**/screenshots/**',
-  '**/Screenshots/**',
-  '**/logs/**',
-  '**/Logs/**',
-];
+import { DEFAULT_EXCLUDE_GLOBS, matchesGlob, type BackupProfile } from '@dune/shared';
 
 function toPosix(value: string): string {
   return value.replace(/\\/g, '/');
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export function globToRegExp(pattern: string): RegExp {
-  const normalized = toPosix(pattern).trim();
-  const withPlaceholders = normalized
-    .replace(/\*\*\//g, '@@GSS@@')
-    .replace(/\*\*/g, '@@GS@@')
-    .replace(/\*/g, '@@STAR@@')
-    .replace(/\?/g, '@@QMARK@@');
-  let regex = escapeRegExp(withPlaceholders);
-  regex = regex.replace(/@@GSS@@/g, '(?:.*/)?');
-  regex = regex.replace(/@@GS@@/g, '.*');
-  regex = regex.replace(/@@STAR@@/g, '[^/]*');
-  regex = regex.replace(/@@QMARK@@/g, '[^/]');
-  return new RegExp(`^${regex}$`, 'i');
-}
-
-export function matchesGlob(relPath: string, pattern: string): boolean {
-  if (!pattern || pattern === '*' || pattern === '**' || pattern === '**/*') return true;
-  return globToRegExp(pattern).test(toPosix(relPath));
 }
 
 export function getBackupProfile(gameId: number): BackupProfile {

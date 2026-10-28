@@ -5,7 +5,7 @@ import * as os from 'os'
 import * as fs from 'fs'
 import Store from 'electron-store'
 import AdmZip from 'adm-zip'
-import { nextId } from '@dune/shared'
+import { nextId, DEFAULT_TRACKERS_ENABLED } from '@dune/shared'
 import type { FileManifest, HashManifest, Game, Settings, Cloud, CloudSyncResult, FetchArtResult, ImportLocalAchievementsResult, RestoreBackupInfo, ScannerSourceToggles, ServerFailure, ServerResult, SyncFailureItem } from '@dune/shared'
 import { fullScan, gameRegistry } from './scanner/registry'
 import { applyScannerSources, listScannerSources, sanitizeScannerSources, setScannerSource } from './scanner/sourceToggles'
@@ -44,6 +44,7 @@ import {
   planUpload,
   commitUploaded,
   backupProfileFilter,
+  type BackupProfileGlobs,
 } from './utils'
 
 function errorMessage(error: unknown): string {
@@ -69,6 +70,9 @@ const store = new Store({
       updateChecks: false,
       // DUN-077: saved scanner source toggles (main-owned; see scanner/sourceToggles.ts).
       scannerSources: {} as ScannerSourceToggles,
+      // Remote trackers and SteamGridDB artwork are opt-in.
+      trackersEnabled: { ...DEFAULT_TRACKERS_ENABLED },
+      artworkEnabled: false,
     }
   }
 })
@@ -344,8 +348,11 @@ const PROTECTED_SAVE_PATH: ServerFailure = {
 /** Backup-profile filter for a game; include-all when the server has none or is unreachable. */
 async function fetchBackupProfileFilter(gameName: string): Promise<(rel: string) => boolean> {
   try {
-    const res = await serverClient.raw<{ profile?: Parameters<typeof backupProfileFilter>[0] }>({ method: 'GET', path: '/api/backup-profile', query: { game: gameName } });
-    if (res.data?.profile) return backupProfileFilter(res.data.profile);
+    const res = await serverClient.raw<{ profile?: BackupProfileGlobs | null; cacheExcludeGlobs?: string[] }>({ method: 'GET', path: '/api/backup-profile', query: { game: gameName } });
+    if (res.data?.profile) {
+      const cacheGlobs = Array.isArray(res.data.cacheExcludeGlobs) ? res.data.cacheExcludeGlobs : [];
+      return backupProfileFilter(res.data.profile, cacheGlobs);
+    }
   } catch {
     // Fall back to the full file set.
   }
@@ -458,7 +465,7 @@ async function performCloudSync(progress: ProgressFn = () => {}): Promise<CloudS
             await serverClient.raw({
               method: 'POST',
               path: '/api/save-versions',
-              body: { game: game.name, deviceId: os.hostname(), changeSummary: `Synced ${p.plan.length} changed file(s)` },
+              body: { gameId: game.id, deviceId: os.hostname(), changeSummary: `Synced ${p.plan.length} changed file(s)` },
             });
           } catch {
             /* Version creation is non-fatal; sync already succeeded. */
@@ -889,13 +896,6 @@ ipcMain.handle('reportRendererError', (_event, report) => {
   return true;
 });
 
-ipcMain.handle('openErrorLog', async () => {
-  const { shell } = await import('electron');
-  appendErrorLog('app', { message: 'error log opened by user' });
-  shell.openPath(errorLogPath());
-  return true;
-});
-
 // ── App updates (DUN-028): opt-in checks, download/install only on a click ──
 let updateController: ReturnType<typeof createUpdateController> | null = null;
 function getUpdateController() {
@@ -942,8 +942,15 @@ ipcMain.handle('game:setCustomArt', async (_event, id) => {
   return `local://${targetPath}`
 })
 
+/** Artwork lookups are opt-in (settings.artworkEnabled); nothing reaches SteamGridDB until then. */
+function artworkEnabled(): boolean {
+  return (store.get('settings') as Settings | undefined)?.artworkEnabled === true
+}
+const ARTWORK_DISABLED: ServerFailure = { ok: false, code: 'ARTWORK_DISABLED', message: 'Artwork lookups are turned off in Settings.' }
+
 // SteamGridDB art through the Dune Server (its write-only provider key; DUN-092).
 ipcMain.handle('game:fetchArt', async (_event, id: unknown): Promise<FetchArtResult> => {
+  if (!artworkEnabled()) return ARTWORK_DISABLED
   const gameId = parseGameId(id)
   if (gameId === null) return { ok: false, code: 'INVALID_GAME_ID', message: 'Invalid game id' }
   await gameStoreMigration
@@ -984,7 +991,7 @@ ipcMain.handle('playtime:record', async (_event, session: PlaytimeSessionPayload
 
 // Server-only calls (playtime, achievements, saves, conflicts, art, sources,
 // keys, Ollama): validated arguments, gated URL, ServerResult (net/serverHandlers.ts).
-for (const [channel, handler] of Object.entries(createServerIpcHandlers(serverClient))) {
+for (const [channel, handler] of Object.entries(createServerIpcHandlers(serverClient, { artworkEnabled }))) {
   ipcMain.handle(channel, handler)
 }
 

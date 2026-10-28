@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { Readable } from 'node:stream';
 import request from 'supertest';
 
-// DUN-086/087/088/093/111/125/061/064/127, end to end over REST and tRPC.
+// DUN-086/087/088/093/111/125/061/064/127, end to end over REST.
 // Saves live at saves/<ownerId>/<gameId>; titles never reach the filesystem.
 // Everything lives in a temp DATA_DIR; sentinels sit next to (outside) saves/.
 const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
@@ -56,12 +56,6 @@ const restDownload = (key: string, game: string, p: string) =>
   request(app).get('/api/download-file').set('x-api-key', key).query({ game, path: p });
 const restList = (key: string, game: string) =>
   request(app).get('/api/list-files').set('x-api-key', key).query({ game });
-const trpcRemove = (key: string, game: string, p: string) =>
-  request(app).post('/trpc/files.remove').set('x-api-key', key).send({ game, path: p });
-const trpcAdd = (key: string, input: Record<string, unknown>) =>
-  request(app).post('/trpc/games.add').set('x-api-key', key).send(input);
-/** tRPC structured code (errorFormatter): error.data.code. */
-const trpcCode = (res: request.Response) => res.body?.error?.data?.code;
 
 const gameOf = (owner: Member, title: string) => database.findGame(owner.id, title)!;
 const rootOf = (owner: Member, title: string) => getGameRoot(gameOf(owner, title).id, owner.id);
@@ -104,7 +98,7 @@ afterAll(() => {
   fs.rmSync(OUTSIDE, { recursive: true, force: true });
 });
 
-describe('DUN-086: traversal on DELETE /api/file and tRPC files.remove', () => {
+describe('DUN-086: traversal on DELETE /api/file', () => {
   const evilPaths = (): Array<[string, string]> => [
     ['../../../sentinel.txt', 'DOT_SEGMENT'],
     [`../../${bob.id}/${gameOf(bob, 'Bob Game').id}/Saves/slot2.sav`, 'DOT_SEGMENT'],
@@ -130,16 +124,6 @@ describe('DUN-086: traversal on DELETE /api/file and tRPC files.remove', () => {
     expect((await restDelete(alice.key, 'Hades', '')).status).toBe(400); // missing param
   });
 
-  it('tRPC: every evil path gets BAD_REQUEST with data.code and nothing is deleted', async () => {
-    for (const [p, code] of [...evilPaths(), ['', 'EMPTY'] as [string, string]]) {
-      const before = fsState();
-      const res = await trpcRemove(alice.key, 'Hades', p);
-      expect(res.status, p).toBe(400);
-      expect(trpcCode(res), p).toBe(code);
-      expect(fsState(), p).toEqual(before);
-    }
-  });
-
   it('a URL-encoded ..%2F query path is decoded once by the router and rejected; double-encoded stays a literal name', async () => {
     const before = fsState();
     const once = await request(app)
@@ -154,26 +138,20 @@ describe('DUN-086: traversal on DELETE /api/file and tRPC files.remove', () => {
     expect(fsState()).toEqual(before);
   });
 
-  it('cross-user: A cannot delete B\'s file by traversal or by B\'s game name (REST + tRPC); B\'s file survives', async () => {
+  it('cross-user: A cannot delete B\'s file by traversal or by B\'s game name; B\'s file survives', async () => {
     const bobGame = gameOf(bob, 'Bob Game');
     const traversal = `../../${bob.id}/${bobGame.id}/Saves/slot2.sav`;
-    const byTraversal = [
-      await restDelete(alice.key, 'Hades', traversal),
-      await trpcRemove(alice.key, 'Hades', traversal),
-    ];
-    for (const res of byTraversal) {
-      expect(res.status).toBe(400);
-      expect(res.body.code ?? trpcCode(res)).toBe('DOT_SEGMENT');
-    }
+    const byTraversal = await restDelete(alice.key, 'Hades', traversal);
+    expect(byTraversal.status).toBe(400);
+    expect(byTraversal.body.code).toBe('DOT_SEGMENT');
     // By B's title: resolves in A's namespace only -> A has no such game.
     const byName = [
       await restDelete(alice.key, 'Bob Game', 'Saves/slot2.sav'),
-      await trpcRemove(alice.key, 'Bob Game', 'Saves/slot2.sav'),
       await restDelete(alice.key, 'bob game', 'Saves/slot2.sav'),
     ];
     for (const res of byName) {
       expect(res.status).toBe(404);
-      expect(res.body.code ?? trpcCode(res)).toBe('GAME_NOT_FOUND');
+      expect(res.body.code).toBe('GAME_NOT_FOUND');
     }
     // By explicit owner: members may not target another owner.
     const targeted = await request(app).delete('/api/file').set('x-api-key', alice.key)
@@ -186,7 +164,7 @@ describe('DUN-086: traversal on DELETE /api/file and tRPC files.remove', () => {
     expect(fs.readFileSync(bobFile, 'utf-8')).toBe('BOB');
   });
 
-  it('legit nested path Saves/slot1.sav still downloads and deletes (REST), and tRPC deletes', async () => {
+  it('legit nested path Saves/slot1.sav still downloads and deletes', async () => {
     const dl = await restDownload(alice.key, 'Hades', 'Saves/slot1.sav').buffer(true);
     expect(dl.status).toBe(200);
     expect(dl.body.toString()).toBe('ALICE');
@@ -194,9 +172,6 @@ describe('DUN-086: traversal on DELETE /api/file and tRPC files.remove', () => {
     expect(del.status).toBe(200);
     expect(fs.existsSync(path.join(rootOf(alice, 'Hades'), 'Saves', 'slot1.sav'))).toBe(false);
 
-    expect((await upload(alice.key, 'Hades', 'Saves/slot1.sav', 'ALICE')).body.success).toBe(true);
-    const t = await trpcRemove(alice.key, 'Hades', 'Saves/slot1.sav');
-    expect(t.status).toBe(200);
     expect((await upload(alice.key, 'Hades', 'Saves/slot1.sav', 'ALICE')).body.success).toBe(true);
   });
 });
@@ -209,15 +184,12 @@ describe('symlinks inside the save root pointing outside', () => {
     fs.symlinkSync(OUTSIDE_SENTINEL, path.join(root, 'link.sav'));
   });
 
-  it('delete via a symlinked dir or file is rejected (REST + tRPC) and the target is unchanged', async () => {
+  it('delete via a symlinked dir or file is rejected and the target is unchanged', async () => {
     for (const p of ['linkdir/outside.txt', 'link.sav']) {
       const before = fsState();
       const r = await restDelete(alice.key, 'Hades', p);
       expect(r.status, p).toBe(400);
       expect(r.body.code).toBe('OUTSIDE_ROOT');
-      const t = await trpcRemove(alice.key, 'Hades', p);
-      expect(t.status, p).toBe(400);
-      expect(trpcCode(t)).toBe('OUTSIDE_ROOT');
       expect(fsState()).toEqual(before);
     }
     expect(fs.readFileSync(OUTSIDE_SENTINEL, 'utf-8')).toBe('OUTSIDE-SENTINEL');
@@ -282,15 +254,12 @@ describe('DUN-093: game titles never reach the filesystem', () => {
     ['a\u0001b', 'CONTROL'],
     ['a\u007fb', 'CONTROL'],
     ['x'.repeat(201), 'TOO_LONG'],
-  ])('REST upload / tRPC games.add with title %j gets 400 %s and creates no row', async (name, code) => {
+  ])('REST upload with title %j gets 400 %s and creates no row', async (name, code) => {
     const before = fsState();
     const rows = database.getGames(alice.id).length;
     const up = await upload(alice.key, name, 'evil.sav', 'EVIL');
     expect(up.status).toBe(400);
     if (name !== '') expect(up.body).toEqual({ code, error: expect.any(String) });
-    const add = await trpcAdd(alice.key, { name });
-    expect(add.status).toBe(400);
-    if (name !== '') expect(trpcCode(add)).toBe(code);
     expect(database.getGames(alice.id).length).toBe(rows);
     expect(fsState()).toEqual(before);
   });
@@ -410,49 +379,23 @@ describe('real titles sync end to end (DUN-064/127 encoded headers)', () => {
     expect((await upload(alice.key, 'Old Name', 'Saves/keep.sav', 'KEEP')).status).toBe(200);
     const row = gameOf(alice, 'Old Name');
     const rootBefore = getGameRoot(row.id, alice.id);
-    const ren = await request(app).post('/trpc/games.rename').set('x-api-key', alice.key)
-      .send({ id: row.id, name: 'New Name: Remastered™' });
-    expect(ren.status).toBe(200);
+    // No REST rename route exists (DUN-038); exercise the DB rename directly.
+    expect(database.renameGame(row.id, alice.id, 'New Name: Remastered™')).toBe('ok');
     expect(rootOf(alice, 'New Name: Remastered™')).toBe(rootBefore);
     expect(fs.readFileSync(path.join(rootBefore, 'Saves', 'keep.sav'), 'utf-8')).toBe('KEEP');
     const dl = await restDownload(alice.key, 'New Name: Remastered™', 'Saves/keep.sav').buffer(true);
     expect(dl.body.toString()).toBe('KEEP');
     expect((await restList(alice.key, 'Old Name')).body.files).toEqual([]);
     // Bob cannot rename Alice's game.
-    const steal = await request(app).post('/trpc/games.rename').set('x-api-key', bob.key).send({ id: row.id, name: 'Mine' });
-    expect(steal.status).toBe(404);
+    expect(database.renameGame(row.id, bob.id, 'Mine')).toBe('not_found');
   });
 });
 
 describe('DUN-061: launch fields are rejected at intake and never stored', () => {
-  it.each([
-    ['executable', '/usr/bin/evil'],
-    ['args', ['--x']],
-    ['env', { LD_PRELOAD: '/tmp/x.so' }],
-    ['cwd', '/tmp'],
-    ['winePrefix', '/tmp/pfx'],
-    ['protonVersion', '9'],
-    ['launchOptions', '%command%'],
-    ['emulatorPath', '/x'],
-    ['customExecutable', '/x'],
-  ])('tRPC games.add with %s is 400 LAUNCH_FIELD_NOT_ALLOWED and creates no row', async (field, value) => {
-    const rows = database.getGames(alice.id).length;
-    const res = await trpcAdd(alice.key, { name: `Launch ${field}`, [field]: value });
-    expect(res.status).toBe(400);
-    expect(trpcCode(res)).toBe('LAUNCH_FIELD_NOT_ALLOWED');
-    expect(database.getGames(alice.id).length).toBe(rows);
-  });
-
-  it('unknown non-launch keys are rejected too (strict schema), so nothing slips through', async () => {
-    const res = await trpcAdd(alice.key, { name: 'Strict', winPath: 'C:/Games/x.exe' });
-    expect(res.status).toBe(400);
-    expect(database.findGame(alice.id, 'Strict')).toBeUndefined();
-  });
-
   it('REST bodies with launch fields are 400 { error, code }', async () => {
     for (const [route, body] of [
-      ['/api/save-versions', { game: 'Hades', executable: '/x' }],
-      ['/api/restore-version', { game: 'Hades', versionId: '1', env: { A: '1' } }],
+      ['/api/save-versions', { gameId: gameOf(alice, 'Hades').id, executable: '/x' }],
+      ['/api/restore-version', { gameId: gameOf(alice, 'Hades').id, versionId: '1', env: { A: '1' } }],
       ['/api/backup-profile', { game: 'Hades', launchArgs: '-x' }],
       ['/api/analyze-files-ai', { gameName: 'Hades', files: [], cwd: '/tmp' }],
     ] as const) {
@@ -486,19 +429,18 @@ describe('DUN-111 / DUN-125', () => {
     expect(fs.readFileSync(DATA_SENTINEL, 'utf-8')).toBe('DATA-SENTINEL');
   });
 
-  it('files.list / sync.manifest with a bad title are 400, not 500 (DUN-128)', async () => {
-    for (const proc of ['files.list', 'sync.manifest']) {
-      const input = encodeURIComponent(JSON.stringify({ game: 'a\u0001b' }));
-      const res = await request(app).get(`/trpc/${proc}?input=${input}`).set('x-api-key', alice.key);
-      expect(res.status, proc).toBe(400);
-      expect(trpcCode(res), proc).toBe('CONTROL');
+  it('list-files / manifest with a bad title are 400 CONTROL, not 500 (DUN-128)', async () => {
+    for (const route of ['/api/list-files', '/api/manifest']) {
+      const res = await request(app).get(route).query({ game: 'a\u0001b' }).set('x-api-key', alice.key);
+      expect(res.status, route).toBe(400);
+      expect(res.body, route).toEqual({ code: 'CONTROL', error: expect.any(String) });
     }
   });
 
   it('restore-version: malformed ids are 400 INVALID_VERSION_ID (REST) without touching the filesystem', async () => {
     const before = fsState();
     for (const versionId of ['../../..', '..', '1/../../x', 'not-a-uuid', '123']) {
-      const res = await request(app).post('/api/restore-version').set('x-api-key', alice.key).send({ game: 'Hades', versionId });
+      const res = await request(app).post('/api/restore-version').set('x-api-key', alice.key).send({ gameId: gameOf(alice, 'Hades').id, versionId });
       expect(res.status, versionId).toBe(400);
       expect(res.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
     }
@@ -506,34 +448,56 @@ describe('DUN-111 / DUN-125', () => {
   });
 
   it('restore-version: another user\'s version id is 404, never restored', async () => {
-    const created = await request(app).post('/api/save-versions').set('x-api-key', bob.key).send({ game: 'Bob Game' });
+    const created = await request(app).post('/api/save-versions').set('x-api-key', bob.key).send({ gameId: gameOf(bob, 'Bob Game').id });
     expect(created.status).toBe(201);
     const res = await request(app).post('/api/restore-version').set('x-api-key', alice.key)
-      .send({ game: 'Hades', versionId: created.body.version.id });
+      .send({ gameId: gameOf(alice, 'Hades').id, versionId: created.body.version.id });
     expect(res.status).toBe(404);
     const detail = await request(app).get(`/api/save-versions/${created.body.version.id}`).set('x-api-key', alice.key);
     expect(detail.status).toBe(404);
   });
 
+  it('restore-version (DUN-137): another user\'s game id is 404 GAME_NOT_FOUND, never restored', async () => {
+    const created = await request(app).post('/api/save-versions').set('x-api-key', bob.key).send({ gameId: gameOf(bob, 'Bob Game').id });
+    expect(created.status).toBe(201);
+    const before = fsState();
+    const res = await request(app).post('/api/restore-version').set('x-api-key', alice.key)
+      .send({ gameId: gameOf(bob, 'Bob Game').id, versionId: created.body.version.id });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Game not found', code: 'GAME_NOT_FOUND' });
+    expect(fsState()).toEqual(before);
+  });
+
   it('restore does not follow a symlink inside a snapshot (DUN-128)', async () => {
-    const created = await request(app).post('/api/save-versions').set('x-api-key', alice.key).send({ game: 'Hades' });
+    const created = await request(app).post('/api/save-versions').set('x-api-key', alice.key).send({ gameId: gameOf(alice, 'Hades').id });
     expect(created.status).toBe(201);
     const id = created.body.version.id as string;
     const snap = path.join(rootOf(alice, 'Hades'), '.versions', id);
     fs.symlinkSync(OUTSIDE_SENTINEL, path.join(snap, 'stolen.sav'));
-    const res = await request(app).post('/api/restore-version').set('x-api-key', alice.key).send({ game: 'Hades', versionId: id });
+    const res = await request(app).post('/api/restore-version').set('x-api-key', alice.key).send({ gameId: gameOf(alice, 'Hades').id, versionId: id });
     expect(res.status).toBe(200);
     expect(fs.existsSync(path.join(rootOf(alice, 'Hades'), 'stolen.sav'))).toBe(false);
     expect(fs.readFileSync(OUTSIDE_SENTINEL, 'utf-8')).toBe('OUTSIDE-SENTINEL');
   });
 
-  it('tRPC files.versions.files rejects malformed version ids with data.code INVALID_VERSION_ID', async () => {
-    for (const versionId of ['../..', '1/../../x', 'abc']) {
-      const input = encodeURIComponent(JSON.stringify({ game: 'Hades', versionId }));
-      const res = await request(app).get(`/trpc/files.versions.files?input=${input}`).set('x-api-key', alice.key);
-      expect(res.status, versionId).toBe(400);
-      expect(trpcCode(res), versionId).toBe('INVALID_VERSION_ID');
-    }
+  it('save-versions by gameId are owner-scoped: another user\'s id is 404 GAME_NOT_FOUND (DUN-038)', async () => {
+    const bobId = gameOf(bob, 'Bob Game').id;
+    const notFound = { error: 'Game not found', code: 'GAME_NOT_FOUND' };
+    const list = await request(app).get('/api/save-versions').query({ gameId: bobId }).set('x-api-key', alice.key);
+    expect(list.status).toBe(404);
+    expect(list.body).toEqual(notFound);
+    const before = fsState();
+    const create = await request(app).post('/api/save-versions').set('x-api-key', alice.key).send({ gameId: bobId });
+    expect(create.status).toBe(404);
+    expect(create.body).toEqual(notFound);
+    expect(fsState()).toEqual(before);
+    // Members may not target another owner explicitly either.
+    const targeted = await request(app).get('/api/save-versions').query({ gameId: bobId, owner: bob.id }).set('x-api-key', alice.key);
+    expect(targeted.status).toBe(403);
+    // The owner sees their own list.
+    const own = await request(app).get('/api/save-versions').query({ gameId: bobId }).set('x-api-key', bob.key);
+    expect(own.status).toBe(200);
+    expect(own.body).toEqual({ success: true, versions: expect.any(Array) });
   });
 
   it('REST download-version-file: malformed id 400 INVALID_VERSION_ID; snapshot path traversal 400', async () => {

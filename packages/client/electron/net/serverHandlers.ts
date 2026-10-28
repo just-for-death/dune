@@ -60,8 +60,16 @@ function plainObject(v: unknown, name: string): Record<string, unknown> {
   return v as Record<string, unknown>;
 }
 
-export function createServerIpcHandlers(client: ServerClient): Record<string, Handler> {
+export interface ServerIpcOptions {
+  /** settings.artworkEnabled; art routes answer ARTWORK_DISABLED until it is on. */
+  artworkEnabled: () => boolean;
+}
+
+const ARTWORK_DISABLED = { ok: false as const, code: 'ARTWORK_DISABLED', message: 'Artwork lookups are turned off in Settings.' };
+
+export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOptions): Record<string, Handler> {
   // Build the request from the arguments (may throw INVALID_ARGUMENT), then call.
+  const art = (handler: Handler): Handler => async (event, ...args) => (opts.artworkEnabled() ? handler(event, ...args) : ARTWORK_DISABLED);
   const h = (build: (...args: unknown[]) => ServerRequest): Handler => async (_event, ...args) => {
     let req: ServerRequest;
     try {
@@ -111,31 +119,15 @@ export function createServerIpcHandlers(client: ServerClient): Record<string, Ha
     'hltb:get': h((name) => ({ method: 'GET', path: `/api/hltb/${seg(requireString(name, 'game'))}` })),
 
     // Save versions
-    'saves:listVersions': h((game) => ({ method: 'GET', path: '/api/save-versions', query: { game: requireString(game, 'game') } })),
-    'saves:createVersion': h((game, deviceId, changeSummary) => ({
-      method: 'POST', path: '/api/save-versions',
-      body: { game: requireString(game, 'game'), deviceId: optionalString(deviceId, 'device id'), changeSummary: optionalString(changeSummary, 'summary', 2000) },
-    })),
-    'saves:getVersion': h((id) => ({ method: 'GET', path: `/api/save-versions/${seg(requireString(id, 'version id', 200))}` })),
-    'saves:diff': h((from, to) => ({
-      method: 'GET', path: '/api/save-versions/diff',
-      query: { from: requireString(from, 'version id', 200), to: requireString(to, 'version id', 200) },
-    })),
-    'saves:restore': h((game, versionId) => ({
+    // Saves are keyed by game id on the server (DUN-038); no name form.
+    'saves:listVersions': h((gameId) => ({ method: 'GET', path: '/api/save-versions', query: { gameId: requireId(gameId) } })),
+    'saves:restore': h((gameId, versionId) => ({
       method: 'POST', path: '/api/restore-version',
-      body: { game: requireString(game, 'game'), versionId: requireString(versionId, 'version id', 200) },
+      body: { gameId: requireId(gameId), versionId: requireString(versionId, 'version id', 200) },
     })),
 
     // Conflicts
     'conflicts:list': h((game) => ({ method: 'GET', path: '/api/conflicts', query: { game: optionalString(game, 'game') } })),
-    'conflicts:detect': h((game, localVersionId, remoteVersionId) => ({
-      method: 'POST', path: '/api/conflicts/detect',
-      body: {
-        game: requireString(game, 'game'),
-        localVersionId: requireString(localVersionId, 'version id', 200),
-        remoteVersionId: requireString(remoteVersionId, 'version id', 200),
-      },
-    })),
     'conflicts:resolve': h((id, resolution) => ({
       method: 'POST', path: `/api/conflicts/${seg(requireString(id, 'conflict id', 200))}/resolve`,
       body: { resolution: oneOf(resolution, RESOLUTIONS, 'resolution') },
@@ -154,8 +146,8 @@ export function createServerIpcHandlers(client: ServerClient): Record<string, Ha
     }),
 
     // SteamGridDB art (the key lives on the server only; DUN-092)
-    'art:search': h((query) => ({ method: 'GET', path: '/api/search-art', query: { query: requireString(query, 'query') } })),
-    'art:auto-match': h(() => ({ method: 'GET', path: '/api/auto-match-all' })),
+    'art:search': art(h((query) => ({ method: 'GET', path: '/api/search-art', query: { query: requireString(query, 'query') } }))),
+    'art:auto-match': art(h(() => ({ method: 'GET', path: '/api/auto-match-all' }))),
     'steamGridKey:status': keyStatus(() => ({ method: 'GET', path: '/api/provider-keys/steamgriddb' })),
     'steamGridKey:set': async (_event, key) => keyStatus(() => ({
       method: 'PUT', path: '/api/provider-keys/steamgriddb', body: { key: requireString(key, 'key', 500).trim() },

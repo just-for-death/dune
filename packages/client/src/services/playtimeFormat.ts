@@ -12,7 +12,8 @@ export function formatMinutes(min: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-import { defaultPluralTranslator, defaultTranslator, type PluralTranslator, type Translator } from '../i18n';
+import type { PlaytimeGraphData } from '@dune/shared';
+import { DEFAULT_LOCALE, defaultPluralTranslator, defaultTranslator, type Locale, type MessageKey, type PluralTranslator, type Translator } from '../i18n';
 
 const EM_DASH = '\u2014';
 
@@ -60,12 +61,68 @@ export function formatShare(percentage: number): string {
   return `${Number.isFinite(percentage) && percentage > 0 ? Math.round(percentage) : 0}%`;
 }
 
-/** Accessible name of the cumulative line chart. */
-export function lineChartLabel(values: readonly { date: string; minutes: number }[], t: Translator = defaultTranslator): string {
+/** DUN-096: what one line-chart point covers. */
+export type PlaytimeBucket = 'day' | 'month';
+
+/** The graph's bucket; a missing or unknown value (older server) means 'day'. */
+export function playtimeBucket(data: Pick<PlaytimeGraphData, 'bucket'> | null | undefined): PlaytimeBucket {
+  return data?.bucket === 'month' ? 'month' : 'day';
+}
+
+/**
+ * A point's date as text. Day buckets keep the server's YYYY-MM-DD as is.
+ * Month buckets (YYYY-MM-01) use the locale's month and year: 'tick' is
+ * short ("Oct 2026"), 'full' is long ("October 2026", "octubre de 2026").
+ * A date that does not parse is returned unchanged.
+ */
+export function formatBucketDate(date: string, bucket: PlaytimeBucket, locale: Locale = DEFAULT_LOCALE, style: 'tick' | 'full' = 'full'): string {
+  if (bucket === 'day') return date;
+  const month = /^(\d{4})-(\d{2})/.exec(date);
+  if (!month) return date;
+  const at = Date.UTC(Number(month[1]), Number(month[2]) - 1, 1);
+  if (!Number.isFinite(at)) return date;
+  return new Intl.DateTimeFormat(locale, { month: style === 'tick' ? 'short' : 'long', year: 'numeric', timeZone: 'UTC' }).format(at);
+}
+
+/** Up to `max` evenly spaced point indexes for axis ticks, always first and last. */
+export function tickIndexes(count: number, max = 4): number[] {
+  if (!Number.isInteger(count) || count <= 0) return [];
+  if (count === 1 || max <= 1) return [0];
+  const steps = Math.min(count, Math.max(2, Math.floor(max))) - 1;
+  const out: number[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const index = Math.round((i * (count - 1)) / steps);
+    if (out[out.length - 1] !== index) out.push(index);
+  }
+  return out;
+}
+
+const BUCKET_KEYS: Record<PlaytimeBucket, { axis: MessageKey; column: MessageKey; caption: MessageKey; label: MessageKey }> = {
+  day: { axis: 'playtime.axisDay', column: 'playtime.tableDate', caption: 'playtime.tableCaption', label: 'playtime.lineLabel' },
+  month: { axis: 'playtime.axisMonth', column: 'playtime.tableMonth', caption: 'playtime.tableCaptionMonth', label: 'playtime.lineLabelMonth' },
+};
+
+/** Axis title, data-table column header and caption for a bucket. */
+export function bucketTexts(bucket: PlaytimeBucket, t: Translator = defaultTranslator): { axis: string; column: string; caption: string } {
+  const keys = BUCKET_KEYS[bucket];
+  return { axis: t(keys.axis), column: t(keys.column), caption: t(keys.caption) };
+}
+
+/** Accessible name of the cumulative line chart ('day' keeps the YYYY-MM-DD text). */
+export function lineChartLabel(
+  values: readonly { date: string; minutes: number }[],
+  t: Translator = defaultTranslator,
+  bucket: PlaytimeBucket = 'day',
+  locale: Locale = DEFAULT_LOCALE,
+): string {
   if (values.length === 0) return t('playtime.lineEmpty');
   const first = values[0];
   const last = values[values.length - 1];
-  return t('playtime.lineLabel', { from: first.date, to: last.date, total: formatMinutes(last.minutes) });
+  return t(BUCKET_KEYS[bucket].label, {
+    from: formatBucketDate(first.date, bucket, locale),
+    to: formatBucketDate(last.date, bucket, locale),
+    total: formatMinutes(last.minutes),
+  });
 }
 
 /** Accessible name of the distribution (pie) chart. */

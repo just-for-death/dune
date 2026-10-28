@@ -70,17 +70,12 @@ describe('auth enforcement (regression guards)', () => {
     expect(res.body).toEqual({ error: 'API key required', code: 'UNAUTHORIZED' });
   });
 
-  it('rejects tRPC procedures without a key', async () => {
+  it('rejects admin REST routes without a key', async () => {
     const res = await request(app)
-      .post('/trpc/sync.local')
+      .post('/api/local-sync')
       .set('Content-Type', 'application/json')
       .send({});
     expect(res.status).toBe(401);
-  });
-
-  it('keeps the tRPC health procedure public', async () => {
-    const res = await request(app).get('/trpc/health?batch=1&input=%7B%220%22%3Anull%7D');
-    expect(res.status).toBe(200);
   });
 });
 
@@ -107,22 +102,17 @@ describe('save round-trip (upload → download → version)', () => {
   const v1 = Buffer.from('save-slot-1-version-one');
   const v2 = Buffer.from('save-slot-1-version-two-longer');
 
-  const upload = (bytes: Buffer, file = 'slot1.sav') =>
+  const upload = (bytes: Buffer, file = 'slot1.sav', syncId = String(Date.now() + Math.floor(Math.random() * 1000))) =>
     request(app)
       .post('/api/upload-file')
       .set('Content-Type', 'application/octet-stream')
       .set('x-api-key', AUTH_KEY)
       .set('x-game', game)
       .set('x-path', file)
-      // syncId must be numeric: versions are stored under .versions/<syncId>
-      // and listed by numeric directory name (client sends Date.now()).
-      .set('x-sync-id', String(Date.now() + Math.floor(Math.random() * 1000)))
+      // syncId must be numeric: the overwritten files are snapshotted under
+      // .versions/<syncId> (client sends Date.now()).
+      .set('x-sync-id', syncId)
       .send(bytes);
-
-  const trpcGet = (path: string, input: unknown) =>
-    request(app)
-      .get(`/trpc/${path}?batch=1&input=${encodeURIComponent(JSON.stringify({ 0: input ?? null }))}`)
-      .set('x-api-key', AUTH_KEY);
 
   it('uploads and downloads byte-identical content', async () => {
     const up = await upload(v1);
@@ -143,14 +133,9 @@ describe('save round-trip (upload → download → version)', () => {
   });
 
   it('snapshots the previous version on overwrite and restores it', async () => {
-    const up = await upload(v2);
+    const versionId = String(Date.now() + 5000);
+    const up = await upload(v2, 'slot1.sav', versionId);
     expect(up.body.success).toBe(true);
-
-    const versions = await trpcGet('files.versions.list', { game });
-    expect(versions.status).toBe(200);
-    const list = versions.body[0].result.data.versions;
-    expect(list.length).toBeGreaterThanOrEqual(1);
-    const versionId = list[0].id as string;
 
     const old = await request(app)
       .get(`/api/download-version-file?game=${game}&versionId=${versionId}&path=slot1.sav`)

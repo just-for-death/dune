@@ -1,7 +1,7 @@
 /**
  * Single source of truth for API-key extraction.
- * Used by both the REST `authMiddleware` and the tRPC context so the two
- * transports can never disagree about where a key comes from.
+ * Used by the auth middleware so every route agrees on where a key comes
+ * from.
  *
  * DUN-102: the `x-api-key` header is the ONLY accepted carrier. A key in the
  * URL (`?api_key=`) ends up in access logs, proxies and browser history, so

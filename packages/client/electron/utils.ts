@@ -4,9 +4,9 @@
  * unit tested in any JavaScript environment.
  */
 
-import { type FileManifest, type ScannerSourceToggles } from '@dune/shared';
+import { type FileManifest, type ScannerSourceToggles, type TrackersEnabled } from '@dune/shared';
 import { sanitizeScannerSources } from './scanner/sourceToggles';
-import { diffFingerprints, changedPaths } from '@dune/shared';
+import { diffFingerprints, changedPaths, matchesGlob } from '@dune/shared';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -154,6 +154,16 @@ export function sanitizeGame(input: unknown): {
 }
 
 /** Sanitize settings input from the renderer. Pure function. */
+export function sanitizeTrackersEnabled(input: unknown): TrackersEnabled {
+  const t = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
+  return {
+    steam: t.steam === true,
+    retroAchievements: t.retroAchievements === true,
+    gog: t.gog === true,
+    epic: t.epic === true,
+  };
+}
+
 export function sanitizeSettings(input: unknown, fallback: unknown): {
   runInBackground: boolean;
   autoSyncEnabled: boolean;
@@ -161,6 +171,8 @@ export function sanitizeSettings(input: unknown, fallback: unknown): {
   scanRoots: string[];
   updateChecks: boolean;
   scannerSources: ScannerSourceToggles;
+  trackersEnabled: TrackersEnabled;
+  artworkEnabled: boolean;
 } {
   const s = (input ?? {}) as Record<string, unknown>;
   const f = (fallback ?? {}) as Record<string, unknown>;
@@ -181,6 +193,9 @@ export function sanitizeSettings(input: unknown, fallback: unknown): {
     updateChecks: s.updateChecks === true,
     // DUN-077: main-owned (scanner:setSource); the renderer can't change it here.
     scannerSources: sanitizeScannerSources(f.scannerSources),
+    // Trackers and artwork are opt-in: only a literal true turns one on.
+    trackersEnabled: sanitizeTrackersEnabled(s.trackersEnabled),
+    artworkEnabled: s.artworkEnabled === true,
   };
   // DUN-092 / DUN-036: no SteamGridDB key is kept here; it lives only on the
   // Dune Server (write-only provider key).
@@ -250,38 +265,24 @@ export function commitUploaded(
   for (const rel of failedRels) delete uploaded[rel];
   saveGameStateFn(game, { uploaded });
 }
-/** Simple glob matcher for backup profile include/exclude rules. */
-export function matchesBackupGlob(relPath: string, pattern: string): boolean {
-  const normalizedPath = relPath.replace(/\\/g, '/');
-  const normalizedPattern = pattern.trim();
-  if (!normalizedPattern || normalizedPattern === '*' || normalizedPattern === '**' || normalizedPattern === '**/*') {
-    return true;
-  }
+/** The backup-profile fields Desktop applies (shared BackupProfile). */
+export type BackupProfileGlobs = { includeGlobs: string[]; excludeGlobs: string[]; autoExcludeCache?: boolean };
 
-  const regex = normalizedPattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '(?:.*/)?')
-    .replace(/\*\*/g, '.*')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\?/g, '[^/]');
-  return new RegExp(`^${regex}$`, 'i').test(normalizedPath);
-}
-
-/** The backup-profile filter as a predicate on a POSIX relative path. */
-export function backupProfileFilter(profile: { includeGlobs: string[]; excludeGlobs: string[] } | null | undefined): (rel: string) => boolean {
+/**
+ * The backup-profile filter as a predicate on a POSIX relative path.
+ * When `autoExcludeCache` is on, the server's built-in cache/log/screenshot
+ * globs (GET /api/backup-profile -> cacheExcludeGlobs, DUN-103) are excluded
+ * on top of the user's own excludeGlobs.
+ */
+export function backupProfileFilter(
+  profile: BackupProfileGlobs | null | undefined,
+  cacheExcludeGlobs: readonly string[] = [],
+): (rel: string) => boolean {
   if (!profile) return () => true;
   const include = Array.isArray(profile.includeGlobs) ? profile.includeGlobs : [];
-  const exclude = Array.isArray(profile.excludeGlobs) ? profile.excludeGlobs : [];
-  return (rel) => include.some((g) => matchesBackupGlob(rel, g)) && !exclude.some((g) => matchesBackupGlob(rel, g));
-}
-
-export function filterBackupFiles<T extends { rel: string }>(
-  files: T[],
-  profile: { includeGlobs: string[]; excludeGlobs: string[] },
-): T[] {
-  return files.filter((file) => {
-    const included = profile.includeGlobs.some((pattern) => matchesBackupGlob(file.rel, pattern));
-    const excluded = profile.excludeGlobs.some((pattern) => matchesBackupGlob(file.rel, pattern));
-    return included && !excluded;
-  });
+  const exclude = [
+    ...(Array.isArray(profile.excludeGlobs) ? profile.excludeGlobs : []),
+    ...(profile.autoExcludeCache === true ? cacheExcludeGlobs.filter((g) => typeof g === 'string') : []),
+  ];
+  return (rel) => include.some((g) => matchesGlob(rel, g)) && !exclude.some((g) => matchesGlob(rel, g));
 }

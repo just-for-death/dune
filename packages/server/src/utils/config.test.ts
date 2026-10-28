@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -17,6 +17,10 @@ afterEach(() => {
   for (const entry of fs.readdirSync(TMP)) {
     fs.rmSync(path.join(TMP, entry), { recursive: true, force: true });
   }
+});
+
+afterAll(() => {
+  fs.rmSync(TMP, { recursive: true, force: true });
 });
 
 function freshManager(file = 'dune.config.json') {

@@ -189,7 +189,7 @@ export function normalizeUrl(url: string): string {
 /** Lexical rule codes from @dune/shared plus server-side containment codes. */
 export type PathErrorCode = PathRuleCode | 'OUTSIDE_ROOT' | 'INVALID_VERSION_ID' | 'INVALID_GAME_ID' | 'INVALID_OWNER';
 
-/** A rejected game title / path / id. REST: 400 `{ error, code }`; tRPC: BAD_REQUEST + data.code. */
+/** A rejected game title / path / id. REST: 400 `{ error, code }`. */
 export class PathRuleError extends ApiError {
   declare readonly code: PathErrorCode;
   constructor(code: PathErrorCode, message: string) {

@@ -7,8 +7,8 @@ import type { ServerFailure } from '@dune/shared';
 // - code: the server body's `code`, passed through unchanged.
 // - message: the server body's `error` (never axios's "Request failed with
 //   status code 403" text).
-// Server REST errors are exactly `{ error, code }` (server utils/apiError.ts);
-// tRPC errors carry the same code in `error.data.code`.
+// Server REST errors are exactly `{ error, code }` (server utils/apiError.ts).
+// The server has no tRPC API (DUN-038), so no other error shape is parsed.
 
 /**
  * DUN-068: every Dune Server request has a timeout, so a hung server can never
@@ -59,19 +59,11 @@ function nonEmpty(v: unknown): string | undefined {
 
 /** A failure built from a server response that had an error body (or none). */
 export function failureFromResponse(status: number | undefined, data: unknown): ServerFailure {
-  let body = bodyOf(data);
-  // tRPC batch responses are arrays; use the first error entry.
-  if (!body && Array.isArray(data)) body = (data.map(bodyOf).find((b) => b && b.error) ?? null);
-  // tRPC: { error: { message, code: 'BAD_REQUEST', data: { code, httpStatus } } }
-  // (the app code is data.code; the TRPC code is only a fallback).
-  const trpc = body?.error && typeof body.error === 'object' ? body.error as Record<string, unknown> : null;
-  const trpcData = trpc?.data && typeof trpc.data === 'object' ? trpc.data as Record<string, unknown> : null;
-  const httpStatus = status ?? (typeof trpcData?.httpStatus === 'number' ? trpcData.httpStatus : undefined);
-  const code = (trpc ? nonEmpty(trpcData?.code) ?? nonEmpty(trpc.code) : nonEmpty(body?.code)) ?? UNKNOWN_SERVER_CODE;
-  const message = (trpc ? nonEmpty(trpc.message) : nonEmpty(body?.error))
+  const body = bodyOf(data);
+  const code = nonEmpty(body?.code) ?? UNKNOWN_SERVER_CODE;
+  const message = nonEmpty(body?.error)
     ?? nonEmpty(body?.message)
-    ?? (httpStatus ? `Server error (HTTP ${httpStatus})` : 'Server error');
-  status = httpStatus;
+    ?? (status ? `Server error (HTTP ${status})` : 'Server error');
   return { ok: false, ...(status !== undefined ? { status } : {}), code, message };
 }
 

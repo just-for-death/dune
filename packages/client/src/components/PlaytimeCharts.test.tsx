@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { PlaytimeComparison, PlaytimeGraphData } from '@dune/shared';
 import { PlaytimeCharts } from './PlaytimeCharts';
+import { createPluralTranslator, createTranslator } from '../i18n';
+import { I18nContext } from '../i18n/context';
 
 const data: PlaytimeGraphData = {
   line: [{ date: '2026-10-01', minutes: 30 }, { date: '2026-10-02', minutes: 1234 }],
@@ -58,4 +60,36 @@ describe('PlaytimeCharts', () => {
     expect(html.match(/No playtime data\./g)).toHaveLength(3);
     expect(html).not.toContain('role="img"');
   });
+
+  it('labels day ticks and the axis when bucket is missing (today\'s behaviour)', () => {
+    const html = renderToStaticMarkup(<PlaytimeCharts data={data} comparison={null} />);
+    expect(html).toContain('<text class="chart-tick" x="0" y="196" text-anchor="start">2026-10-01</text>');
+    expect(html).toContain('text-anchor="end">2026-10-02</text>');
+    expect(html).toContain('<text class="chart-axis-title" x="260" y="216" text-anchor="middle">Day</text>');
+    expect(html).toContain('<th scope="col">Date</th>');
+  });
+
+  it('labels month buckets by month in the title, ticks, axis and table', () => {
+    const monthly: PlaytimeGraphData = { ...data, bucket: 'month', line: [{ date: '2025-11-01', minutes: 60 }, { date: '2026-10-01', minutes: 1234 }] };
+    const html = renderToStaticMarkup(<PlaytimeCharts data={monthly} comparison={null} />);
+    expect(html).toContain('role="img" aria-label="Cumulative playtime by month from November 2025 to October 2026, reaching 20h 34m."');
+    expect(html).toContain('>Nov 2025</text>');
+    expect(html).toContain('>Oct 2026</text>');
+    expect(html).toContain('text-anchor="middle">Month</text>');
+    expect(html).toContain('<caption>Cumulative playtime by month</caption>');
+    expect(html).toContain('<td>October 2026</td><td>20h 34m</td>');
+  });
+
+  it('formats months in the current i18n language', () => {
+    const monthly: PlaytimeGraphData = { ...data, bucket: 'month', line: [{ date: '2026-10-01', minutes: 60 }] };
+    const html = renderToStaticMarkup(
+      <I18nContext.Provider value={{ locale: 'es', setLocale: () => {}, t: createTranslator('es'), tc: createPluralTranslator('es') }}>
+        <PlaytimeCharts data={monthly} comparison={null} />
+      </I18nContext.Provider>,
+    );
+    expect(html).toContain('aria-label="Tiempo de juego acumulado por mes de octubre de 2026 a octubre de 2026, hasta 1h."');
+    expect(html).toContain('<td>octubre de 2026</td>');
+    expect(html).toContain('text-anchor="middle">Mes</text>');
+  });
 });
+

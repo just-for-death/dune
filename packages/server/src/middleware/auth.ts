@@ -39,7 +39,7 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
 }
 
 /**
- * Resolves the presented key once per request (REST and tRPC). A key that
+ * Resolves the presented key once per request. A key that
  * doesn't resolve is recorded as an auth failure for the client IP
  * (DUN-102, authFailureLimiter).
  */

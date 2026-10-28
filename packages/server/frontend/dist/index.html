@@ -519,6 +519,11 @@
     forbidden: 'This needs an admin key.',
     network: "Can't reach the Dune server.",
     generic: "The server couldn't complete this request.",
+  };
+  // Readable copy for specific `{ code }`s (DUN-038 save-versions by id).
+  var CODE_MSG = {
+    INVALID_GAME_ID: "That game id isn't valid. Refresh and try again.",
+    GAME_NOT_FOUND: 'That game no longer exists on the server. Refresh the list.',
     dbDown: "Server unavailable: the database couldn't be opened. Check the server logs.",
     dirDown: "Server unavailable: the data directory can't be written. Check the server logs.",
   };
@@ -594,6 +599,7 @@
     // authMiddleware answers an unknown/revoked key with 403 INVALID_API_KEY;
     // that is a rejected key, not a missing admin role.
     else if (res.status === 403) msg = code === 'INVALID_API_KEY' ? MSG.unauthorized : MSG.forbidden;
+    else if (code && Object.prototype.hasOwnProperty.call(CODE_MSG, code)) msg = CODE_MSG[code];
     else if (body && typeof body.error === 'string' && body.error.trim()) msg = body.error.trim();
     else msg = MSG.generic;
     return apiError(msg, res.status, code);
@@ -609,6 +615,8 @@
     try { return await res.json(); } catch (e) { return null; }
   }
   function get(path) { return request(path); }
+  /** DUN-038: save versions by numeric game id (REST; replaces the old RPC call). */
+  function saveVersionsPath(gameId) { return '/api/save-versions?gameId=' + encodeURIComponent(String(gameId)); }
   /** ISO timestamps are unreadable in a table; fall back to the raw value. */
   function formatWhen(value) {
     if (!value || value === 'Never') return 'Never';
@@ -888,15 +896,18 @@
       var details = await Promise.all(games.map(function (g) {
         return Promise.all([
           get('/api/list-files?game=' + encodeURIComponent(g.name)).catch(function () { return null; }),
-          get('/trpc/files.versions.list?batch=1&input=' + encodeURIComponent(JSON.stringify({ 0: { game: g.name } }))).catch(function () { return null; }),
+          get(saveVersionsPath(g.id)).catch(function (e) { return { error: e }; }),
         ]);
       }));
 
       var rows = '';
       var totalFiles = 0;
+      var versionsErr = null; // first save-versions failure, shown once below
       games.forEach(function (g, i) {
         var files = ((details[i][0] || {}).files) || [];
-        var versions = ((((details[i][1] || [])[0] || {}).result || {}).data || {}).versions || [];
+        var vres = details[i][1] || {};
+        if (vres.error && !versionsErr) versionsErr = vres.error;
+        var versions = (vres && vres.versions) || [];
         totalFiles += files.length;
         var synced = g.status === 'In Sync';
         var ownerLabel = isAdmin ? (ownerNames[g.ownerId] || ('#' + g.ownerId)) : 'you';
@@ -906,7 +917,7 @@
           + icon(synced ? 'circle-check' : 'circle-alert') + esc(g.status) + '</span></td>'
           + '<td class="muted">' + esc(formatWhen(g.lastSync)) + '</td>'
           + '<td class="num">' + files.length + '</td>'
-          + '<td class="num">' + versions.length + '</td>'
+          + '<td class="num">' + (vres.error ? '<span aria-label="Unavailable">–</span>' : versions.length) + '</td>'
           + '<td class="muted">' + esc(ownerLabel) + '</td>'
           + '<td><button class="btn btn-quiet btn-sm" type="button" data-delgameid="' + esc(String(g.id)) + '"'
           + ' data-delgamename="' + esc(g.name) + '" aria-label="Delete ' + esc(g.name) + '"'
@@ -915,6 +926,7 @@
           + '</tr>';
       });
       setMetric('st-files', String(totalFiles), null);
+      if (versionsErr) fail(versionsErr);
       document.getElementById('games').innerHTML = rows
         || '<tr><td colspan="7" class="table-empty">' + icon('gamepad-2', 'icon-lg')
           + 'No games tracked yet. Push saves from the desktop app, or run a local sync once sources are configured.</td></tr>';

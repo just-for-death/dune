@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { describeChange, formatChange, formatMinutes, formatShare, lineChartLabel, pieChartLabel, sliceColor } from './playtimeFormat';
+import { createTranslator } from '../i18n';
+import {
+  bucketTexts,
+  describeChange,
+  formatBucketDate,
+  formatChange,
+  formatMinutes,
+  formatShare,
+  lineChartLabel,
+  pieChartLabel,
+  playtimeBucket,
+  sliceColor,
+  tickIndexes,
+} from './playtimeFormat';
 
 describe('formatMinutes', () => {
   it('formats minutes and hours', () => {
@@ -59,5 +72,50 @@ describe('chart labels', () => {
     expect(formatShare(Number.NaN)).toBe('0%');
     expect(sliceColor(0)).toBe('hsl(0, 70%, 65%)');
     expect(sliceColor(8)).toBe('hsl(16, 70%, 65%)');
+  });
+});
+
+describe('DUN-096 buckets', () => {
+  it('defaults to day when bucket is missing or unknown', () => {
+    expect(playtimeBucket(null)).toBe('day');
+    expect(playtimeBucket({})).toBe('day');
+    expect(playtimeBucket({ bucket: 'day' })).toBe('day');
+    expect(playtimeBucket({ bucket: 'month' })).toBe('month');
+    expect(playtimeBucket({ bucket: 'week' as never })).toBe('day');
+  });
+
+  it('keeps day dates as sent and formats months per locale', () => {
+    expect(formatBucketDate('2026-10-05', 'day', 'es', 'tick')).toBe('2026-10-05');
+    expect(formatBucketDate('2026-10-01', 'month', 'en')).toBe('October 2026');
+    expect(formatBucketDate('2026-10-01', 'month', 'en', 'tick')).toBe('Oct 2026');
+    expect(formatBucketDate('2026-10-01', 'month', 'es')).toBe('octubre de 2026');
+    // UTC, so the first of the month never slips into the previous month.
+    expect(formatBucketDate('2026-01-01', 'month', 'en')).toBe('January 2026');
+    expect(formatBucketDate('garbage', 'month', 'en')).toBe('garbage');
+  });
+
+  it('picks evenly spaced ticks including first and last', () => {
+    expect(tickIndexes(0)).toEqual([]);
+    expect(tickIndexes(1)).toEqual([0]);
+    expect(tickIndexes(2)).toEqual([0, 1]);
+    expect(tickIndexes(3)).toEqual([0, 1, 2]);
+    expect(tickIndexes(10)).toEqual([0, 3, 6, 9]);
+    expect(tickIndexes(366)).toEqual([0, 122, 243, 365]);
+    expect(tickIndexes(Number.NaN)).toEqual([]);
+  });
+
+  it('names the axis, column and caption by bucket', () => {
+    expect(bucketTexts('day')).toEqual({ axis: 'Day', column: 'Date', caption: 'Cumulative playtime by date' });
+    expect(bucketTexts('month')).toEqual({ axis: 'Month', column: 'Month', caption: 'Cumulative playtime by month' });
+    expect(bucketTexts('month', createTranslator('es'))).toEqual({ axis: 'Mes', column: 'Mes', caption: 'Tiempo de juego acumulado por mes' });
+  });
+
+  it('summarises a monthly line chart with month names', () => {
+    const values = [{ date: '2025-01-01', minutes: 30 }, { date: '2026-10-01', minutes: 150 }];
+    expect(lineChartLabel(values, undefined, 'month', 'en'))
+      .toBe('Cumulative playtime by month from January 2025 to October 2026, reaching 2h 30m.');
+    expect(lineChartLabel(values, createTranslator('es'), 'month', 'es'))
+      .toBe('Tiempo de juego acumulado por mes de enero de 2025 a octubre de 2026, hasta 2h 30m.');
+    expect(lineChartLabel(values, undefined, 'day')).toBe('Cumulative playtime from 2025-01-01 to 2026-10-01, reaching 2h 30m.');
   });
 });

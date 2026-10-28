@@ -153,18 +153,3 @@ export function getRecentUnlocks(limit = 20, ownerId?: string): Achievement[] {
   }
 }
 
-export function handleSentinelWebhook(
-  game: string,
-  achievements: Array<{
-    apiName: string;
-    displayName: string;
-    description?: string;
-    unlocked: boolean;
-    unlockTime?: string | null;
-    rarity?: number;
-    hidden?: boolean;
-  }>,
-  ownerId = ''
-): { success: boolean; count: number; message?: string } {
-  return upsertAchievements(game, achievements, ownerId);
-}

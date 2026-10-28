@@ -54,31 +54,6 @@ export function requireSyncId(syncId: string): string {
   return syncId;
 }
 
-export interface SyncProgress {
-  percent: number;
-  message: string;
-}
-
-export type ProgressCallback = (progress: SyncProgress) => void;
-
-// NOTE: Server-side sync/restore are not implemented; the client implements
-// its own push/restore logic via REST. These are kept for tRPC completeness
-// and throw if accidentally invoked.
-
-export async function performCloudSyncWithProgress(
-  _credentials: { url: string },
-  _progress: ProgressCallback
-): Promise<{ success: boolean; message: string }> {
-  throw new Error('Server-side sync not implemented — client pushes to server');
-}
-
-export async function performCloudRestoreWithProgress(
-  _credentials: { url: string },
-  _progress: ProgressCallback
-): Promise<{ success: boolean; message: string }> {
-  throw new Error('Server-side restore not implemented — client pulls from server');
-}
-
 /**
  * Store one uploaded save file for the owner's game `gameName` (a display
  * title, matched case-insensitively). The game row is created first, then

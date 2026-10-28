@@ -13,7 +13,7 @@ function envInt(name: string, fallback: number): number {
 }
 
 /**
- * General limiter, mounted on `/api` and `/trpc` only (static dashboard
+ * General limiter, mounted on `/api` only (static dashboard
  * assets, /health and /ready are never counted). Default 100 per 15 min per
  * client IP; RATE_LIMIT_API_MAX / RATE_LIMIT_API_WINDOW_MS override.
  */
@@ -60,7 +60,7 @@ export interface AuthFailureLimiterOptions {
  * DUN-102: brute-force guard for API keys (the dashboard "login" is a key
  * check). Each request that presents a key which doesn't resolve counts as a
  * failure for its IP; once an IP reaches `max` failures inside `windowMs`,
- * every /api and /trpc request from it is 429 RATE_LIMITED until the window
+ * every /api request from it is 429 RATE_LIMITED until the window
  * ends. Valid requests never count.
  */
 export function createAuthFailureLimiter(opts: AuthFailureLimiterOptions) {

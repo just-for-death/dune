@@ -11,6 +11,8 @@ interface Settings {
   autoSyncFreq: string;
   scanRoots: string[];
   updateChecks?: boolean;
+  trackersEnabled?: { steam: boolean; retroAchievements: boolean; gog: boolean; epic: boolean };
+  artworkEnabled?: boolean;
   // Server settings
   maxVersions?: number;
   ollamaEndpoint?: string;
@@ -152,22 +154,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('scanner:setSource', id, enabled),
 
   // Save versions
-  getSaveVersions: (game: string) =>
-    ipcRenderer.invoke('saves:listVersions', game),
-  createSaveVersion: (game: string, deviceId?: string, changeSummary?: string) =>
-    ipcRenderer.invoke('saves:createVersion', game, deviceId, changeSummary),
-  getSaveVersion: (id: string) =>
-    ipcRenderer.invoke('saves:getVersion', id),
-  getSaveVersionDiff: (from: string, to: string) =>
-    ipcRenderer.invoke('saves:diff', from, to),
-  restoreSaveVersion: (game: string, versionId: string) =>
-    ipcRenderer.invoke('saves:restore', game, versionId),
+  getSaveVersions: (gameId: number) =>
+    ipcRenderer.invoke('saves:listVersions', gameId),
+  restoreSaveVersion: (gameId: number, versionId: string) =>
+    ipcRenderer.invoke('saves:restore', gameId, versionId),
 
   // Conflicts
   getConflicts: (game?: string) =>
     ipcRenderer.invoke('conflicts:list', game),
-  detectConflict: (game: string, localVersionId: string, remoteVersionId: string) =>
-    ipcRenderer.invoke('conflicts:detect', game, localVersionId, remoteVersionId),
   resolveConflict: (id: string, resolution: 'local' | 'remote' | 'both' | 'later') =>
     ipcRenderer.invoke('conflicts:resolve', id, resolution),
 
@@ -234,8 +228,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Diagnostics
   reportRendererError: (report: { message: string; stack?: string; url?: string }) =>
     ipcRenderer.invoke('reportRendererError', report),
-  openErrorLog: () =>
-    ipcRenderer.invoke('openErrorLog'),
 
   // Server API key (DUN-073: write-only; get returns { set, unreadable? })
   getServerKey: () =>

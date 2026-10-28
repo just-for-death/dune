@@ -57,4 +57,30 @@ describe('planUpload with a backup profile', () => {
   it('backupProfileFilter: no profile includes everything', () => {
     expect(backupProfileFilter(null)('x/y')).toBe(true);
   });
+
+  it('backupProfileFilter: autoExcludeCache adds the server cacheExcludeGlobs (DUN-103)', () => {
+    const cache = ['cache/**', '*.log'];
+    const on = backupProfileFilter({ includeGlobs: ['**/*'], excludeGlobs: ['tmp/**'], autoExcludeCache: true }, cache);
+    expect(on('slot1.sav')).toBe(true);
+    expect(on('cache/shader.bin')).toBe(false);
+    expect(on('run.log')).toBe(false);
+    expect(on('tmp/x')).toBe(false);
+    const off = backupProfileFilter({ includeGlobs: ['**/*'], excludeGlobs: ['tmp/**'], autoExcludeCache: false }, cache);
+    expect(off('cache/shader.bin')).toBe(true);
+    expect(off('run.log')).toBe(true);
+    expect(off('tmp/x')).toBe(false);
+    expect(backupProfileFilter({ includeGlobs: ['**/*'], excludeGlobs: [], autoExcludeCache: true })('run.log')).toBe(true);
+  });
+});
+
+describe('backupProfileFilter uses the shared matcher (DUN-136)', () => {
+  it('**/ globs match nested paths and autoExcludeCache applies DEFAULT_EXCLUDE_GLOBS', async () => {
+    const { DEFAULT_EXCLUDE_GLOBS } = await import('@dune/shared');
+    const f = backupProfileFilter({ includeGlobs: ['**/*.sav'], excludeGlobs: [], autoExcludeCache: true }, DEFAULT_EXCLUDE_GLOBS);
+    expect(f('a/b/slot1.sav')).toBe(true);
+    expect(f('slot1.sav')).toBe(true);
+    expect(f('a/cache/slot1.sav')).toBe(false);
+    expect(f('a/b/run.log')).toBe(false);
+    expect(f('a/b/notes.txt')).toBe(false);
+  });
 });

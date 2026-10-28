@@ -27,11 +27,11 @@ describe('serverClient (DUN-121 gated URL)', () => {
   it('uses only the gated base URL, adds x-api-key and JSON content type', async () => {
     const { http, calls } = fakeHttp();
     const client = createServerClient({ http, baseUrl: () => 'http://nas:3030', apiKey: () => 'secret' });
-    expect(await client.call({ method: 'POST', path: '/api/save-versions', body: { game: 'Hades' } })).toEqual({ ok: true, success: true });
+    expect(await client.call({ method: 'POST', path: '/api/save-versions', body: { gameId: 7 } })).toEqual({ ok: true, success: true });
     expect(calls[0]).toMatchObject({
       method: 'POST',
       url: 'http://nas:3030/api/save-versions',
-      data: { game: 'Hades' },
+      data: { gameId: 7 },
       headers: { 'x-api-key': 'secret', 'Content-Type': 'application/json' },
     });
   });

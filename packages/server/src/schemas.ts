@@ -1,13 +1,13 @@
 // Request/response validation for the routes hardened in DUN-096/103/104
 // (and the shared parse helper). Every schema here depends only on zod, so
 // the file can move into @dune/shared verbatim once that package takes a zod
-// dependency (DUN-038 proposal); REST and tRPC both import from here.
+// dependency (DUN-038 proposal); the REST routes in server.ts import from here.
 import { z } from 'zod';
 import { ApiError } from './utils/apiError.js';
 
 /**
  * Parse `value` with `schema`; on failure throw a 400 ApiError carrying
- * `code` (REST: `{ error, code }`; tRPC: `error.data.code`). The message
+ * `code` (REST body `{ error, code }`). The message
  * names the first failing field, never echoes the rejected value.
  */
 export function parseInput<S extends z.ZodType>(schema: S, value: unknown, code: string): z.output<S> {
@@ -36,7 +36,7 @@ export const PLAYTIME_LIMITS = {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const isoDateTime = z.iso.datetime({ offset: true });
 
-/** POST /api/playtime and tRPC playtime.record. Unknown keys are dropped. */
+/** POST /api/playtime. Unknown keys are dropped. */
 export const playtimeSessionSchema = z.object({
   game: z.string().trim().min(1).max(PLAYTIME_LIMITS.maxGameLength),
   platform: z.string().trim().min(1).max(PLAYTIME_LIMITS.maxPlatformLength),
@@ -130,13 +130,44 @@ export const backupProfileOptionsSchema = z.object({
   maxFileSizeMB: z.number().positive().max(BACKUP_PROFILE_LIMITS.maxFileSizeMB).nullable().optional(),
 });
 
+// ── Save versions (DUN-038) ─────────────────────────────────────────────────
+
+/**
+ * games.id is a REAL column: any finite positive number. Query strings are
+ * coerced; zod 4 numbers already reject NaN and ±Infinity.
+ */
+const gameIdQuery = z.coerce.number().positive();
+
+/** GET /api/save-versions?gameId=<number>. */
+export const saveVersionsListQuery = z.object({ gameId: gameIdQuery });
+
+/**
+ * POST /api/save-versions body: `{ gameId: number, deviceId?, changeSummary? }`.
+ * deviceId / changeSummary keep their lenient handling (non-strings fall back).
+ */
+export const saveVersionCreateBody = z.object({
+  gameId: z.number().positive(),
+  deviceId: z.unknown().optional(),
+  changeSummary: z.unknown().optional(),
+});
+
+/**
+ * DUN-137: POST /api/restore-version body `{ gameId: number, versionId }`.
+ * Only gameId is checked here (400 INVALID_GAME_ID); restoreVersion owns the
+ * versionId format check (400 INVALID_VERSION_ID).
+ */
+export const restoreVersionBody = z.object({
+  gameId: z.number().positive(),
+  versionId: z.unknown().optional(),
+});
+
 // ── AI analysis (DUN-104) ───────────────────────────────────────────────────
 
 export const AI_LIMITS = { maxFiles: 500, maxPathLength: 1024, maxDescription: 500 } as const;
 
 export const FILE_CATEGORIES = ['Save', 'Config', 'Cache', 'Other'] as const;
 
-/** POST /api/analyze-files-ai and tRPC ai.analyze input. */
+/** POST /api/analyze-files-ai input. */
 export const analyzeFilesSchema = z.object({
   gameName: z.string().trim().min(1).max(PLAYTIME_LIMITS.maxGameLength),
   files: z.array(z.object({

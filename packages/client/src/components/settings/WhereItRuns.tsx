@@ -2,13 +2,10 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react';
 import type { ApiKeyInfo, LocalSource, RemoteServer } from '@dune/shared';
 import { createLatestGate } from '../../services/latest';
+import { useI18n } from '../../i18n/context';
+import type { MessageKey } from '../../i18n';
 import {
   NEEDS_ADMIN,
-  NO_SERVER,
-  NOT_AVAILABLE_YET,
-  NOT_TESTED,
-  PROVIDER_PENDING,
-  countLabel,
   describeFailure,
   failureInfo,
   formatCreated,
@@ -62,6 +59,7 @@ async function call<R>(fn: () => Promise<R>): Promise<R | Error> {
  * Sections are remounted when the connection changes, so state starts fresh.
  */
 function useServerList<T>(enabled: boolean, load: () => Promise<Loaded<T>>) {
+  const { t } = useI18n();
   const [state, setState] = useState<ListState<T>>(() => ({ status: enabled ? 'loading' : 'idle', items: [] }));
   const gate = useMemo(() => createLatestGate<number>(), []);
 
@@ -71,9 +69,9 @@ function useServerList<T>(enabled: boolean, load: () => Promise<Loaded<T>>) {
       if (!ticket.isLatest()) return;
       setState(result.ok
         ? { status: 'ready', items: result.items }
-        : { status: 'error', items: [], error: describeFailure('load', result.failure) });
+        : { status: 'error', items: [], error: describeFailure('load', result.failure, t) });
     });
-  }, [gate, load]);
+  }, [gate, load, t]);
 
   useEffect(() => {
     if (enabled) void run();
@@ -106,23 +104,25 @@ const loadKeys = async (): Promise<Loaded<ApiKeyInfo>> => {
 };
 
 function NoServer({ fieldId }: { fieldId: string }) {
+  const { t } = useI18n();
   return (
     <p className="no-server">
-      {NO_SERVER}.{' '}
+      {t('where.noServerSentence')}{' '}
       <a href={`#${fieldId}`} className="text-link" onClick={e => { e.preventDefault(); focusById(fieldId); }}>
-        Set the server address
+        {t('where.setAddress')}
       </a>
     </p>
   );
 }
 
-function ListStatus<T>({ state, noun, onRetry, empty }: { state: ListState<T>; noun: string; onRetry: () => void; empty: ReactNode }) {
-  if (state.status === 'loading' && state.items.length === 0) return <p className="text-muted text-sm">Loading {noun}…</p>;
+function ListStatus<T>({ state, loading, onRetry, empty }: { state: ListState<T>; loading: string; onRetry: () => void; empty: ReactNode }) {
+  const { t } = useI18n();
+  if (state.status === 'loading' && state.items.length === 0) return <p className="text-muted text-sm">{loading}</p>;
   if (state.status === 'error') {
     return (
       <div className="inline-error" role="alert">
         <span>{state.error}</span>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>Try again</button>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>{t('common.tryAgain')}</button>
       </div>
     );
   }
@@ -140,6 +140,7 @@ interface RowError { id: string | number; message: string }
 /* ── Sources ─────────────────────────────────────────────────────────────── */
 
 function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serverUrlFieldId: string }) {
+  const { t, tc } = useI18n();
   const { state, reload, setItems } = useServerList(enabled, loadSources);
   const [draft, setDraft] = useState('');
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -154,18 +155,18 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (adding) return;
-    const check = validateSourcePath(draft, state.items.map(s => s.path));
+    const check = validateSourcePath(draft, state.items.map(s => s.path), t);
     if (!check.ok) { setFieldError(check.error); return; }
     setFieldError(null);
     setAdding(true);
     const res = await call(() => window.electronAPI.addLocalSource(check.value));
     setAdding(false);
-    if (!isServerOk(res)) { setFieldError(describeFailure('add-source', failureInfo(res))); return; }
+    if (!isServerOk(res)) { setFieldError(describeFailure('add-source', failureInfo(res), t)); return; }
     const source = (res as { source?: LocalSource }).source;
     if (source) setItems(items => [...items, source]);
     else void reload();
     setDraft('');
-    setAnnounce('Source added.');
+    setAnnounce(t('where.sources.added'));
   };
 
   const remove = async (source: LocalSource) => {
@@ -175,11 +176,11 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
     const res = await call(() => window.electronAPI.removeLocalSource(source.id));
     setRemoving(null);
     if (!isServerOk(res)) {
-      setRowError({ id: source.id, message: describeFailure('remove-source', failureInfo(res)) });
+      setRowError({ id: source.id, message: describeFailure('remove-source', failureInfo(res), t) });
       return;
     }
     setItems(items => items.filter(s => s.id !== source.id));
-    setAnnounce('Source removed.');
+    setAnnounce(t('where.sources.removed'));
     headingRef.current?.focus();
   };
 
@@ -187,13 +188,13 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
 
   return (
     <section className="card admin-card" aria-labelledby={ids.heading}>
-      <h4 id={ids.heading} ref={headingRef} tabIndex={-1} className="card-title">Sources</h4>
-      <p className="card-desc">Folders on your Dune server that it scans for game saves.</p>
+      <h4 id={ids.heading} ref={headingRef} tabIndex={-1} className="card-title">{t('where.sources.title')}</h4>
+      <p className="card-desc">{t('where.sources.desc')}</p>
       {!enabled ? <NoServer fieldId={serverUrlFieldId} /> : (
         <>
-          <ListStatus state={state} noun="sources" onRetry={reload} empty="No sources yet. Add a folder below." />
+          <ListStatus state={state} loading={t('where.sources.loading')} onRetry={reload} empty={t('where.sources.empty')} />
           {state.items.length > 0 && (
-            <ul className="admin-list" aria-label="Sources">
+            <ul className="admin-list" aria-label={t('where.sources.title')}>
               {state.items.map(source => (
                 <li key={source.id} className="admin-row">
                   <div className="admin-row-main">
@@ -203,12 +204,12 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
-                    aria-label={`Remove source ${source.path}`}
+                    aria-label={t('where.sources.removeLabel', { path: source.path })}
                     aria-disabled={removing === source.id || undefined}
                     aria-busy={removing === source.id || undefined}
                     onClick={() => { if (removing !== source.id) setConfirm(source); }}
                   >
-                    Remove
+                    {t('common.remove')}
                   </button>
                 </li>
               ))}
@@ -217,7 +218,7 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
           {state.status !== 'error' && (
             <form className="admin-form" onSubmit={submit} noValidate>
               <div className="form-group">
-                <label htmlFor={ids.input}>Folder path on the server</label>
+                <label htmlFor={ids.input}>{t('where.sources.pathLabel')}</label>
                 <input
                   id={ids.input}
                   type="text"
@@ -230,26 +231,26 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                   value={draft}
                   onChange={e => { setDraft(e.target.value); if (fieldError) setFieldError(null); }}
                 />
-                <p id={ids.hint} className="form-hint">The path as the server sees it, not a folder on this PC.</p>
+                <p id={ids.hint} className="form-hint">{t('where.sources.hint')}</p>
                 {fieldError && <p id={ids.error} className="error-text" role="alert">{fieldError}</p>}
               </div>
               <button type="submit" className="btn btn-primary" aria-disabled={adding || undefined}>
-                {adding ? 'Adding…' : 'Add source'}
+                {adding ? t('where.adding') : t('where.sources.add')}
               </button>
             </form>
           )}
-          <SectionStatus message={announce || (state.status === 'ready' ? countLabel(state.items.length, 'source') : '')} />
+          <SectionStatus message={announce || (state.status === 'ready' ? tc('where.sources.count', state.items.length) : '')} />
         </>
       )}
       <ConfirmDialog
         open={confirm !== null}
-        title="Remove this source?"
-        confirmLabel="Remove source"
+        title={t('where.sources.confirmTitle')}
+        confirmLabel={t('where.sources.confirmLabel')}
         onCancel={() => setConfirm(null)}
         onConfirm={() => { if (confirm) void remove(confirm); }}
       >
         <p className="path-value">{confirm?.path}</p>
-        <p className="muted">The server stops scanning this folder. Files in it are not deleted.</p>
+        <p className="muted">{t('where.sources.confirmBody')}</p>
       </ConfirmDialog>
     </section>
   );
@@ -258,6 +259,7 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
 /* ── Servers ─────────────────────────────────────────────────────────────── */
 
 function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serverUrlFieldId: string }) {
+  const { t, tc } = useI18n();
   const { state, reload, setItems } = useServerList(enabled, loadServers);
   const [draft, setDraft] = useState('');
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -272,18 +274,18 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (adding) return;
-    const check = validateRemoteServerUrl(draft, state.items.map(s => s.url));
+    const check = validateRemoteServerUrl(draft, state.items.map(s => s.url), t);
     if (!check.ok) { setFieldError(check.error); return; }
     setFieldError(null);
     setAdding(true);
     const res = await call(() => window.electronAPI.addRemoteServer(check.value));
     setAdding(false);
-    if (!isServerOk(res)) { setFieldError(describeFailure('add-server', failureInfo(res))); return; }
+    if (!isServerOk(res)) { setFieldError(describeFailure('add-server', failureInfo(res), t)); return; }
     const server = (res as { server?: RemoteServer }).server;
     if (server) setItems(items => [...items, server]);
     else void reload();
     setDraft('');
-    setAnnounce('Server added.');
+    setAnnounce(t('where.servers.added'));
   };
 
   const remove = async (server: RemoteServer) => {
@@ -293,11 +295,11 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
     const res = await call(() => window.electronAPI.removeRemoteServer(server.id));
     setRemoving(null);
     if (!isServerOk(res)) {
-      setRowError({ id: server.id, message: describeFailure('remove-server', failureInfo(res)) });
+      setRowError({ id: server.id, message: describeFailure('remove-server', failureInfo(res), t) });
       return;
     }
     setItems(items => items.filter(s => s.id !== server.id));
-    setAnnounce('Server removed.');
+    setAnnounce(t('where.servers.removed'));
     headingRef.current?.focus();
   };
 
@@ -305,18 +307,18 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
 
   return (
     <section className="card admin-card" aria-labelledby={ids.heading}>
-      <h4 id={ids.heading} ref={headingRef} tabIndex={-1} className="card-title">Servers</h4>
-      <p className="card-desc">Other Dune servers your server copies saves to.</p>
+      <h4 id={ids.heading} ref={headingRef} tabIndex={-1} className="card-title">{t('where.servers.title')}</h4>
+      <p className="card-desc">{t('where.servers.desc')}</p>
       {!enabled ? <NoServer fieldId={serverUrlFieldId} /> : (
         <>
-          <ListStatus state={state} noun="servers" onRetry={reload} empty="No other servers yet. Add one below." />
+          <ListStatus state={state} loading={t('where.servers.loading')} onRetry={reload} empty={t('where.servers.empty')} />
           {state.items.length > 0 && (
-            <ul className="admin-list" aria-label="Servers">
+            <ul className="admin-list" aria-label={t('where.servers.title')}>
               {state.items.map(server => (
                 <li key={server.id} className="admin-row">
                   <div className="admin-row-main">
                     <span className="admin-row-value path-value" title={server.url}>{server.url}</span>
-                    <span className="admin-row-meta">Status: {NOT_TESTED}</span>
+                    <span className="admin-row-meta">{t('where.servers.status', { status: t('where.notTested') })}</span>
                     {rowError?.id === server.id && <p className="error-text" role="alert">{rowError.message}</p>}
                   </div>
                   <div className="admin-row-actions">
@@ -324,31 +326,31 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                       type="button"
                       className="btn btn-secondary btn-sm"
                       disabled
-                      aria-label={`Test ${server.url}`}
+                      aria-label={t('where.servers.testLabel', { url: server.url })}
                       aria-describedby={ids.testReason}
                     >
-                      Test
+                      {t('where.servers.test')}
                     </button>
                     <button
                       type="button"
                       className="btn btn-secondary btn-sm"
-                      aria-label={`Remove server ${server.url}`}
+                      aria-label={t('where.servers.removeLabel', { url: server.url })}
                       aria-disabled={removing === server.id || undefined}
                       aria-busy={removing === server.id || undefined}
                       onClick={() => { if (removing !== server.id) setConfirm(server); }}
                     >
-                      Remove
+                      {t('common.remove')}
                     </button>
                   </div>
                 </li>
               ))}
             </ul>
           )}
-          {state.items.length > 0 && <p id={ids.testReason} className="form-hint">Test: {NOT_AVAILABLE_YET}</p>}
+          {state.items.length > 0 && <p id={ids.testReason} className="form-hint">{t('where.servers.testReason', { reason: t('where.notAvailableYet') })}</p>}
           {state.status !== 'error' && (
             <form className="admin-form" onSubmit={submit} noValidate>
               <div className="form-group">
-                <label htmlFor={ids.input}>Server address</label>
+                <label htmlFor={ids.input}>{t('where.servers.addressLabel')}</label>
                 <input
                   id={ids.input}
                   type="text"
@@ -362,26 +364,26 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                   value={draft}
                   onChange={e => { setDraft(e.target.value); if (fieldError) setFieldError(null); }}
                 />
-                <p id={ids.hint} className="form-hint">Full address with http:// or https:// and the port.</p>
+                <p id={ids.hint} className="form-hint">{t('where.servers.hint')}</p>
                 {fieldError && <p id={ids.error} className="error-text" role="alert">{fieldError}</p>}
               </div>
               <button type="submit" className="btn btn-primary" aria-disabled={adding || undefined}>
-                {adding ? 'Adding…' : 'Add server'}
+                {adding ? t('where.adding') : t('where.servers.add')}
               </button>
             </form>
           )}
-          <SectionStatus message={announce || (state.status === 'ready' ? countLabel(state.items.length, 'server') : '')} />
+          <SectionStatus message={announce || (state.status === 'ready' ? tc('where.servers.count', state.items.length) : '')} />
         </>
       )}
       <ConfirmDialog
         open={confirm !== null}
-        title="Remove this server?"
-        confirmLabel="Remove server"
+        title={t('where.servers.confirmTitle')}
+        confirmLabel={t('where.servers.confirmLabel')}
         onCancel={() => setConfirm(null)}
         onConfirm={() => { if (confirm) void remove(confirm); }}
       >
         <p className="path-value">{confirm?.url}</p>
-        <p className="muted">Your Dune server stops copying saves to it. Nothing on that server is deleted.</p>
+        <p className="muted">{t('where.servers.confirmBody')}</p>
       </ConfirmDialog>
     </section>
   );
@@ -389,14 +391,16 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
 
 /* ── API keys ────────────────────────────────────────────────────────────── */
 
-const PROVIDERS = [
-  { id: 'steamgriddb', name: 'SteamGridDB', purpose: 'Game artwork' },
-  { id: 'tracker', name: 'Achievement tracker', purpose: 'Achievements from tracker sites' },
+// Provider names stay as shown in English (product names; e2e matches them).
+const PROVIDERS: { id: string; name: string; purpose: MessageKey }[] = [
+  { id: 'steamgriddb', name: 'SteamGridDB', purpose: 'where.keys.provider.steamgriddb' },
+  { id: 'tracker', name: 'Achievement tracker', purpose: 'where.keys.provider.tracker' },
 ];
 
 function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFieldId }: {
   enabled: boolean; serverKeySet: boolean; serverUrlFieldId: string; serverKeyFieldId: string;
 }) {
+  const { t, tc, locale } = useI18n();
   const { state, reload, setItems } = useServerList(enabled, loadKeys);
   const [name, setName] = useState('');
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -425,17 +429,17 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (issuing) return;
-    const check = validateKeyName(name);
+    const check = validateKeyName(name, t);
     if (!check.ok) { setFieldError(check.error); return; }
     setFieldError(null);
     setIssuing(true);
     const res = await call(() => window.electronAPI.addApiKey(check.value || undefined));
     setIssuing(false);
     const key = !(res instanceof Error) && isServerOk(res) ? (res as { key?: string }).key : undefined;
-    if (!key) { setFieldError(describeFailure('issue-key', failureInfo(res))); return; }
+    if (!key) { setFieldError(describeFailure('issue-key', failureInfo(res), t)); return; }
     setName('');
     setIssued(key);
-    setAnnounce('Key issued. Copy it now; it will not be shown again.');
+    setAnnounce(t('where.keys.issued'));
     void reload();
   };
 
@@ -443,10 +447,10 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
     if (!issued) return;
     try {
       await navigator.clipboard.writeText(issued);
-      setAnnounce('Key copied.');
+      setAnnounce(t('where.keys.copied'));
     } catch {
       issuedRef.current?.select();
-      setAnnounce('Could not copy. The key is selected; press Ctrl+C.');
+      setAnnounce(t('where.keys.copyFailed'));
     }
   };
 
@@ -463,75 +467,75 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
     const res = await call(() => window.electronAPI.removeApiKey(key.id));
     setRevoking(null);
     if (!isServerOk(res)) {
-      setRowError({ id: key.id, message: describeFailure('revoke-key', failureInfo(res)) });
+      setRowError({ id: key.id, message: describeFailure('revoke-key', failureInfo(res), t) });
       return;
     }
     setItems(items => items.filter(k => k.id !== key.id));
-    setAnnounce('Key revoked.');
+    setAnnounce(t('where.keys.revoked'));
     headingRef.current?.focus();
   };
 
-  const keyLabel = (key: ApiKeyInfo) => key.description.trim() || 'Unnamed key';
+  const keyLabel = (key: ApiKeyInfo) => key.description.trim() || t('where.keys.unnamed');
   const describedBy = [ids.hint, fieldError ? ids.error : null].filter(Boolean).join(' ');
 
   return (
     <section className="card admin-card" aria-labelledby={ids.heading}>
-      <h4 id={ids.heading} ref={headingRef} tabIndex={-1} className="card-title">API keys</h4>
+      <h4 id={ids.heading} ref={headingRef} tabIndex={-1} className="card-title">{t('where.keys.title')}</h4>
 
-      <h5 id={ids.pcHeading} className="admin-subtitle">On this PC</h5>
+      <h5 id={ids.pcHeading} className="admin-subtitle">{t('where.keys.onPc')}</h5>
       <ul className="admin-list" aria-labelledby={ids.pcHeading}>
         <li className="admin-row">
           <div className="admin-row-main">
-            <span className="admin-row-value">Dune server key</span>
+            <span className="admin-row-value">{t('where.keys.serverKey')}</span>
             <span className="admin-row-meta">
-              <span className={serverKeySet ? 'key-status key-status-set' : 'key-status'}>{serverKeySet ? 'Set' : 'Not set'}</span>
-              {' '}· used by this PC to talk to your Dune server
+              <span className={serverKeySet ? 'key-status key-status-set' : 'key-status'}>{serverKeySet ? t('where.keys.set') : t('where.keys.notSet')}</span>
+              {' '}{t('where.keys.serverKeyUse')}
             </span>
           </div>
           <a href={`#${serverKeyFieldId}`} className="btn btn-secondary btn-sm" onClick={e => { e.preventDefault(); focusById(serverKeyFieldId); }}>
-            {serverKeySet ? 'Change' : 'Set key'}
+            {serverKeySet ? t('where.keys.change') : t('where.keys.setKey')}
           </a>
         </li>
       </ul>
 
-      <h5 id={ids.providersHeading} className="admin-subtitle">Game data providers</h5>
+      <h5 id={ids.providersHeading} className="admin-subtitle">{t('where.keys.providers')}</h5>
       <ul className="admin-list" aria-labelledby={ids.providersHeading}>
         {PROVIDERS.map(provider => (
           <li key={provider.id} className="admin-row admin-row-disabled">
             <div className="admin-row-main">
               <span className="admin-row-value">{provider.name}</span>
-              <span className="admin-row-meta" id={`provider-${provider.id}-reason`}>{provider.purpose} · {PROVIDER_PENDING}</span>
+              <span className="admin-row-meta" id={`provider-${provider.id}-reason`}>{t('where.keys.providerReason', { purpose: t(provider.purpose), pending: t('where.providerPending') })}</span>
             </div>
-            <button type="button" className="btn btn-secondary btn-sm" disabled aria-label={`Set key for ${provider.name}`} aria-describedby={`provider-${provider.id}-reason`}>
-              Set key
+            <button type="button" className="btn btn-secondary btn-sm" disabled aria-label={t('where.keys.providerSetLabel', { name: provider.name })} aria-describedby={`provider-${provider.id}-reason`}>
+              {t('where.keys.setKey')}
             </button>
           </li>
         ))}
       </ul>
 
-      <h5 id={ids.serverHeading} className="admin-subtitle">On your Dune server</h5>
+      <h5 id={ids.serverHeading} className="admin-subtitle">{t('where.keys.onServer')}</h5>
       {!enabled ? <NoServer fieldId={serverUrlFieldId} /> : (
         <>
-          <p className="card-desc">Keys your Dune server accepts for your account. Give each device its own key.</p>
-          <ListStatus state={state} noun="keys" onRetry={reload} empty="No keys listed yet." />
+          <p className="card-desc">{t('where.keys.serverDesc')}</p>
+          <ListStatus state={state} loading={t('where.keys.loading')} onRetry={reload} empty={t('where.keys.empty')} />
           {state.items.length > 0 && (
             <ul className="admin-list" aria-labelledby={ids.serverHeading}>
               {state.items.map(key => (
                 <li key={key.id} className="admin-row">
                   <div className="admin-row-main">
                     <span className="admin-row-value" title={keyLabel(key)}>{keyLabel(key)}</span>
-                    <span className="admin-row-meta">Created {formatCreated(key.createdAt)} · {key.masked}</span>
+                    <span className="admin-row-meta">{t('where.keys.created', { date: formatCreated(key.createdAt, t, locale), masked: key.masked })}</span>
                     {rowError?.id === key.id && <p className="error-text" role="alert">{rowError.message}</p>}
                   </div>
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
-                    aria-label={`Revoke key ${keyLabel(key)}`}
+                    aria-label={t('where.keys.revokeLabel', { name: keyLabel(key) })}
                     aria-disabled={revoking === key.id || undefined}
                     aria-busy={revoking === key.id || undefined}
                     onClick={() => { if (revoking !== key.id) setConfirm(key); }}
                   >
-                    Revoke
+                    {t('where.keys.revoke')}
                   </button>
                 </li>
               ))}
@@ -540,8 +544,8 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
 
           {issued && (
             <div className="issued-key">
-              <label id={ids.issued} htmlFor={`${ids.issued}-value`}>New key</label>
-              <p id={ids.issuedHint} className="form-hint">Copy this key now. It will not be shown again.</p>
+              <label id={ids.issued} htmlFor={`${ids.issued}-value`}>{t('where.keys.newKey')}</label>
+              <p id={ids.issuedHint} className="form-hint">{t('where.keys.copyNow')}</p>
               <div className="issued-key-row">
                 <input
                   ref={issuedRef}
@@ -554,8 +558,8 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
                   aria-describedby={ids.issuedHint}
                   value={issued}
                 />
-                <button type="button" className="btn btn-primary btn-sm" onClick={copyIssued}>Copy</button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={dismissIssued}>Done</button>
+                <button type="button" className="btn btn-primary btn-sm" onClick={copyIssued}>{t('where.keys.copy')}</button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={dismissIssued}>{t('where.keys.done')}</button>
               </div>
             </div>
           )}
@@ -563,7 +567,7 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
           {state.status !== 'error' && (
             <form className="admin-form" onSubmit={submit} noValidate>
               <div className="form-group">
-                <label htmlFor={ids.input}>Name for a new key (optional)</label>
+                <label htmlFor={ids.input}>{t('where.keys.nameLabel')}</label>
                 <input
                   ref={nameRef}
                   id={ids.input}
@@ -573,30 +577,30 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
                   className={fieldError ? 'input-error' : ''}
                   aria-invalid={fieldError ? true : undefined}
                   aria-describedby={describedBy}
-                  placeholder="e.g. Steam Deck"
+                  placeholder={t('where.keys.namePlaceholder')}
                   value={name}
                   onChange={e => { setName(e.target.value); if (fieldError) setFieldError(null); }}
                 />
-                <p id={ids.hint} className="form-hint">The server creates the key and shows it once.</p>
+                <p id={ids.hint} className="form-hint">{t('where.keys.nameHint')}</p>
                 {fieldError && <p id={ids.error} className="error-text" role="alert">{fieldError}</p>}
               </div>
               <button type="submit" className="btn btn-primary" aria-disabled={issuing || undefined}>
-                {issuing ? 'Issuing…' : 'Issue key'}
+                {issuing ? t('where.keys.issuing') : t('where.keys.issue')}
               </button>
             </form>
           )}
-          <SectionStatus message={announce || (state.status === 'ready' ? countLabel(state.items.length, 'key') : '')} />
+          <SectionStatus message={announce || (state.status === 'ready' ? tc('where.keys.count', state.items.length) : '')} />
         </>
       )}
       <ConfirmDialog
         open={confirm !== null}
-        title="Revoke this key?"
-        confirmLabel="Revoke key"
+        title={t('where.keys.confirmTitle')}
+        confirmLabel={t('where.keys.confirmLabel')}
         onCancel={() => setConfirm(null)}
         onConfirm={() => { if (confirm) void revoke(confirm); }}
       >
         <p>{confirm ? keyLabel(confirm) : ''}</p>
-        <p className="muted">Any device using this key loses access to your Dune server, including this PC if it uses it.</p>
+        <p className="muted">{t('where.keys.confirmBody')}</p>
       </ConfirmDialog>
     </section>
   );
@@ -604,12 +608,13 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
 
 /** DUN-032: settings for what the Dune server scans, copies to, and which keys it accepts. */
 export function WhereItRuns({ serverUrl, serverKeySet, connectionVersion, serverUrlFieldId, serverKeyFieldId }: Props) {
+  const { t } = useI18n();
   const enabled = serverUrl.trim() !== '';
   // Remount on connection change: lists reload and drafts/one-time keys are dropped.
   const key = enabled ? `${serverUrl}#${connectionVersion}` : 'no-server';
   return (
     <section className="where-it-runs" aria-labelledby="where-it-runs-heading">
-      <h3 id="where-it-runs-heading" className="section-subtitle where-heading">Where it runs</h3>
+      <h3 id="where-it-runs-heading" className="section-subtitle where-heading">{t('where.heading')}</h3>
       <SourcesSection key={`sources-${key}`} enabled={enabled} serverUrlFieldId={serverUrlFieldId} />
       <ServersSection key={`servers-${key}`} enabled={enabled} serverUrlFieldId={serverUrlFieldId} />
       <ApiKeysSection key={`keys-${key}`} enabled={enabled} serverKeySet={serverKeySet} serverUrlFieldId={serverUrlFieldId} serverKeyFieldId={serverKeyFieldId} />

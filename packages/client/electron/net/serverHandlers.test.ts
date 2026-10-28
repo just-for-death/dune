@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createServerClient, type ServerHttp } from './serverClient';
 import { createServerIpcHandlers } from './serverHandlers';
 
-function setup(respond: (cfg: Record<string, unknown>) => unknown = () => ({ data: { success: true }, status: 200 })) {
+function setup(respond: (cfg: Record<string, unknown>) => unknown = () => ({ data: { success: true }, status: 200 }), artOn = true) {
   const calls: Record<string, unknown>[] = [];
   const http = {
     request: vi.fn(async (cfg: Record<string, unknown>) => {
@@ -12,7 +12,7 @@ function setup(respond: (cfg: Record<string, unknown>) => unknown = () => ({ dat
       return r;
     }),
   } as unknown as ServerHttp;
-  const handlers = createServerIpcHandlers(createServerClient({ http, baseUrl: () => 'http://nas:3030', apiKey: () => 'k' }));
+  const handlers = createServerIpcHandlers(createServerClient({ http, baseUrl: () => 'http://nas:3030', apiKey: () => 'k' }), { artworkEnabled: () => artOn });
   return { handlers, calls };
 }
 
@@ -60,17 +60,15 @@ describe('server IPC arguments (DUN-072)', () => {
 
   it('string ids and names are encoded as one segment; . and .. are refused', async () => {
     const { handlers, calls } = setup();
-    await handlers['saves:getVersion']({}, 'a/b');
     await handlers['conflicts:resolve']({}, 'c?1', 'local');
     await handlers['achievements:get']({}, 'Half-Life 2: Ep/1');
     expect(calls.map((c) => c.url)).toEqual([
-      'http://nas:3030/api/save-versions/a%2Fb',
       'http://nas:3030/api/conflicts/c%3F1/resolve',
       'http://nas:3030/api/achievements/Half-Life%202%3A%20Ep%2F1',
     ]);
-    for (const bad of ['.', '..', '']) expect(await handlers['saves:getVersion']({}, bad)).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    for (const bad of ['.', '..', '']) expect(await handlers['conflicts:resolve']({}, bad, 'local')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
     expect(await handlers['conflicts:resolve']({}, 'c1', 'everything')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -118,5 +116,36 @@ describe('SteamGridDB key (DUN-092, write-only)', () => {
     expect(await handlers['steamGridKey:set']({}, '   ')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
     expect(calls).toEqual([]);
     expect(await handlers['steamGridKey:set']({}, 'abc')).toEqual({ ok: false, status: 403, code: 'FORBIDDEN', message: 'Admin only' });
+  });
+});
+
+describe('artwork opt-in (settings.artworkEnabled)', () => {
+  it('art routes answer ARTWORK_DISABLED and send nothing while artwork is off', async () => {
+    const { handlers, calls } = setup(undefined, false);
+    expect(await handlers['art:search']({}, 'Hades')).toMatchObject({ ok: false, code: 'ARTWORK_DISABLED' });
+    expect(await handlers['art:auto-match']({})).toMatchObject({ ok: false, code: 'ARTWORK_DISABLED' });
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('save versions by game id (DUN-038)', () => {
+  it('listVersions sends gameId; a name or bad id never reaches the server', async () => {
+    const { handlers, calls } = setup();
+    await handlers['saves:listVersions']({}, 7);
+    expect(calls[0]).toMatchObject({ method: 'GET', url: 'http://nas:3030/api/save-versions', params: { gameId: 7 } });
+    expect(await handlers['saves:listVersions']({}, 'Hades')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    expect(await handlers['saves:listVersions']({}, -1)).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('restore sends { gameId, versionId } only (DUN-137); a name or bad id never reaches the server', async () => {
+    const { handlers, calls } = setup();
+    await handlers['saves:restore']({}, 7, 'v1');
+    expect(calls[0]).toMatchObject({ method: 'POST', url: 'http://nas:3030/api/restore-version' });
+    expect(calls[0].data).toEqual({ gameId: 7, versionId: 'v1' });
+    expect(await handlers['saves:restore']({}, 'Hades', 'v1')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    expect(await handlers['saves:restore']({}, 0, 'v1')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    expect(await handlers['saves:restore']({}, 7, '')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    expect(calls).toHaveLength(1);
   });
 });

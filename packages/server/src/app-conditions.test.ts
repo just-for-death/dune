@@ -8,7 +8,7 @@ import request from 'supertest';
  * Practical app-conditions suite.
  * Mimics what the Electron client + deploy stack actually do:
  * boot probes → auth → local-sync from a fake mount → REST
- * upload/download → tRPC lists → overwrite/version restore →
+ * upload/download → REST lists → overwrite/version restore →
  * adversarial inputs → corrupt-DB recovery → new-module wiring.
  */
 
@@ -26,13 +26,6 @@ const AUTH_KEY = 'appcond-key-0123456789abcdef';
 database.addApiKey(AUTH_KEY);
 
 const api = (req: request.Test) => req.set('x-api-key', AUTH_KEY);
-
-const trpcGet = (proc: string, input: unknown) =>
-  api(
-    request(app).get(
-      `/trpc/${proc}?batch=1&input=${encodeURIComponent(JSON.stringify({ 0: input ?? null }))}`,
-    ),
-  );
 
 function downloadBuffer(url: string) {
   return api(request(app).get(url))
@@ -89,8 +82,8 @@ describe('B. auth conditions (misconfigured client)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('tRPC rejects unauthenticated sync.local with 401', async () => {
-    const res = await request(app).post('/trpc/sync.local').send({});
+  it('REST rejects unauthenticated local-sync with 401', async () => {
+    const res = await request(app).post('/api/local-sync').send({});
     expect(res.status).toBe(401);
   });
 });
@@ -125,25 +118,23 @@ describe('C. full game lifecycle (client app flow)', () => {
     expect(Buffer.compare(down.body, v1)).toBe(0);
   });
 
-  it('tRPC files.list reflects what REST stored', async () => {
-    const res = await trpcGet('files.list', { game });
+  it('list-files reflects what upload stored', async () => {
+    const res = await api(request(app).get('/api/list-files').query({ game }));
     expect(res.status).toBe(200);
-    const files = res.body[0].result.data.files as Array<{ path: string }>;
+    const files = res.body.files as Array<{ path: string }>;
     const paths = files.map((f) => f.path);
     expect(paths).toContain('slot1.sav');
     expect(paths).toContain('manual.sav');
   });
 
   it('overwrite snapshots the old version and it restores', async () => {
-    const up = await uploadBytes(game, 'slot1.sav', v2, String(Date.now()));
+    // DUN-097: the overwrite's sync id names its snapshot dir .versions/<syncId>.
+    const syncId = String(Date.now());
+    const up = await uploadBytes(game, 'slot1.sav', v2, syncId);
     expect(up.body.success).toBe(true);
 
-    const versions = await trpcGet('files.versions.list', { game });
-    const list = versions.body[0].result.data.versions as Array<{ id: string }>;
-    expect(list.length).toBeGreaterThanOrEqual(1);
-
     const old = await downloadBuffer(
-      `/api/download-version-file?game=${encodeURIComponent(game)}&versionId=${list[0].id}&path=slot1.sav`,
+      `/api/download-version-file?game=${encodeURIComponent(game)}&versionId=${syncId}&path=slot1.sav`,
     );
     expect(old.status).toBe(200);
     expect(Buffer.compare(old.body, v1)).toBe(0);

@@ -70,9 +70,9 @@ afterAll(() => {
 describe('DUN-094/010: static routes are never shadowed by params', () => {
   it('GET /api/save-versions/diff answers 200 with the diff', async () => {
     expect((await upload('Diff Game', 'a.sav', 'one')).status).toBe(200);
-    const v1 = await api(request(app).post('/api/save-versions')).send({ game: 'Diff Game' });
+    const v1 = await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Diff Game').id });
     expect((await upload('Diff Game', 'b.sav', 'two')).status).toBe(200);
-    const v2 = await api(request(app).post('/api/save-versions')).send({ game: 'Diff Game' });
+    const v2 = await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Diff Game').id });
     const res = await api(request(app).get(`/api/save-versions/diff?from=${v1.body.version.id}&to=${v2.body.version.id}`));
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, diff: { added: ['b.sav'], removed: [], changed: [], unchanged: 1 } });
@@ -296,7 +296,7 @@ describe('DUN-097: version history honors maxVersions across rows and dirs', () 
 
     const created: string[] = [];
     for (let i = 0; i < 4; i += 1) {
-      const v = await api(request(app).post('/api/save-versions')).send({ game: 'Prune Game' });
+      const v = await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Prune Game').id });
       expect(v.status).toBe(201);
       created.push(v.body.version.id);
       expect(getSaveVersion(v.body.version.id)).not.toBeNull(); // never pruned itself
@@ -313,10 +313,10 @@ describe('DUN-097: version history honors maxVersions across rows and dirs', () 
   it('versions referenced by an unresolved conflict are kept', async () => {
     await api(request(app).post('/api/settings')).send({ maxVersions: 2 });
     expect((await upload('Conflict Keep', 'a.sav', '1')).status).toBe(200);
-    const a = (await api(request(app).post('/api/save-versions')).send({ game: 'Conflict Keep' })).body.version.id;
-    const b = (await api(request(app).post('/api/save-versions')).send({ game: 'Conflict Keep' })).body.version.id;
+    const a = (await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Conflict Keep').id })).body.version.id;
+    const b = (await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Conflict Keep').id })).body.version.id;
     recordConflict(gameRow('Conflict Keep').id, a, b);
-    for (let i = 0; i < 3; i += 1) await api(request(app).post('/api/save-versions')).send({ game: 'Conflict Keep' });
+    for (let i = 0; i < 3; i += 1) await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Conflict Keep').id });
     expect(getSaveVersion(a)).not.toBeNull();
     expect(getSaveVersion(b)).not.toBeNull();
   });
@@ -362,7 +362,7 @@ describe('DUN-098: versions are atomic (files first, rows in one transaction)', 
 
   it('a stored version records the bytes that were copied, and its dir exists', async () => {
     expect((await upload('Hash Game', 'a.sav', 'abc')).status).toBe(200);
-    const v = await api(request(app).post('/api/save-versions')).send({ game: 'Hash Game' });
+    const v = await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Hash Game').id });
     const detail = getSaveVersion(v.body.version.id)!;
     expect(detail.files).toEqual([expect.objectContaining({ path: 'a.sav', size: 3, hash: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' })]);
     const dir = path.join(getGameRoot(gameRow('Hash Game').id, ADMIN), '.versions', v.body.version.id);
@@ -465,7 +465,7 @@ describe('DUN-102: rate limits and key transport', () => {
     expect(blocked.status).toBe(429);
     expect(blocked.body).toEqual({ error: expect.any(String), code: 'RATE_LIMITED' });
     expect(blocked.headers['retry-after']).toBeDefined();
-    expect((await api(request(app).get('/trpc/games.list'))).status).toBe(429);
+    expect((await api(request(app).get('/api/settings'))).status).toBe(429);
     // Liveness, readiness and the dashboard are never limited.
     expect((await request(app).get('/health')).status).toBe(200);
     expect((await request(app).get('/')).status).toBe(200);
@@ -552,7 +552,7 @@ describe('DUN-103: backup profiles validate globs and apply autoExcludeCache', (
     expect(got.body.profile).toMatchObject({ excludeGlobs: [], autoExcludeCache: true });
     expect(got.body.cacheExcludeGlobs).toContain('**/cache/**');
 
-    const v1 = await api(request(app).post('/api/save-versions')).send({ game: 'Profile Game' });
+    const v1 = await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Profile Game').id });
     expect(getSaveVersion(v1.body.version.id)!.files.map((f) => f.path)).toEqual(['notes.txt', 'slot.sav']);
 
     // Client echoes the whole profile back (gameId/updatedAt are ignored).
@@ -562,12 +562,12 @@ describe('DUN-103: backup profiles validate globs and apply autoExcludeCache', (
     const kept = await api(request(app).post('/api/backup-profile')).send({ game: 'Profile Game', autoExcludeCache: false });
     expect(kept.body.profile).toMatchObject({ excludeGlobs: ['**/*.txt'], autoExcludeCache: false });
 
-    const v2 = await api(request(app).post('/api/save-versions')).send({ game: 'Profile Game' });
+    const v2 = await api(request(app).post('/api/save-versions')).send({ gameId: gameRow('Profile Game').id });
     expect(getSaveVersion(v2.body.version.id)!.files.map((f) => f.path)).toEqual(['cache/shader.bin', 'slot.sav']);
 
     // DUN-067: an exclude rule never hides or deletes stored versions.
     expect(getSaveVersion(v1.body.version.id)!.files.map((f) => f.path)).toEqual(['notes.txt', 'slot.sav']);
-    const listed = await api(request(app).get('/api/save-versions?game=Profile%20Game'));
+    const listed = await api(request(app).get(`/api/save-versions?gameId=${gameRow('Profile Game').id}`));
     expect(listed.body.versions.map((v: { id: string }) => v.id)).toEqual(expect.arrayContaining([v1.body.version.id, v2.body.version.id]));
     const dir = path.join(getGameRoot(gameRow('Profile Game').id, ADMIN), '.versions', v1.body.version.id);
     expect(fs.existsSync(path.join(dir, 'notes.txt'))).toBe(true);
