@@ -184,6 +184,7 @@ dune/
 - Remote Epic achievements are dropped; GOG stays (opt-in OAuth). The Epic library scanner and the rarity tier are unaffected.
 - Save-path manifest: the Ludusavi manifest (PCGamingWiki data, CC BY-NC-SA 3.0, noted in THIRD_PARTY_NOTICES.md; the code licence is unchanged). With a server, `GET /api/manifest/:gameId` serves the parsed entries; with no server, Desktop fetches it. Path expansion stays in Electron main and only suggests paths, never applying one without the user confirming. Games get nullable `steamAppId`/`gogId`, and lookups try ids before the title.
 - Update checks: `Settings.updateCheckEnabled` (default false, replaces `updateChecks`, no alias) gates only the automatic check; a manual click always runs one check. Metadata only from api.github.com; notes are plain text; release links open only if https.
+- Remote trackers (Steam, RetroAchievements) live in `@dune/providers`; the server keeps per-user encrypted `user_tracker_credentials` (write-only, `{set}` only), an admin `Settings.trackersEnabled` (default off, 403 `PROVIDER_DISABLED`) and member-scoped sync routes; `PROVIDER_PRIVATE_PROFILE` stays a separate code so the UI can tell the user to make the profile public. Desktop adds a local fallback (safeStorage keys) with the same routing rule.
 - Downloads: `setBaseDir` affects only new downloads (existing items keep their folder and state); a missing base or override folder fails with `IO_ERROR` and is never recreated.
 
 ---
