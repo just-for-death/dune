@@ -13,6 +13,7 @@ process.env.API_KEY_SECRET = 'db-test-secret-0123456789abcdef';
 
 const { database, withDbLock, closeDbForTests, runBootMigrations } = await import('../db/index.js');
 const { hashApiKey } = await import('../utils/crypto.js');
+const sqlite = await import('./sqlite.js');
 
 const TMP = process.env.DATA_DIR as string;
 const OWNER = database.createUser(`db-owner-${Date.now()}`, 'member').id;
@@ -184,36 +185,51 @@ describe('unopenable database (DUN-099: fail loudly, never move aside)', () => {
   });
 });
 
-describe('multi-user migration', () => {
-  it('adds ownerId, creates one admin, adopts legacy keys, and claims games', () => {
-    closeDbForTests();
-    const dbFile = path.join(TMP, 'dune.sqlite');
-    if (fs.existsSync(dbFile)) fs.unlinkSync(dbFile);
+describe('multi-user boot (DUN-123: no legacy games rebuild)', () => {
+  const dbFile = path.join(TMP, 'dune.sqlite');
 
-    // Build a pre-multi-user database: games without ownerId, hashed key in kv.
+  it('refuses a pre-multi-user games table without touching it (no rename/drop)', () => {
+    closeDbForTests();
+    if (fs.existsSync(dbFile)) fs.unlinkSync(dbFile);
     const legacy = new DatabaseSync(dbFile);
     legacy.exec(`
       PRAGMA journal_mode = DELETE;
       CREATE TABLE games (id REAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, status TEXT NOT NULL, lastSync TEXT NOT NULL, thumbnail TEXT NOT NULL DEFAULT '', analysis TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL);
-      CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     const ts = new Date().toISOString();
     legacy
       .prepare('INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(1, 'Legacy Game', 'In Sync', 'Never', '', null, ts, ts);
-    legacy
-      .prepare('INSERT INTO kv (key, value) VALUES (?, ?)')
-      .run('settings', JSON.stringify({ apiKeys: [hashApiKey('legacy-key')] }));
     legacy.close();
+
+    expect(() => database.getGames()).toThrow(sqlite.DatabaseOpenError);
+    closeDbForTests();
+    const check = new DatabaseSync(dbFile);
+    const tables = (check.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((t) => t.name);
+    const rows = check.prepare('SELECT name FROM games').all() as Array<{ name: string }>;
+    check.close();
+    expect(tables).not.toContain('games_legacy');
+    expect(rows.map((r) => r.name)).toEqual(['Legacy Game']);
+    fs.unlinkSync(dbFile);
+  });
+
+  it('creates one admin, adopts hashed settings keys, and claims ownerless games', () => {
+    closeDbForTests();
+    if (fs.existsSync(dbFile)) fs.unlinkSync(dbFile);
+    database.getGames(); // fresh current-schema DB
+    const { getDb } = sqlite;
+    const ts = new Date().toISOString();
+    getDb()
+      .prepare('INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)')
+      .run(1, 'Ownerless Game', 'In Sync', 'Never', '', null, ts, ts);
+    getDb().exec("DELETE FROM users");
+    database.saveSettings({ ...database.getSettings(), apiKeys: [hashApiKey('legacy-key')] });
 
     runBootMigrations();
 
-    const games = database.getGames();
     const admin = database.listUsers().find(u => u.role === 'admin');
     expect(admin).toBeDefined();
-    // Ownerless rows are claimed by the admin.
-    expect(games.find(g => g.name === 'Legacy Game')?.ownerId).toBe(admin!.id);
-    // The pre-existing hashed key now resolves to that admin.
+    expect(database.getGames().find(g => g.name === 'Ownerless Game')?.ownerId).toBe(admin!.id);
     expect(database.resolveUserByKey('legacy-key')?.id).toBe(admin!.id);
 
     // Idempotent: re-running adds no second admin and no duplicate keys.
@@ -231,5 +247,39 @@ describe('nextId', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(Number.isInteger)).toBe(true);
     expect(ids.every((v, i) => i === 0 || v > ids[i - 1])).toBe(true);
+  });
+});
+
+describe('DUN-116: bootstrap key file always holds the live key', () => {
+  it('replaces a stale .bootstrap-key with the newly generated key (0600, no temp left)', async () => {
+    const { getDb } = await import('./sqlite.js');
+    const keyFile = path.join(TMP, '.bootstrap-key');
+    fs.writeFileSync(keyFile, 'stale-key-from-an-old-db', { mode: 0o644 });
+    getDb().exec('DELETE FROM user_keys');
+
+    runBootMigrations();
+
+    const key = fs.readFileSync(keyFile, 'utf8');
+    expect(key).not.toBe('stale-key-from-an-old-db');
+    expect(database.resolveUserByKey(key)?.role).toBe('admin');
+    expect(database.resolveUserByKey('stale-key-from-an-old-db')).toBeNull();
+    if (process.platform !== 'win32') expect(fs.statSync(keyFile).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(TMP).filter((f) => f.startsWith('.bootstrap-key.'))).toEqual([]);
+  });
+
+  it('keeps no key file and no temp file when the data dir is not writable', async () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    const { getDb } = await import('./sqlite.js');
+    const keyFile = path.join(TMP, '.bootstrap-key');
+    fs.rmSync(keyFile, { force: true });
+    getDb().exec('DELETE FROM user_keys');
+    fs.mkdirSync(keyFile); // a directory where the file goes: rename fails
+    try {
+      expect(() => runBootMigrations()).not.toThrow();
+      expect(fs.statSync(keyFile).isDirectory()).toBe(true);
+      expect(fs.readdirSync(TMP).filter((f) => f.startsWith('.bootstrap-key.'))).toEqual([]);
+    } finally {
+      fs.rmSync(keyFile, { recursive: true, force: true });
+    }
   });
 });

@@ -37,6 +37,29 @@ function scopeByOwner(achievements: Achievement[], ownerId?: string): Achievemen
   return achievements.filter(a => (a.ownerId || '') === ownerId);
 }
 
+/** A parseable timestamp, else null (an unknown time never wins a comparison). */
+function validTime(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value !== '' && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
+/**
+ * DUN-006: an unlock is never lost. Once unlocked the row stays unlocked
+ * (a locked import carries no unlock information and changes nothing), and
+ * the unlock time is the EARLIEST known one: an earlier import lowers it, a
+ * later or missing time never overwrites it. A locked row has no time.
+ */
+export function mergeUnlock(
+  current: { unlocked: boolean; unlockTime: string | null },
+  incoming: { unlocked: boolean; unlockTime?: string | null },
+): { unlocked: boolean; unlockTime: string | null } {
+  const currentTime = current.unlocked ? validTime(current.unlockTime) : null;
+  if (!incoming.unlocked) return { unlocked: current.unlocked, unlockTime: currentTime };
+  const incomingTime = validTime(incoming.unlockTime);
+  if (currentTime === null) return { unlocked: true, unlockTime: incomingTime };
+  if (incomingTime === null) return { unlocked: true, unlockTime: currentTime };
+  return { unlocked: true, unlockTime: Date.parse(incomingTime) < Date.parse(currentTime) ? incomingTime : currentTime };
+}
+
 export function upsertAchievements(
   game: string,
   achievements: Array<{
@@ -65,8 +88,7 @@ export function upsertAchievements(
           ...db[existingIdx],
           displayName: a.displayName,
           description: a.description || '',
-          unlocked: a.unlocked,
-          unlockTime: a.unlockTime || null,
+          ...mergeUnlock(db[existingIdx], a),
           rarity: a.rarity || 0,
           hidden: a.hidden || false,
           updatedAt: now
@@ -79,8 +101,7 @@ export function upsertAchievements(
           apiName: a.apiName,
           displayName: a.displayName,
           description: a.description || '',
-          unlocked: a.unlocked,
-          unlockTime: a.unlockTime || null,
+          ...mergeUnlock({ unlocked: false, unlockTime: null }, a),
           rarity: a.rarity || 0,
           hidden: a.hidden || false,
           createdAt: now,

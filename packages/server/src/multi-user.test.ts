@@ -13,8 +13,8 @@ process.env.API_KEY_SECRET = 'multiuser-secret-0123456789abcdef';
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 
-const ADMIN_KEY = 'admin-int-test-key-0123456789';
-database.addApiKey(ADMIN_KEY, 'Multi-user test admin');
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const ADMIN_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'Multi-user test admin');
 const adminId = database.resolveUserByKey(ADMIN_KEY)!.id;
 
 let memberKey = '';

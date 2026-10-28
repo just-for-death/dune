@@ -30,8 +30,8 @@ const { triggerRemoteSync } = await import('./services/remoteSync.js');
 const { createSaveVersion, getSaveVersion, listVersionRecords, createVersionFromDirectory } = await import('./services/saveVersions.js');
 const { recordConflict } = await import('./services/conflicts.js');
 
-const KEY = 'mediums-admin-key-0123456789abcdef';
-database.addApiKey(KEY);
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'test admin key');
 const ADMIN = database.listUsers().find((u) => u.role === 'admin')!.id;
 const member = database.createUser(`mediums-member-${Date.now()}`, 'member');
 const MEMBER_KEY = database.issueUserKey(member.id, 'member');

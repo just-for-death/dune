@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { render, Text, Box, useInput, useApp } from 'ink';
-import { getConfig } from '../utils/config.js';
 import { database } from '../db/index.js';
 import { steamGridKeyStatus } from '../services/providerKeys.js';
 
@@ -23,15 +22,22 @@ interface AppState {
 
 const VIEWS: ViewName[] = ['dashboard', 'games', 'sync', 'settings', 'logs'];
 
-function safeGetConfig(): ReturnType<typeof getConfig> {
-  try {
-    return getConfig();
-  } catch {
-    return {
-      server: { port: 3030, host: '0.0.0.0' },
-      sync: { autoSync: false, syncInterval: 300000, maxVersions: 10 },
-    } as ReturnType<typeof getConfig>;
-  }
+/**
+ * DUN-107: the TUI shows only values the server really uses: the port the
+ * same way server.ts reads it (PORT env, default 3030) and maxVersions from
+ * the DB settings. The old ConfigManager (config/dune.config.json in cwd,
+ * autoSync/syncInterval/host) was never read by the server and is gone.
+ */
+interface TuiConfig {
+  port: number;
+  maxVersions: number | null;
+}
+
+function readTuiConfig(): TuiConfig {
+  const port = parseInt(process.env.PORT || '3030', 10);
+  let maxVersions: number | null = null;
+  try { maxVersions = database.getSettings().maxVersions; } catch { /* DB unavailable */ }
+  return { port, maxVersions };
 }
 
 function Header({ currentView }: { currentView: ViewName }) {
@@ -131,34 +137,29 @@ function GamesView({ state }: { state: AppState }) {
   );
 }
 
-function SyncView({ state, cfg }: { state: AppState; cfg: ReturnType<typeof getConfig> }) {
+function SyncView({ state, cfg }: { state: AppState; cfg: TuiConfig }) {
   const color = state.syncStatus === 'success' ? 'green' : state.syncStatus === 'error' ? 'red' : 'yellow';
   return (
     <Box flexDirection="column" padding={1}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text bold>Sync Manager</Text>
-        <Text color="gray">Auto-sync: {cfg.sync.autoSync ? 'Enabled' : 'Disabled'}</Text>
       </Box>
       <Box borderStyle="round" borderColor={color} padding={1} marginTop={1}>
         <Text>Status: </Text>
         <Text color={color}>{state.syncStatus.toUpperCase()}</Text>
       </Box>
       <Box flexDirection="row" marginTop={1}>
-        <Text>Sync Interval: </Text>
-        <Text color="cyan">{Math.round(cfg.sync.syncInterval / 60000)} min</Text>
-      </Box>
-      <Box flexDirection="row">
         <Text>Max Versions: </Text>
-        <Text color="cyan">{cfg.sync.maxVersions}</Text>
+        <Text color="cyan">{cfg.maxVersions ?? 'unavailable'}</Text>
       </Box>
       <Box flexDirection="row" marginTop={1}>
-        <Text>[S] Start Sync  [A] Toggle auto-sync</Text>
+        <Text>[S] Start Sync</Text>
       </Box>
     </Box>
   );
 }
 
-function SettingsView({ cfg }: { cfg: ReturnType<typeof getConfig> }) {
+function SettingsView({ cfg }: { cfg: TuiConfig }) {
   // DUN-092: the key lives encrypted in the DB; the TUI only shows status.
   let sgdbSet = false;
   try { sgdbSet = steamGridKeyStatus().set; } catch { /* DB unavailable */ }
@@ -169,26 +170,14 @@ function SettingsView({ cfg }: { cfg: ReturnType<typeof getConfig> }) {
         <Text bold>Server</Text>
         <Box flexDirection="row">
           <Text>Port: </Text>
-          <Text color="cyan">{cfg.server.port}</Text>
-        </Box>
-        <Box flexDirection="row">
-          <Text>Host: </Text>
-          <Text color="cyan">{cfg.server.host}</Text>
+          <Text color="cyan">{cfg.port}</Text>
         </Box>
       </Box>
       <Box borderStyle="round" borderColor="cyan" padding={1} marginTop={1} flexDirection="column">
         <Text bold>Sync</Text>
         <Box flexDirection="row">
-          <Text>Auto Sync: </Text>
-          <Text color="cyan">{cfg.sync.autoSync ? 'On' : 'Off'}</Text>
-        </Box>
-        <Box flexDirection="row">
-          <Text>Interval: </Text>
-          <Text color="cyan">{Math.round(cfg.sync.syncInterval / 60000)} min</Text>
-        </Box>
-        <Box flexDirection="row">
           <Text>Max Versions: </Text>
-          <Text color="cyan">{cfg.sync.maxVersions}</Text>
+          <Text color="cyan">{cfg.maxVersions ?? 'unavailable'}</Text>
         </Box>
       </Box>
       <Box borderStyle="round" borderColor="cyan" padding={1} marginTop={1} flexDirection="column">
@@ -257,7 +246,7 @@ function HelpView() {
 
 export default function App() {
   const { exit } = useApp();
-  const [cfg] = useState<ReturnType<typeof getConfig>>(safeGetConfig);
+  const [cfg] = useState<TuiConfig>(readTuiConfig);
   const [state, setState] = useState<AppState>({
     currentView: 'dashboard',
     selectedGame: null,
@@ -299,7 +288,7 @@ export default function App() {
       // Local server route is POST /api/local-sync (authenticated).
       // The TUI talks to the local daemon; the key comes from DUNE_API_KEY.
       const apiKey = process.env.DUNE_API_KEY ?? '';
-      const result = await fetch(`http://localhost:${cfg.server.port}/api/local-sync`, {
+      const result = await fetch(`http://localhost:${cfg.port}/api/local-sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -319,7 +308,7 @@ export default function App() {
       addLog('error', `Sync failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
     refreshGames();
-  }, [addLog, cfg.server.port, refreshGames]);
+  }, [addLog, cfg.port, refreshGames]);
 
   useInput((input, key) => {
     if ((key.ctrl && input === 'c') || input === 'q' || input === 'Q') {

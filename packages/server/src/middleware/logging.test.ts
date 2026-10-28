@@ -454,3 +454,26 @@ describe('deep log sanitization hook (DUN-025)', () => {
     expect(out.j).toBe(j);
   });
 });
+
+describe('DUN-059 (was DUN-040): child logger bindings are sanitized', () => {
+  it('redacts keys and axios errors bound on child and grandchild loggers', async () => {
+    const { lines, stream } = capture();
+    const secret = `fake-${randomBytes(8).toString('hex')}`;
+    const err = await failedAxiosRequest(secret, secret, secret);
+    const child = createLogger(stream).child({
+      settings: { apiKey: secret, name: 'keep-me' },
+      upstream: { cause: err },
+    });
+    const grandchild = child.child({ auth: { token: secret } });
+    child.info('child line');
+    grandchild.warn({ x: 1 }, 'grandchild line');
+    expect(lines.length).toBe(2);
+    for (const line of lines) expect(line).not.toContain(secret);
+    const parsed = JSON.parse(lines[1]);
+    expect(parsed.settings).toEqual({ apiKey: '[REDACTED]', name: 'keep-me' });
+    expect(parsed.auth.token).toBe('[REDACTED]');
+    expect(parsed.service).toBe('dune-server');
+    expect(parsed.x).toBe(1);
+    expect(parsed.upstream.cause.config).toBeUndefined();
+  });
+});

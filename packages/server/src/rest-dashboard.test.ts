@@ -16,8 +16,8 @@ process.env.API_KEY_SECRET = 'restdash-secret-0123456789abcdef';
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 
-const AUTH_KEY = 'restdash-admin-key-0123456789';
-database.addApiKey(AUTH_KEY);
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const AUTH_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'test admin key');
 
 const api = (req: request.Test) => req.set('x-api-key', AUTH_KEY);
 

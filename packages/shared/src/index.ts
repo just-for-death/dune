@@ -620,3 +620,4 @@ export interface ElectronAPI {
 
 export * from './pathRules.js';
 export * from './backupGlob.js';
+export * from './serverUrl.js';

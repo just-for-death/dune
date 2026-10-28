@@ -41,6 +41,8 @@ describe('checkReadiness', () => {
     const result = checkReadiness();
     expect(result.ready).toBe(false);
     expect(result.checks.database.ok).toBe(false);
-    expect(result.checks.database.message).toContain('db down');
+    // DUN-108: fixed code only; the raw error text never reaches the body.
+    expect(result.checks.database).toEqual({ ok: false, code: 'DATABASE_UNAVAILABLE' });
+    expect(JSON.stringify(result)).not.toContain('db down');
   });
 });

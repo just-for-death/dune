@@ -14,8 +14,8 @@ process.env.API_KEY_SECRET = 'security-test-secret-0123456789abcdef';
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 
-const VALID_KEY = 'test-security-valid-key-12345';
-database.addApiKey(VALID_KEY, 'Security test key');
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const VALID_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'Security test key');
 
 afterAll(() => {
   process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
@@ -85,14 +85,6 @@ describe('Security: SSRF Prevention', () => {
 describe('Security: Path Traversal Prevention', () => {
   it('rejects directory traversal in resolveGameFile', () => {
     expect(() => resolveGameFile(1, 'subdir/../../../../etc/passwd', 'usr_sec')).toThrow(expect.objectContaining({ code: 'DOT_SEGMENT' }));
-  });
-
-  it('rejects non-numeric versionId in download-version-file', async () => {
-    const res = await request(app)
-      .get('/api/download-version-file?game=TestGame&versionId=../sneaky&path=save.dat')
-      .set('x-api-key', VALID_KEY);
-    expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
   });
 
   it('rejects path traversal in filePath parameter', async () => {

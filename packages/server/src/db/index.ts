@@ -333,13 +333,6 @@ function addUserKey(userId: string, rawKey: string, description = ''): boolean {
   return insertKeyHash(hashApiKey(rawKey), userId, description);
 }
 
-/** Test-only helper: creates an admin user if needed and issues a key for them. */
-function addApiKey(rawKey: string, description = ''): void {
-  const admin = listUsers().find((u) => u.role === 'admin') ?? listUsers()[0];
-  if (!admin) return;
-  addUserKey(admin.id, rawKey, description);
-}
-
 /** Create a fresh key for a user; returns the plaintext key (shown once). */
 function issueUserKey(userId: string, description = ''): string {
   const raw = generateApiKey();
@@ -549,15 +542,33 @@ export function runBootMigrations(): void {
     // Write the full key to a one-time file (mode 0600) instead of logging
     // it: logs may persist, the file is read once and then deleted by the
     // operator. The key itself is high-entropy (192 bits).
-    try {
-      const keyFile = path.join(dataDir(), '.bootstrap-key');
-      if (!fs.existsSync(keyFile)) {
-        fs.writeFileSync(keyFile, defaultKey, { mode: 0o600 });
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Could not write bootstrap key file');
+    if (writeBootstrapKey(defaultKey)) {
+      logger.warn('Generated default API key — read it from data/.bootstrap-key, then delete that file and rotate the key');
     }
-    logger.warn('Generated default API key — read it from data/.bootstrap-key, then delete that file and rotate the key');
+  }
+}
+
+/**
+ * DUN-116: the file must always hold the key that is valid NOW. Previously a
+ * stale .bootstrap-key (from an earlier DB) blocked the write, so the operator
+ * read a dead key and was locked out. Write a private temp file and rename it
+ * over whatever is there (atomic; never a half-written or world-readable key).
+ * The key itself is never logged.
+ */
+function writeBootstrapKey(key: string): boolean {
+  const keyFile = path.join(dataDir(), '.bootstrap-key');
+  const tmp = `${keyFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(tmp, key, { mode: 0o600, flag: 'wx' });
+    fs.renameSync(tmp, keyFile);
+    return true;
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    logger.error(
+      { err },
+      'Generated a default API key but could not write data/.bootstrap-key; fix the data dir permissions and restart, or issue a key with an existing admin key',
+    );
+    return false;
   }
 }
 
@@ -596,7 +607,6 @@ export const database = {
   countUserKeys,
   generateApiKey,
   issueUserKey,
-  addApiKey,
   listUserKeys,
   listKeyHashes,
   removeUserKeyByHash,

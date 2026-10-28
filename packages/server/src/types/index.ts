@@ -85,8 +85,3 @@ export interface APIResponse<T = unknown> {
   data?: T;
   [key: string]: unknown;
 }
-
-export interface SyncProgress {
-  percent: number;
-  message: string;
-}

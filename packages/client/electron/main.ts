@@ -14,7 +14,7 @@ import { getInstalledSteamLibraryGames, getSteamPath } from './scanner/steam'
 import { runStoredGamesMigration } from './scanner/migrateStore'
 import { createLaunchIpcHandlers, parseGameId } from './launcher/byId'
 import { createGameSettingsIpcHandlers, saveRendererGames, type GameSettingsDeps } from './launcher/gameSettings'
-import { buildPlaytimeSession, enqueuePlaytimeSession, type PlaytimeSessionPayload } from './playtime/session'
+import { buildPlaytimeSession, enqueuePlaytimeSession, MAX_PENDING_SESSIONS, type PlaytimeSessionPayload } from './playtime/session'
 import { createPlaytimeFlushGate } from './sync/serverUrl'
 import { runAutoSync } from './sync/autoSync'
 import { listGameSaveFiles } from './sync/saveFiles'
@@ -196,7 +196,17 @@ async function recordLaunchPlaytime(game: string, startedAt: number, endedAt: nu
 
   const res = await postPlaytimeSession(session);
   if (!res.ok) {
-    savePlaytimeQueue(enqueuePlaytimeSession(pendingPlaytimeQueue(), session));
+    // DUN-084: never drop queued play time; at the cap entries are coalesced
+    // (see playtime/session.ts), and that or an over-cap queue is logged.
+    const queued = enqueuePlaytimeSession(pendingPlaytimeQueue(), session, { coalesce: !playtimeQueueFlushing });
+    savePlaytimeQueue(queued.queue);
+    if (queued.coalesced > 0 || queued.overCap) {
+      const message = queued.overCap
+        ? `Offline playtime queue holds ${queued.queue.length} entries (over ${MAX_PENDING_SESSIONS}); nothing was dropped.`
+        : `Offline playtime queue reached ${MAX_PENDING_SESSIONS} entries; merged ${queued.coalesced} entries per game, no play time lost.`;
+      console.warn(message);
+      appendErrorLog('playtime', { message, queued: queued.queue.length, coalesced: queued.coalesced });
+    }
     return;
   }
 
@@ -759,6 +769,54 @@ ipcMain.handle('games:autodetect', async (_event, customRoots) => {
   return { count: added, currentGames: games };
 });
 
+/**
+ * DUN-080: build the saves archive without blocking the main process (async
+ * reads, async deflate, async write) and refuse to produce an empty one. The
+ * archive goes to a sibling temp file and is renamed into place only once it
+ * is complete, so a failed or empty export never leaves a file behind.
+ */
+async function exportSavesArchive(games: Game[], filePath: string): Promise<{ added: number; skipped: string[] }> {
+  const zip = new AdmZip()
+  const fileEntries = () => zip.getEntries().filter((entry) => !entry.isDirectory).length
+  let added = 0
+  const skipped: string[] = []
+
+  for (const game of games) {
+    const rawPath = process.platform === 'win32' ? game.winPath : game.linPath
+    const expanded = expandPath(rawPath)
+    let stats: fs.Stats
+    try {
+      if (!expanded) throw new Error('no save path')
+      stats = await fs.promises.stat(expanded)
+    } catch {
+      skipped.push(game.name)
+      continue
+    }
+    const before = fileEntries()
+    if (stats.isDirectory()) {
+      await zip.addLocalFolderPromise(expanded, { zipPath: game.name })
+    } else if (stats.isFile()) {
+      await new Promise<void>((resolve, reject) => {
+        zip.addLocalFileAsync({ localPath: expanded, zipPath: game.name }, (err) => (err ? reject(err) : resolve()))
+      })
+    }
+    if (fileEntries() > before) added++
+    else skipped.push(game.name)
+  }
+
+  if (added === 0) return { added, skipped }
+
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  try {
+    await zip.writeZipPromise(tmpPath, { overwrite: true })
+    await fs.promises.rename(tmpPath, filePath)
+  } catch (e) {
+    await fs.promises.rm(tmpPath, { force: true }).catch(() => undefined)
+    throw e instanceof Error ? e : new Error(String(e))
+  }
+  return { added, skipped }
+}
+
 ipcMain.handle('sync:export', async () => {
   if (!mainWindow) return { success: false }
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
@@ -768,23 +826,19 @@ ipcMain.handle('sync:export', async () => {
   if (canceled || !filePath) return { success: false }
 
   try {
-    const zip = new AdmZip()
     const games = (store.get('games') || []) as Game[]
-
-    for (const game of games) {
-      const rawPath = process.platform === 'win32' ? game.winPath : game.linPath
-      const expanded = expandPath(rawPath)
-      if (!expanded || !fs.existsSync(expanded)) continue
-      const stats = fs.statSync(expanded)
-      if (stats.isDirectory()) {
-        zip.addLocalFolder(expanded, game.name)
-      } else {
-        zip.addLocalFile(expanded, game.name)
+    const { added, skipped } = await exportSavesArchive(games, filePath)
+    if (added === 0) {
+      return {
+        success: false,
+        code: 'NOTHING_TO_EXPORT',
+        message: games.length === 0
+          ? 'Nothing to export: your library has no games.'
+          : 'Nothing to export: none of your games has save files on this computer yet.',
       }
     }
-
-    zip.writeZip(filePath)
-    return { success: true, path: filePath, message: 'Archive successfully created!' }
+    const note = skipped.length > 0 ? ` (${skipped.length} game(s) had no save files and were skipped)` : ''
+    return { success: true, path: filePath, count: added, message: `Archive created with ${added} game(s)${note}.` }
   } catch (e) {
     console.error(e)
     return { success: false, message: errorMessage(e) }
@@ -850,6 +904,41 @@ ipcMain.handle('saves:listFiles', async (_event, gameId: unknown) => {
 })
 
 const thumbDir = path.join(app.getPath('userData'), 'thumbnails');
+
+/**
+ * DUN-081: a game has one art slot in thumbDir, `<id>.<image ext>`. Write the
+ * new file first (a failed write keeps the old art), then remove every other
+ * file in that slot, so switching format (.png -> .jpg, ...) never leaves the
+ * old file behind. Used by both custom art and fetched art.
+ */
+function writeGameArt(gameId: number, targetPath: string, write: (file: string) => void): void {
+  write(targetPath)
+  removeOtherGameArt(gameId, targetPath)
+}
+
+function removeOtherGameArt(gameId: number, keepPath: string): void {
+  let names: string[]
+  try {
+    names = fs.readdirSync(thumbDir)
+  } catch {
+    return
+  }
+  let kept: fs.Stats | null = null
+  try { kept = fs.statSync(keepPath) } catch { /* nothing to compare against */ }
+  for (const name of names) {
+    const ext = path.extname(name)
+    if (path.basename(name, ext) !== String(gameId) || !ART_EXTS.includes(ext.toLowerCase())) continue
+    const file = path.join(thumbDir, name)
+    try {
+      const st = fs.statSync(file)
+      // Same file under another spelling (case-insensitive file systems).
+      if (!st.isFile() || (kept && st.dev === kept.dev && st.ino === kept.ino)) continue
+      fs.rmSync(file, { force: true })
+    } catch (e) {
+      appendErrorLog('art', { message: `Could not remove old art ${name}: ${errorMessage(e)}` })
+    }
+  }
+}
 
 // ── Error log (crash reporting) ────────────────────────────────────────────
 // Renderer + main-process failures land here; inspected via "Open Error Log"
@@ -931,7 +1020,7 @@ ipcMain.handle('game:setCustomArt', async (_event, id) => {
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) throw new Error('Invalid game id');
   const targetPath = path.join(thumbDir, `${numericId}${ext}`);
-  fs.copyFileSync(filePaths[0], targetPath);
+  writeGameArt(numericId, targetPath, (file) => fs.copyFileSync(filePaths[0], file));
 
   const games = (store.get('games') || []) as Game[];
   const game = games.find((g: Game) => g.id === numericId);
@@ -960,7 +1049,7 @@ ipcMain.handle('game:fetchArt', async (_event, id: unknown): Promise<FetchArtRes
     client: serverClient,
     http: serverHttp,
     thumbDir,
-    writeFile: (file, data) => fs.writeFileSync(file, data),
+    writeFile: (file, data) => writeGameArt(gameId, file, (target) => fs.writeFileSync(target, data)),
   })
   if (res.ok) {
     // Fresh read: patch only this game's thumbnail.

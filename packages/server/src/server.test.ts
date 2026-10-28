@@ -14,8 +14,17 @@ process.env.API_KEY_SECRET = 'server-test-secret-0123456789abcdef';
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 
-const AUTH_KEY = 'roundtrip-key-0123456789abcdef';
-database.addApiKey(AUTH_KEY);
+// DUN-039: the snapshot download route is gone (no caller); read the
+// snapshot straight from its validated path instead.
+const { resolveGameFile } = await import('./utils/path.js');
+function snapshotBytes(title: string, versionId: string, rel: string): Buffer {
+  const g = database.getGames().find((x) => x.name === title);
+  if (!g) throw new Error(`no game ${title}`);
+  return fs.readFileSync(resolveGameFile(g.id, `.versions/${versionId}/${rel}`, g.ownerId).abs);
+}
+
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const AUTH_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'test admin key');
 
 afterAll(() => {
   process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
@@ -50,6 +59,9 @@ describe('readiness', () => {
       expect(res.status).toBe(503);
       expect(res.body.ready).toBe(false);
       expect(res.body.checks.dataDir.ok).toBe(false);
+      // DUN-108: unauthenticated body has a fixed code, never a path or err.message.
+      expect(res.body.checks.dataDir).toEqual({ ok: false, code: 'DATA_DIR_NOT_WRITABLE' });
+      expect(JSON.stringify(res.body)).not.toContain(TMP);
     } finally {
       process.env.DATA_DIR = TMP;
       fs.unlinkSync(blocker);
@@ -88,13 +100,6 @@ describe('path traversal guards (Task 1.1)', () => {
     expect(res.body).toMatchObject({ code: 'DOT_SEGMENT' });
   });
 
-  it('rejects download-version-file with non-numeric versionId', async () => {
-    const res = await request(app)
-      .get('/api/download-version-file?game=x&versionId=' + encodeURIComponent('../..') + '&path=y')
-      .set('x-api-key', AUTH_KEY);
-    expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
-  });
 });
 
 describe('save round-trip (upload → download → version)', () => {
@@ -137,17 +142,7 @@ describe('save round-trip (upload → download → version)', () => {
     const up = await upload(v2, 'slot1.sav', versionId);
     expect(up.body.success).toBe(true);
 
-    const old = await request(app)
-      .get(`/api/download-version-file?game=${game}&versionId=${versionId}&path=slot1.sav`)
-      .set('x-api-key', AUTH_KEY)
-      .buffer(true)
-      .parse((res, cb) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (c: Buffer) => chunks.push(Buffer.from(c)));
-        res.on('end', () => cb(null, Buffer.concat(chunks)));
-      });
-    expect(old.status).toBe(200);
-    expect(Buffer.compare(old.body, v1)).toBe(0);
+    expect(Buffer.compare(snapshotBytes(game, versionId, 'slot1.sav'), v1)).toBe(0);
 
     // …while current still serves the new bytes
     const cur = await request(app)

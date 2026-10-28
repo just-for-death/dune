@@ -39,6 +39,12 @@ describe('main.ts wiring', () => {
     expect(main).not.toMatch(/getEmulatorGames/);
   });
 
+  it('DUN-084: the offline playtime queue is coalesced (not trimmed), never during a flush, and logged', () => {
+    expect(main).toMatch(/enqueuePlaytimeSession\(pendingPlaytimeQueue\(\), session, \{ coalesce: !playtimeQueueFlushing \}\)/);
+    expect(main).toMatch(/appendErrorLog\('playtime'/);
+    expect(main).not.toMatch(/\.slice\(-MAX_PENDING_SESSIONS\)/);
+  });
+
   it('every new IPC channel is both handled in main and exposed in preload', () => {
     for (const channel of ['saves:listFiles', 'prefix:discover', 'prefix:openDiscovered', 'scanner:getSources', 'scanner:setSource',
       'updates:status', 'updates:download', 'updates:install', 'steamGridKey:status', 'steamGridKey:set', 'steamGridKey:clear']) {

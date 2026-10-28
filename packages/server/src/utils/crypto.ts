@@ -71,8 +71,3 @@ export function matchStoredHash(
   }
   return match;
 }
-
-/** Compare a raw candidate key against stored hashes in constant time. */
-export function isValidApiKey(candidate: string | undefined | null, storedHashes: string[]): boolean {
-  return matchStoredHash(candidate, storedHashes) !== null;
-}

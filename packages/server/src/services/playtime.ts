@@ -323,6 +323,16 @@ export function getPlaytimeComparison(
   }
 }
 
+/**
+ * DUN-120: a text cell starting with = + - @ (or a tab/CR) is run as a formula
+ * by Excel/Sheets/LibreOffice (CSV injection). Prefix such text with ' so it
+ * stays text. Numbers are written as-is.
+ */
+export function csvSafe(value: string | number): string {
+  if (typeof value === 'number') return String(value);
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
+
 export function exportPlaytimeData(
   format: 'csv' | 'json',
   range: Range = 'all',
@@ -337,7 +347,7 @@ export function exportPlaytimeData(
       return { success: true, data: JSON.stringify(ranged, null, 2) };
     }
 
-    const escape = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
+    const escape = (value: string | number) => `"${csvSafe(value).replace(/"/g, '""')}"`;
     const lines = ['game,platform,sessionStart,sessionEnd,durationMinutes'];
     for (const session of ranged) {
       lines.push([session.game, session.platform, session.sessionStart, session.sessionEnd, session.durationMinutes].map(escape).join(','));

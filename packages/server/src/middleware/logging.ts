@@ -337,7 +337,7 @@ export function createLogger(destination?: NodeJS.WritableStream) {
           options: { colorize: true, translateTime: 'SYS:standard' },
         })
       : undefined;
-  return pino(
+  const log = pino(
     {
       level: process.env.LOG_LEVEL || 'info',
       base: { service: 'dune-server' },
@@ -360,6 +360,23 @@ export function createLogger(destination?: NodeJS.WritableStream) {
     },
     destination ?? pretty,
   );
+  // DUN-059 (was DUN-040): pino writes child bindings once at child() time and
+  // never passes them through hooks.logMethod (and resets formatters.bindings
+  // for children), so a key or axios error bound on a child was logged raw on
+  // every line. Sanitize the bindings at child() itself. pino children are
+  // Object.create(parent), so this own property is inherited by every child
+  // and grandchild.
+  const pinoChild = log.child;
+  log.child = function sanitizedChild(this: typeof log, bindings, options) {
+    let safe: typeof bindings;
+    try {
+      safe = sanitizeLogArgs([bindings])[0] as typeof bindings;
+    } catch {
+      safe = { logSanitizeFailed: true };
+    }
+    return pinoChild.call(this, safe, options);
+  } as typeof log.child;
+  return log;
 }
 
 export const logger = createLogger();

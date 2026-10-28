@@ -22,8 +22,17 @@ process.env.DUNE_CONFIG_DIR = path.join(TMP, 'config');
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 
-const AUTH_KEY = 'appcond-key-0123456789abcdef';
-database.addApiKey(AUTH_KEY);
+// DUN-039: the snapshot download route is gone (no caller); read the
+// snapshot straight from its validated path instead.
+const { resolveGameFile } = await import('./utils/path.js');
+function snapshotBytes(title: string, versionId: string, rel: string): Buffer {
+  const g = database.getGames().find((x) => x.name === title);
+  if (!g) throw new Error(`no game ${title}`);
+  return fs.readFileSync(resolveGameFile(g.id, `.versions/${versionId}/${rel}`, g.ownerId).abs);
+}
+
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const AUTH_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'test admin key');
 
 const api = (req: request.Test) => req.set('x-api-key', AUTH_KEY);
 
@@ -133,11 +142,7 @@ describe('C. full game lifecycle (client app flow)', () => {
     const up = await uploadBytes(game, 'slot1.sav', v2, syncId);
     expect(up.body.success).toBe(true);
 
-    const old = await downloadBuffer(
-      `/api/download-version-file?game=${encodeURIComponent(game)}&versionId=${syncId}&path=slot1.sav`,
-    );
-    expect(old.status).toBe(200);
-    expect(Buffer.compare(old.body, v1)).toBe(0);
+    expect(Buffer.compare(snapshotBytes(game, syncId, 'slot1.sav'), v1)).toBe(0);
 
     const cur = await downloadBuffer(`/api/download-file?game=${encodeURIComponent(game)}&path=slot1.sav`);
     expect(Buffer.compare(cur.body, v2)).toBe(0);
@@ -161,11 +166,12 @@ describe('D. adversarial app conditions', () => {
     expect(res.body).toMatchObject({ code: 'DOT_SEGMENT' });
   });
 
-  it('rejects non-numeric versionId', async () => {
+  it('DUN-039: the callerless snapshot download route is gone (404 NOT_FOUND)', async () => {
     const res = await api(
-      request(app).get('/api/download-version-file?game=x&versionId=..&path=y'),
+      request(app).get('/api/download-version-file?game=x&versionId=1&path=y'),
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Not found', code: 'NOT_FOUND' });
   });
 
   it('rejects missing upload headers with 400', async () => {
@@ -206,24 +212,4 @@ describe('D. adversarial app conditions', () => {
       else fs.rmSync(dbFile, { force: true });
     }
   });
-});
-
-describe('E. new-module wiring (config hot-reload)', () => {
-  it('config manager persists updates and cleans up watchers', async () => {
-    const { initConfig } = await import('./utils/config.js');
-    const mgr = initConfig(path.join(TMP, 'config', 'dune.config.json'));
-    try {
-      expect(mgr.getConfig().server.port).toBe(3030);
-      mgr.updateConfig({ sync: { maxVersions: 7, autoSync: true, syncInterval: 60000 } });
-      const raw = JSON.parse(
-        fs.readFileSync(path.join(TMP, 'config', 'dune.config.json'), 'utf-8'),
-      );
-      expect(raw.sync.maxVersions).toBe(7);
-      // Nested defaults survive the deep merge (shallow-merge regression guard).
-      expect(raw.server.port).toBe(3030);
-    } finally {
-      mgr.stop();
-    }
-  });
-
 });

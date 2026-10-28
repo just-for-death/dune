@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { hashApiKey, looksHashed, isValidApiKey, getServerSecret } from './crypto.js';
+import { hashApiKey, looksHashed, matchStoredHash, getServerSecret } from './crypto.js';
 
 const FIXED_SECRET = 'test-secret-0123456789abcdef-test-secret';
 // Temp dir from src/test/setup.ts (DUN-005): never unset it, or the
@@ -84,23 +84,23 @@ describe('looksHashed', () => {
   });
 });
 
-describe('isValidApiKey', () => {
+describe('matchStoredHash', () => {
   const stored = [hashApiKey('good-key', FIXED_SECRET)];
 
-  it('accepts the correct raw key (hashes internally with server secret)', () => {
+  it('returns the matching stored hash for the correct raw key (hashes with server secret)', () => {
     process.env.API_KEY_SECRET = FIXED_SECRET;
     // stored hashes must have been produced with the same secret
-    expect(isValidApiKey('good-key', stored)).toBe(true);
+    expect(matchStoredHash('good-key', stored)).toBe(stored[0]);
   });
 
-  it('rejects wrong, empty, and missing candidates', () => {
-    expect(isValidApiKey('bad-key', stored)).toBe(false);
-    expect(isValidApiKey('', stored)).toBe(false);
-    expect(isValidApiKey(undefined, stored)).toBe(false);
-    expect(isValidApiKey(null, stored)).toBe(false);
+  it('returns null for wrong, empty, and missing candidates', () => {
+    expect(matchStoredHash('bad-key', stored)).toBeNull();
+    expect(matchStoredHash('', stored)).toBeNull();
+    expect(matchStoredHash(undefined, stored)).toBeNull();
+    expect(matchStoredHash(null, stored)).toBeNull();
   });
 
-  it('rejects when no keys are stored', () => {
-    expect(isValidApiKey('good-key', [])).toBe(false);
+  it('returns null when no keys are stored', () => {
+    expect(matchStoredHash('good-key', [])).toBeNull();
   });
 });

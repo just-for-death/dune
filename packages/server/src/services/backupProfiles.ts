@@ -92,18 +92,3 @@ export function filterBackupFiles(files: BackupCandidate[], profile: BackupProfi
 
   return { included, excluded };
 }
-
-export function calculateBackupSizes(files: BackupCandidate[], profile: BackupProfile): {
-  backupBytes: number;
-  excludedBytes: number;
-  backupFiles: number;
-  excludedFiles: number;
-} {
-  const { included, excluded } = filterBackupFiles(files, profile);
-  return {
-    backupBytes: included.reduce((sum, file) => sum + file.size, 0),
-    excludedBytes: excluded.reduce((sum, file) => sum + file.size, 0),
-    backupFiles: included.length,
-    excludedFiles: excluded.length,
-  };
-}

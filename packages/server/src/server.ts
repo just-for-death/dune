@@ -14,7 +14,7 @@ import { ApiError, isApiError, apiErrorBody, gameNotFound, assertNoLaunchFields 
 import { validateRelativeSavePath } from '@dune/shared/pathRules';
 import type { Game } from './types/index.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
-import { listSaveVersions, getSaveVersion, getVersionDiff, createVersionFromDirectory, restoreVersion, VERSION_DIR_ID } from './services/saveVersions.js';
+import { listSaveVersions, getSaveVersion, getVersionDiff, createVersionFromDirectory, restoreVersion } from './services/saveVersions.js';
 import { listConflicts, detectConflict, resolveConflict, hasUnresolvedConflict } from './services/conflicts.js';
 import { getBackupProfile, upsertBackupProfile } from './services/backupProfiles.js';
 import { DEFAULT_EXCLUDE_GLOBS } from '@dune/shared';
@@ -159,33 +159,6 @@ app.get('/api/download-file', authMiddleware, (req, res) => {
 
     // Serve dotfiles too: the manifest/list endpoints include them, and express
     // 5's `send` would otherwise 404 a listed save (path is traversal-checked).
-    res.download(fullPath, path.basename(fullPath), { dotfiles: 'allow' });
-  } catch (e) {
-    restError(req, res, e, 'API internal error');
-  }
-});
-
-app.get('/api/download-version-file', authMiddleware, (req, res) => {
-  try {
-    const { game, versionId, path: filePath } = req.query;
-    if (!game || !versionId || !filePath) return sendError(res, 400, 'BAD_REQUEST', 'Missing params');
-
-    // DUN-125: only the stored snapshot id formats (digits / UUID).
-    if (!VERSION_DIR_ID.test(versionId.toString())) {
-      throw new PathRuleError('INVALID_VERSION_ID', 'Invalid version id');
-    }
-    // Check the client path on its own first, then resolve the joined path
-    // (lexical rules + no symlinks + strict containment).
-    const rel = validateRelativeSavePath(filePath.toString());
-    if (!rel.ok) throw new PathRuleError(rel.code, rel.message);
-    const row = requireGame(req as AuthenticatedRequest, game.toString());
-    const fullPath = resolveGameFile(row.id, `.versions/${versionId.toString()}/${rel.value}`, row.ownerId).abs;
-    if (!fs.statSync(fullPath, { throwIfNoEntry: false })?.isFile()) {
-      return sendError(res, 404, 'FILE_NOT_FOUND', 'File not found');
-    }
-
-    // Version snapshots live under a dot-directory (`.versions`); express 5's
-    // `send` defaults to `dotfiles: 'ignore'` and would 404 them.
     res.download(fullPath, path.basename(fullPath), { dotfiles: 'allow' });
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -905,20 +878,6 @@ app.get('/api/conflicts', authMiddleware, (req: AuthenticatedRequest, res) => {
     } else {
       res.json({ success: true, conflicts: listConflicts(undefined, ownerScope(req)), hasUnresolved: false });
     }
-  } catch (e) {
-    restError(req, res, e, 'API internal error');
-  }
-});
-
-app.post('/api/conflicts/detect', authMiddleware, (req: AuthenticatedRequest, res) => {
-  try {
-    const { game, localVersionId, remoteVersionId } = req.body ?? {};
-    if (!game || !localVersionId || !remoteVersionId) {
-      return sendError(res, 400, 'BAD_REQUEST', 'game, localVersionId and remoteVersionId required');
-    }
-    const row = requireGame(req, game.toString());
-    const conflict = detectConflict(row.id, localVersionId.toString(), remoteVersionId.toString());
-    res.json({ success: true, conflict, hasUnresolved: hasUnresolvedConflict(row.id) });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }

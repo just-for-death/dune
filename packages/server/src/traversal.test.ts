@@ -20,8 +20,8 @@ const { getDb } = await import('./db/sqlite.js');
 const { getGameRoot, savesDir } = await import('./utils/path.js');
 const { handleUploadFile } = await import('./services/sync.js');
 
-const ADMIN_KEY = 'traversal-admin-key-0123456789';
-database.addApiKey(ADMIN_KEY, 'traversal admin');
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const ADMIN_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'traversal admin');
 
 interface Member { id: string; key: string }
 let alice: Member;
@@ -500,13 +500,4 @@ describe('DUN-111 / DUN-125', () => {
     expect(own.body).toEqual({ success: true, versions: expect.any(Array) });
   });
 
-  it('REST download-version-file: malformed id 400 INVALID_VERSION_ID; snapshot path traversal 400', async () => {
-    const bad = await request(app).get('/api/download-version-file').set('x-api-key', alice.key)
-      .query({ game: 'Hades', versionId: '..', path: 'x' });
-    expect(bad.body).toEqual({ error: 'Invalid version id', code: 'INVALID_VERSION_ID' });
-    const trav = await request(app).get('/api/download-version-file').set('x-api-key', alice.key)
-      .query({ game: 'Hades', versionId: '123', path: '../../../sentinel.txt' });
-    expect(trav.status).toBe(400);
-    expect(trav.body.code).toBe('DOT_SEGMENT');
-  });
 });

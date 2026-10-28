@@ -19,8 +19,8 @@ const getMock = vi.mocked(axios.get);
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 
-const AUTH_KEY = 'restshim-key-0123456789abcdef';
-database.addApiKey(AUTH_KEY);
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const AUTH_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'test admin key');
 
 const api = (req: request.Test) => req.set('x-api-key', AUTH_KEY);
 
@@ -72,7 +72,6 @@ describe('REST shims auth gate', () => {
     ['post', '/api/save-versions'],
     ['post', '/api/restore-version'],
     ['get', '/api/conflicts'],
-    ['post', '/api/conflicts/detect'],
     ['post', '/api/conflicts/1/resolve'],
     ['get', '/api/backup-profile?game=x'],
     ['post', '/api/backup-profile'],
@@ -497,16 +496,11 @@ describe('save version, conflict, profile, and storage endpoints', () => {
     }
     const [latest, previous] = versions.body.versions as Array<{ id: string }>;
 
-    const detected = await api(request(app).post('/api/conflicts/detect')).send({
-      game,
-      localVersionId: latest.id,
-      remoteVersionId: previous.id,
-    });
-    expect(detected.status).toBe(200);
-    // A direct parent/child pair is normal sync progression, not a conflict.
-    expect(detected.body.conflict).toBeNull();
-
-    expect((await api(request(app).post('/api/conflicts/detect')).send({})).status).toBe(400);
+    // DUN-114: the callerless detect route is gone; detection runs inside
+    // POST /api/save-versions (covered in services/conflicts.test.ts).
+    const gone = await api(request(app).post('/api/conflicts/detect')).send({ game });
+    expect(gone.status).toBe(404);
+    expect(gone.body).toEqual({ error: 'Not found', code: 'NOT_FOUND' });
 
     const row = database.getGameByName(game, owner.id)!;
     const recorded = recordConflict(row.id, latest.id, previous.id);

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { dataDir } from '../utils/path.js';
-import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from './playtime.js';
+import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime, exportPlaytimeData, csvSafe } from './playtime.js';
 
 // Lives in the per-file temp DATA_DIR from src/test/setup.ts, never the real ./data (DUN-005).
 const PLAYTIME_DB = path.join(dataDir(), 'playtime.json');
@@ -120,5 +120,22 @@ describe('getTotalPlaytime', () => {
     recordPlaytimeSession('Game A', 'Steam', '2024-01-01T10:00:00.000Z', '2024-01-01T11:00:00.000Z'); // 60
     recordPlaytimeSession('Game B', 'Steam', '2024-01-01T12:00:00.000Z', '2024-01-01T13:30:00.000Z'); // 90
     expect(getTotalPlaytime()).toBe(150);
+  });
+});
+
+// DUN-120: CSV export never emits a cell a spreadsheet would run as a formula.
+describe('DUN-120: CSV formula-injection guard', () => {
+  it('csvSafe prefixes =, +, -, @, tab and CR text with a quote; numbers and plain text are unchanged', () => {
+    for (const v of ['=HYPERLINK("http://x")', '+1', '-2+3', '@SUM(A1)', '\tcmd', '\rcmd']) expect(csvSafe(v)).toBe(`'${v}`);
+    expect(csvSafe('Hades')).toBe('Hades');
+    expect(csvSafe('a=b')).toBe('a=b');
+    expect(csvSafe(-5)).toBe('-5');
+  });
+
+  it('exported rows neutralize formula titles and platforms', () => {
+    expect(recordPlaytimeSession('=cmd|"/c calc"!A1', '@evil', '2024-01-01T10:00:00.000Z', '2024-01-01T11:00:00.000Z').success).toBe(true);
+    const csv = exportPlaytimeData('csv').data.split('\n');
+    expect(csv[1].startsWith(`"'=cmd|""/c calc""!A1","'@evil",`)).toBe(true);
+    expect(csv[1].endsWith(',"60"')).toBe(true);
   });
 });

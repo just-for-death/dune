@@ -365,12 +365,6 @@ export function pruneVersions(gameId: number, ownerId: string, maxVersions: numb
 
 /** Save-version ids are minted by createSaveVersion with crypto.randomUUID(). */
 export const SAVE_VERSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/**
- * Any folder name allowed under `.versions/`: upload snapshots use the
- * digits-only sync id (sync.ts safeVersionId), directory snapshots use the
- * UUID version id. Used for reads (download-version-file, files.versions.files).
- */
-export const VERSION_DIR_ID = /^(?:\d{1,20}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 export interface RestoreResult {
   success: boolean;

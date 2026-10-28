@@ -41,15 +41,7 @@ export function listConflicts(gameId?: number, ownerId?: string): ConflictRecord
       ? db.prepare(`SELECT ${cols} FROM conflict_records c JOIN games g ON g.id = c.gameId WHERE g.ownerId = ? ORDER BY c.detectedAt DESC`).all(ownerId)
       : db.prepare(`SELECT ${cols} FROM conflict_records c ORDER BY c.detectedAt DESC`).all()) as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    id: String(row.id),
-    gameId: Number(row.gameId),
-    localVersionId: String(row.localVersionId),
-    remoteVersionId: String(row.remoteVersionId),
-    detectedAt: String(row.detectedAt),
-    resolution: row.resolution ? String(row.resolution) as ConflictRecord['resolution'] : undefined,
-    resolvedAt: row.resolvedAt ? String(row.resolvedAt) : undefined,
-  }));
+  return rows.map(toRecord);
 }
 
 export function resolveConflict(conflictId: string, resolution: NonNullable<ConflictRecord['resolution']>): ConflictRecord | null {
@@ -67,7 +59,10 @@ export function resolveConflict(conflictId: string, resolution: NonNullable<Conf
     WHERE id = ?
   `).get(conflictId) as Record<string, unknown> | undefined;
 
-  if (!row) return null;
+  return row ? toRecord(row) : null;
+}
+
+function toRecord(row: Record<string, unknown>): ConflictRecord {
   return {
     id: String(row.id),
     gameId: Number(row.gameId),
@@ -77,6 +72,19 @@ export function resolveConflict(conflictId: string, resolution: NonNullable<Conf
     resolution: row.resolution ? String(row.resolution) as ConflictRecord['resolution'] : undefined,
     resolvedAt: row.resolvedAt ? String(row.resolvedAt) : undefined,
   };
+}
+
+/** The record already stored for this version pair, in either order. */
+function findConflict(gameId: number, a: string, b: string): ConflictRecord | null {
+  const row = getDb().prepare(`
+    SELECT id, gameId, localVersionId, remoteVersionId, detectedAt, resolution, resolvedAt
+    FROM conflict_records
+    WHERE gameId = ?
+      AND ((localVersionId = ? AND remoteVersionId = ?) OR (localVersionId = ? AND remoteVersionId = ?))
+    ORDER BY detectedAt ASC
+    LIMIT 1
+  `).get(gameId, a, b, b, a) as Record<string, unknown> | undefined;
+  return row ? toRecord(row) : null;
 }
 
 export function hasUnresolvedConflict(gameId: number): boolean {
@@ -106,5 +114,9 @@ export function detectConflict(gameId: number, localVersionId: string, remoteVer
     return null;
   }
 
-  return recordConflict(gameId, localVersionId, remoteVersionId);
+  // DUN-114: one record per version pair. Re-detecting the same pair (either
+  // order) returns the existing record, resolution included, instead of
+  // inserting a duplicate (and re-opening a conflict the user already resolved).
+  return findConflict(gameId, localVersionId, remoteVersionId)
+    ?? recordConflict(gameId, localVersionId, remoteVersionId);
 }

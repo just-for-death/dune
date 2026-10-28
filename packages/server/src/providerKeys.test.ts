@@ -34,8 +34,8 @@ const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 const { closeDbForTests } = await import('./db/sqlite.js');
 
-const ADMIN_KEY = 'provkeys-admin-key-0123456789';
-database.addApiKey(ADMIN_KEY);
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const ADMIN_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'test admin key');
 const admin = (r: request.Test) => r.set('x-api-key', ADMIN_KEY);
 const KEY = 'sgdbSECRET0123456789abcdefFEDCBA';
 const ROUTE = '/api/provider-keys/steamgriddb';

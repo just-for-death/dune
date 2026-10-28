@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { matchesGlob, DEFAULT_EXCLUDE_GLOBS } from '@dune/shared';
-import { filterBackupFiles, calculateBackupSizes } from './backupProfiles.js';
+import { filterBackupFiles } from './backupProfiles.js';
 
 describe('backupProfiles', () => {
   it('matches common exclusion globs', () => {
@@ -9,7 +9,7 @@ describe('backupProfiles', () => {
     expect(matchesGlob('saves/slot1.sav', '**/*.sav')).toBe(true);
   });
 
-  it('filters and calculates sizes', () => {
+  it('filters included and excluded files', () => {
     const files = [
       { path: 'saves/slot1.sav', size: 100 },
       { path: 'cache/shader.bin', size: 200 },
@@ -26,9 +26,6 @@ describe('backupProfiles', () => {
     const result = filterBackupFiles(files, profile);
     expect(result.included).toHaveLength(1);
     expect(result.excluded).toHaveLength(2);
-
-    const sizes = calculateBackupSizes(files, profile);
-    expect(sizes.backupBytes).toBe(100);
-    expect(sizes.excludedBytes).toBe(250);
+    expect(result.included.map((f) => f.path)).toEqual(['saves/slot1.sav']);
   });
 });

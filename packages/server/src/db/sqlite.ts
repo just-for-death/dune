@@ -94,9 +94,10 @@ function openSchema(file: string): DatabaseSync {
       );
       CREATE INDEX IF NOT EXISTS idx_user_keys_user ON user_keys(userId);
     `);
-    ensureOwnerColumn(handle);
-    // Safe only after ensureOwnerColumn: pre-multi-user DBs lack the column
-    // until the ALTER runs.
+    // DUN-123: no legacy games-table rebuild (no-compat ruling). A
+    // pre-multi-user DB has no ownerId, so this index fails and getDb throws
+    // DatabaseOpenError without touching the file, instead of a rename/drop
+    // that would cascade-wipe child tables.
     handle.exec('CREATE INDEX IF NOT EXISTS idx_games_owner ON games(ownerId);');
     // DUN-087/088: a game is identified by (owner, title) case-insensitively;
     // enforce it so two rows can never map to the same lookup. (SQLite NOCASE
@@ -165,44 +166,6 @@ function openSchema(file: string): DatabaseSync {
     handle.close();
     throw err;
   }
-}
-
-/**
- * Pre-multi-user databases have `games` without an `ownerId` column, and
- * pre-namespacing databases have a *global* `UNIQUE(name)`. Rebuild the table
- * so `ownerId` exists and uniqueness is per-owner (allowing two users to own
- * a game with the same title once saves are namespaced by owner). One-time:
- * skipped once the composite unique constraint is present.
- */
-function ensureOwnerColumn(handle: DatabaseSync): void {
-  const row = handle.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'games'").get() as { sql: string } | undefined;
-  if (row && row.sql && row.sql.includes('UNIQUE(ownerId, name)')) return;
-
-  const cols = handle.prepare('PRAGMA table_info(games)').all() as Array<{ name: string }>;
-  const hasOwner = cols.some((c) => c.name === 'ownerId');
-  const ownerSelect = hasOwner ? 'ownerId' : 'NULL';
-
-  handle.exec(`
-    BEGIN IMMEDIATE;
-    ALTER TABLE games RENAME TO games_legacy;
-    CREATE TABLE games (
-      id REAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      status TEXT NOT NULL,
-      lastSync TEXT NOT NULL,
-      thumbnail TEXT NOT NULL DEFAULT '',
-      analysis TEXT,
-      ownerId TEXT REFERENCES users(id) ON DELETE SET NULL,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      UNIQUE(ownerId, name)
-    );
-    INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt)
-      SELECT id, name, status, lastSync, thumbnail, analysis, ${ownerSelect}, createdAt, updatedAt FROM games_legacy;
-    DROP TABLE games_legacy;
-    COMMIT;
-  `);
-  logger.info('Migrated games table: ownerId + per-owner unique name + FK');
 }
 
 /** One-way import from the pre-SQLite dune.json. Never deletes the original. */

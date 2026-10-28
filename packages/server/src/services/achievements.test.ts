@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { dataDir } from '../utils/path.js';
-import { upsertAchievements, getGameAchievements, getAchievementSummary, getRecentUnlocks } from './achievements.js';
+import { upsertAchievements, getGameAchievements, getAchievementSummary, getRecentUnlocks, mergeUnlock } from './achievements.js';
 
 // Lives in the per-file temp DATA_DIR from src/test/setup.ts, never the real ./data (DUN-005).
 const ACHIEVEMENTS_DB = path.join(dataDir(), 'achievements.json');
@@ -172,3 +172,51 @@ describe('getRecentUnlocks', () => {
   });
 });
 
+
+// DUN-006: an unlock is never lost; the earliest known unlock time wins.
+describe('DUN-006: unlock state only moves forward', () => {
+  const T1 = '2024-01-01T10:00:00.000Z';
+  const T2 = '2024-02-01T10:00:00.000Z';
+  const T0 = '2023-12-01T10:00:00.000Z';
+  const row = () => getGameAchievements('Keep Game')[0];
+  const imp = (unlocked: boolean, unlockTime?: string | null) =>
+    upsertAchievements('Keep Game', [{ apiName: 'A', displayName: 'A', unlocked, unlockTime }]);
+
+  it('first unlock sets the time; a locked import never sets one', () => {
+    imp(false, T1);
+    expect(row()).toMatchObject({ unlocked: false, unlockTime: null });
+    imp(true, T1);
+    expect(row()).toMatchObject({ unlocked: true, unlockTime: T1 });
+  });
+
+  it('a locked import after an unlock stays unlocked with its time', () => {
+    imp(true, T1);
+    imp(false, null);
+    expect(row()).toMatchObject({ unlocked: true, unlockTime: T1 });
+    imp(false, T0);
+    expect(row()).toMatchObject({ unlocked: true, unlockTime: T1 });
+  });
+
+  it('an earlier time lowers it; a later, null or invalid time is ignored', () => {
+    imp(true, T1);
+    imp(true, T2);
+    expect(row().unlockTime).toBe(T1);
+    imp(true, null);
+    expect(row().unlockTime).toBe(T1);
+    imp(true, 'not-a-date');
+    expect(row().unlockTime).toBe(T1);
+    imp(true, T0);
+    expect(row().unlockTime).toBe(T0);
+  });
+
+  it('an unlock with no time later gets the first known time', () => {
+    imp(true, null);
+    expect(row()).toMatchObject({ unlocked: true, unlockTime: null });
+    imp(true, T2);
+    expect(row().unlockTime).toBe(T2);
+  });
+
+  it('mergeUnlock drops a stray time on a locked row', () => {
+    expect(mergeUnlock({ unlocked: false, unlockTime: T1 }, { unlocked: false })).toEqual({ unlocked: false, unlockTime: null });
+  });
+});

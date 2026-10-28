@@ -12,8 +12,17 @@ process.env.API_KEY_SECRET = 'integration-secret-0123456789abcdef';
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 
-const AUTH_KEY = 'integration-test-auth-key-01234';
-database.addApiKey(AUTH_KEY, 'Integration test key');
+// DUN-039: the snapshot download route is gone (no caller); read the
+// snapshot straight from its validated path instead.
+const { resolveGameFile } = await import('./utils/path.js');
+function snapshotBytes(title: string, versionId: string, rel: string): Buffer {
+  const g = database.getGames().find((x) => x.name === title);
+  if (!g) throw new Error(`no game ${title}`);
+  return fs.readFileSync(resolveGameFile(g.id, `.versions/${versionId}/${rel}`, g.ownerId).abs);
+}
+
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const AUTH_KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'Integration test key');
 
 afterAll(() => {
   process.env.DATA_DIR = SETUP_DATA_DIR; // restore the temp dir, never unset (DUN-005)
@@ -109,19 +118,8 @@ describe('Integration: Full Client-Server Save Sync Lifecycle', () => {
     expect(Buffer.compare(res.body, saveContentV2)).toBe(0);
   });
 
-  it('step 5: downloads archived version snapshot and verifies original bytes', async () => {
-    const res = await request(app)
-      .get(`/api/download-version-file?game=${encodeURIComponent(gameName)}&versionId=${syncId2}&path=${encodeURIComponent('saves/slot1.sav')}`)
-      .set('x-api-key', AUTH_KEY)
-      .buffer(true)
-      .parse((r, cb) => {
-        const chunks: Buffer[] = [];
-        r.on('data', (c: Buffer) => chunks.push(Buffer.from(c)));
-        r.on('end', () => cb(null, Buffer.concat(chunks)));
-      });
-
-    expect(res.status).toBe(200);
-    expect(Buffer.compare(res.body, saveContentV1)).toBe(0);
+  it('step 5: the archived version snapshot holds the original bytes', () => {
+    expect(Buffer.compare(snapshotBytes(gameName, syncId2, 'saves/slot1.sav'), saveContentV1)).toBe(0);
   });
 
   it('step 6: performs local-sync scan and handles sources correctly', async () => {

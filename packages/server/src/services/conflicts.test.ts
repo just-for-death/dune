@@ -57,4 +57,27 @@ describe('conflicts service', () => {
 
     expect(detectConflict(game.id, v1.id, v2.id)).toBeNull();
   });
+
+  it('DUN-114: re-detecting the same pair (either order) reuses one record and keeps its resolution', () => {
+    const game = database.upsertGame({ name: 'Dup Conflict Game', status: 'In Sync', lastSync: 'Never', ownerId: OWNER });
+    const v1 = createSaveVersion({
+      gameId: game.id,
+      files: [{ path: 'slot.sav', size: 10, hash: 'x1', mtime: '2026-01-01T00:00:00.000Z' }],
+    });
+    const v2 = createSaveVersion({
+      gameId: game.id,
+      files: [{ path: 'slot.sav', size: 11, hash: 'x2', mtime: '2026-01-02T00:00:00.000Z' }],
+    });
+    const first = detectConflict(game.id, v1.id, v2.id);
+    expect(first).not.toBeNull();
+    expect(detectConflict(game.id, v1.id, v2.id)?.id).toBe(first!.id);
+    expect(detectConflict(game.id, v2.id, v1.id)?.id).toBe(first!.id);
+    expect(listConflicts(game.id)).toHaveLength(1);
+
+    resolveConflict(first!.id, 'local');
+    const again = detectConflict(game.id, v1.id, v2.id);
+    expect(again).toMatchObject({ id: first!.id, resolution: 'local' });
+    expect(hasUnresolvedConflict(game.id)).toBe(false);
+    expect(listConflicts(game.id)).toHaveLength(1);
+  });
 });

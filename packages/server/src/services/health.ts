@@ -2,10 +2,15 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { dataDir } from '../utils/path.js';
 import { database } from '../db/index.js';
+import { logger } from '../middleware/logging.js';
 
+/**
+ * DUN-108: /ready is unauthenticated, so a failed check carries only a fixed
+ * code, never err.message (paths, SQL text). The raw error goes to the log.
+ */
 export interface ReadinessCheck {
   ok: boolean;
-  message?: string;
+  code?: 'DATA_DIR_NOT_WRITABLE' | 'DATABASE_UNAVAILABLE';
 }
 
 export interface Readiness {
@@ -28,21 +33,16 @@ export function checkReadiness(): Readiness {
     fs.unlinkSync(probe);
     checks.dataDir = { ok: true };
   } catch (err) {
-    checks.dataDir = {
-      ok: false,
-      message: err instanceof Error ? err.message : String(err),
-    };
+    logger.warn({ err }, 'Readiness: data dir not writable');
+    checks.dataDir = { ok: false, code: 'DATA_DIR_NOT_WRITABLE' };
   }
 
   try {
     const games = database.getGames();
-    checks.database = { ok: Array.isArray(games) };
-    if (!Array.isArray(games)) checks.database.message = 'games table unreadable';
+    checks.database = Array.isArray(games) ? { ok: true } : { ok: false, code: 'DATABASE_UNAVAILABLE' };
   } catch (err) {
-    checks.database = {
-      ok: false,
-      message: err instanceof Error ? err.message : String(err),
-    };
+    logger.warn({ err }, 'Readiness: database unavailable');
+    checks.database = { ok: false, code: 'DATABASE_UNAVAILABLE' };
   }
 
   const ready = Object.values(checks).every(c => c.ok);

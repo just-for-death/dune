@@ -20,8 +20,8 @@ vi.mock('./services/remoteSync.js', async (importOriginal) => ({
 const { app } = await import('./server.js');
 const { database } = await import('./db/index.js');
 const { closeDbForTests } = await import('./db/sqlite.js');
-const KEY = 'rest-highs-admin-key-0123456789';
-database.addApiKey(KEY);
+// DUN-110: database.addApiKey (test-only) is gone; issue a real admin key.
+const KEY = database.issueUserKey(database.listUsers().find((u) => u.role === 'admin')!.id, 'test admin key');
 const ADMIN = database.listUsers()[0].id;
 
 afterAll(() => {
