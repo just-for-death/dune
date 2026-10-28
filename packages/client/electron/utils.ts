@@ -78,13 +78,29 @@ export function validateServerUrl(rawUrl: string): { valid: boolean; url: string
 }
 
 /** Expand platform-specific path variables (~ on Unix, %USERPROFILE% on Windows). Pure function. */
-export function expandPath(p: string): string {
+/**
+ * Expand a leading `~` and, on Windows, every `%VAR%` (DUN-078: %APPDATA%,
+ * %LOCALAPPDATA%, %PROGRAMDATA%, ...; Windows env names are case-insensitive).
+ * A path that still holds an unset variable returns '' so callers skip it
+ * instead of resolving a literal `%VAR%` folder.
+ */
+export function expandPath(
+  p: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (!p) return '';
-  if (process.platform === 'win32') {
-    return p.replace(/%USERPROFILE%/g, process.env.USERPROFILE || '');
-  } else {
-    return p.replace(/^~/, process.env.HOME || '');
-  }
+  if (platform !== 'win32') return p.replace(/^~(?=$|\/)/, env.HOME || '~');
+  const lookup = new Map(Object.entries(env).map(([k, v]) => [k.toUpperCase(), v]));
+  let unresolved = false;
+  const out = p
+    .replace(/^~(?=$|[\\/])/, () => env.USERPROFILE || (unresolved = true, ''))
+    .replace(/%([A-Za-z_][A-Za-z0-9_()]*)%/g, (_m, name: string) => {
+      const v = lookup.get(name.toUpperCase());
+      if (!v) { unresolved = true; return ''; }
+      return v;
+    });
+  return unresolved ? '' : out;
 }
 
 /** Convert a platform-specific path to POSIX format. Pure function. */

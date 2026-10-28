@@ -207,12 +207,15 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         autoSyncFreq: 'never',
         scanRoots: [],
         maxVersions: 10,
-        steamGridApiKey: '',
+        steamGridApiKeySet: false,
         ollamaEndpoint: 'http://localhost:11434',
         ollamaModel: 'phi4-mini:latest',
         apiKeys: [],
         localSources: [],
         remoteServers: [],
+        // DUN-135: every tracker and artwork lookup is off by default.
+        trackersEnabled: { steam: false, retroAchievements: false, gog: false, epic: false },
+        artworkEnabled: false,
       } satisfies Settings,
     };
     const calls: { method: string; args: unknown[] }[] = [];

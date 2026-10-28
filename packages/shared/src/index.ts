@@ -75,7 +75,8 @@ export interface Version {
 // Server settings
 export interface Settings {
   maxVersions: number;
-  steamGridApiKey: string;
+  /** DUN-092: the key is write-only (PUT /api/provider-keys/steamgriddb); settings only say whether one is set. */
+  steamGridApiKeySet: boolean;
   ollamaEndpoint: string;
   ollamaModel: string;
   apiKeys: string[];
@@ -563,8 +564,6 @@ export interface ElectronAPI {
 
   // Storage
   getStorage: (game: string) => Promise<ServerResult<{ success: boolean; entry?: StorageEntry; freeBytes?: number; message?: string }>>;
-  refreshHLTBCache: (gameName?: string) => Promise<{ success: boolean; message?: string }>;
-  getHLTBCacheStats: () => Promise<{ success: boolean; stats: { entries: number; oldest: string; newest: string }; message?: string }>;
   
   // AI Analysis
   analyzeFiles: (gameName: string, files: GameFile[]) => Promise<ServerResult<{ success: boolean; analysis?: Record<string, FileAnalysis>; message?: string }>>;

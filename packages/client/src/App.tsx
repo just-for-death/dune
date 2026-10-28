@@ -21,9 +21,10 @@ import type {
   ManagedPrefix,
   EmulatorInfo,
   ServerResult,
+  ServerFailure,
   DriveSpace,
 } from '@dune/shared';
-import { nextId, RARITY_TIERS } from '@dune/shared';
+import { DEFAULT_TRACKERS_ENABLED, nextId, RARITY_TIERS } from '@dune/shared';
 import { Icon } from './Icon';
 import { PlaytimeCharts } from './components/PlaytimeCharts';
 import { applyTheme, loadThemes, getActiveThemeId, setActiveThemeId } from './theme/manager';
@@ -48,12 +49,15 @@ import { MAX_PREFIX_NAME, prefixFailureMessage, validateNewPrefixName } from './
 import { ConfirmDialog } from './components/settings/ConfirmDialog';
 import { WhereItRuns } from './components/settings/WhereItRuns';
 import { NoServerNotice } from './components/NoServerNotice';
+import { PrivacyToggles } from './components/settings/PrivacyToggles';
+import { artworkDisabledMessage, isArtworkDisabled } from './components/settings/privacyToggleHelpers';
 import { LaunchSettings } from './components/LaunchSettings';
 import { pickFailureMessage } from './services/launchSettings';
 import { DriveSpaceList } from './components/saves/DriveSpaceList';
 import { toDriveRows } from './services/driveSpace';
 import { cloudSyncFailureMessage, serverFailureMessage } from './services/serverError';
 import { formatMinutes } from './services/playtimeFormat';
+import { formatDate } from './services/format';
 import { createResetTimer } from './services/resetTimer';
 import { saveBackupProfile } from './services/backupProfileSave';
 
@@ -84,15 +88,6 @@ function rarityTier(rarity: number) {
     ?? RARITY_TIERS[RARITY_TIERS.length - 1];
 }
 
-function formatDate(iso: string, locale: Locale, t: Translator): string {
-  if (!iso || iso === 'Never') return t('common.never');
-  try {
-    return new Date(iso).toLocaleString(locale);
-  } catch {
-    return iso;
-  }
-}
-
 function isValidUrl(url: string): boolean {
   // Exactly the main-process rule (electron/sync/serverUrl.ts normalizeServerUrl),
   // mirrored in services/serverUrl.ts: absolute http(s) URL with a host only.
@@ -110,7 +105,7 @@ type SettingsField = 'serverUrl' | 'serverKey';
  * main's sanitizeSettings keeps only these, and the SteamGridDB key is
  * managed through its own write-only IPC (DUN-092).
  */
-type ClientSettings = Pick<Settings, 'runInBackground' | 'autoSyncEnabled' | 'autoSyncFreq' | 'scanRoots'>;
+type ClientSettings = Pick<Settings, 'runInBackground' | 'autoSyncEnabled' | 'autoSyncFreq' | 'scanRoots' | 'trackersEnabled' | 'artworkEnabled'>;
 
 function clientSettingsFrom(source: Partial<ClientSettings>, prev: ClientSettings): ClientSettings {
   return {
@@ -118,6 +113,9 @@ function clientSettingsFrom(source: Partial<ClientSettings>, prev: ClientSetting
     autoSyncEnabled: source.autoSyncEnabled ?? prev.autoSyncEnabled,
     autoSyncFreq: source.autoSyncFreq ?? prev.autoSyncFreq,
     scanRoots: source.scanRoots ?? prev.scanRoots ?? [],
+    // DUN-135: opt-in privacy switches (main sanitizes them; off unless literally true).
+    trackersEnabled: { ...DEFAULT_TRACKERS_ENABLED, ...prev.trackersEnabled, ...source.trackersEnabled },
+    artworkEnabled: source.artworkEnabled ?? prev.artworkEnabled ?? false,
   };
 }
 
@@ -143,47 +141,10 @@ const DEFAULT_SETTINGS: ClientSettings = {
   autoSyncEnabled: false,
   autoSyncFreq: 'never',
   scanRoots: [],
+  trackersEnabled: { ...DEFAULT_TRACKERS_ENABLED },
+  artworkEnabled: false,
 };
 
-
-const DEMO_SAVE_VERSIONS = import.meta.env.DEV
-  ? [
-      {
-        id: '1',
-        gameId: 1,
-        createdAt: new Date().toISOString(),
-        sizeBytes: 88 * 1024 * 1024,
-        fileCount: 3,
-        changeSummary: '+0 ~3 -0',
-        status: 'complete' as const,
-      },
-      {
-        id: '2',
-        gameId: 1,
-        createdAt: new Date(Date.now() - 3600000).toISOString(),
-        sizeBytes: 87 * 1024 * 1024,
-        fileCount: 3,
-        changeSummary: '+1 ~2 -0',
-        status: 'complete' as const,
-      },
-    ]
-  : [];
-
-const DEMO_STORAGE_ENTRIES = import.meta.env.DEV
-  ? [{ gameId: 1, installBytes: 0, saveBytes: 47 * 1024 * 1024, cacheBytes: 412 * 1024 * 1024, lastPlayed: new Date().toISOString(), drive: 'D:\\' }]
-  : [];
-
-// Demo-only fixtures: never shipped to production builds; prod shows an
-// explicit "unavailable" state instead of invented numbers.
-const DEMO_BACKUP_PROFILE: BackupProfile | null = import.meta.env.DEV
-  ? {
-      gameId: 1,
-      includeGlobs: ['**/*'],
-      excludeGlobs: ['**/cache/**', '**/*.log'],
-      autoExcludeCache: true,
-      updatedAt: new Date().toISOString(),
-    }
-  : null;
 
 /** How long a finished sync/restore card stays visible. */
 const SYNC_PROGRESS_HIDE_MS = 4000;
@@ -318,6 +279,14 @@ export default function App() {
   const [conflicts, setConflicts] = useState<ConflictRecord[]>([]);
   // Game the save data above belongs to; anything else is not shown (DUN-046).
   const [savesGameId, setSavesGameId] = useState<number | null>(null);
+  // DUN-040: the last Saves load for savesGameId could not reach the server.
+  const [savesServerDown, setSavesServerDown] = useState(false);
+  // DUN-018: the server answered the versions request with an error (not "unreachable").
+  const [savesLoadError, setSavesLoadError] = useState<ServerFailure | null>(null);
+  const [savesReloadKey, setSavesReloadKey] = useState(0);
+  // DUN-018: restore asks first, then runs one at a time.
+  const [restoreTarget, setRestoreTarget] = useState<{ gameId: number; game: string; version: SaveVersion } | null>(null);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [conflictDialog, setConflictDialog] = useState<ConflictDialogState | null>(null);
   const savesGate = useRef(createLatestGate<number>());
   // DUN-050: the one timer that hides the finished sync/restore card.
@@ -454,6 +423,11 @@ export default function App() {
       setStorageEntry(ok(storageRes)?.entry ?? null);
       setBackupProfile(ok(profileRes)?.profile ?? null);
       setConflicts(list);
+      // DUN-040: no reply at all (or no server) means unreachable, not "no versions".
+      const noReply = versionsRes.status === 'rejected'
+        || (!versionsRes.value.ok && (versionsRes.value.code === 'NETWORK' || versionsRes.value.code === 'NO_SERVER'));
+      setSavesServerDown(noReply);
+      setSavesLoadError(!noReply && versionsRes.status === 'fulfilled' && !versionsRes.value.ok ? versionsRes.value : null);
       setSavesGameId(gameId);
 
       const unseen = list.filter((c: ConflictRecord) => !c.resolution && !autoOpenedConflictIds.current.has(c.id));
@@ -470,7 +444,7 @@ export default function App() {
     };
     loadSaves();
     return () => gate.invalidate();
-  }, [activeTab, selectedSaveGameId, selectedSaveGameName, cloud.url]);
+  }, [activeTab, selectedSaveGameId, selectedSaveGameName, cloud.url, savesReloadKey]);
 
   // DUN-131: list the save files sync would see, for the exclusion editor's breakdown.
   // A reply for a game that is no longer selected (or after leaving the tab) is dropped.
@@ -792,6 +766,9 @@ export default function App() {
       if (res.ok) {
         await loadConfig();
         showToast(t('art.updated'), 'success');
+      } else if (isArtworkDisabled(res)) {
+        // DUN-135: artwork is opt-in; say where to turn it on, as info rather than an error.
+        showToast(artworkDisabledMessage(t), 'info');
       } else {
         showToast(serverFailureMessage(res, t), 'error');
       }
@@ -1108,8 +1085,10 @@ export default function App() {
   const visibleBackupProfile = savesMatch ? backupProfile : null;
   // 'later' is a deferral, not a decision: keep it reviewable via the banner.
   const activeConflict = savesMatch ? (conflicts.find(c => !c.resolution || c.resolution === 'later') ?? null) : null;
-  const storageEntries = visibleStorageEntry ? [visibleStorageEntry] : DEMO_STORAGE_ENTRIES;
-  const exclusionProfile = visibleBackupProfile ?? DEMO_BACKUP_PROFILE;
+  const storageEntries = visibleStorageEntry ? [visibleStorageEntry] : [];
+  const exclusionProfile = visibleBackupProfile;
+  // DUN-040: server-backed Saves cards are replaced by a notice, never by sample data.
+  const savesServerState: 'none' | 'unreachable' | 'ok' = !hasServer ? 'none' : savesMatch && savesServerDown ? 'unreachable' : 'ok';
   const saveFilesState: SaveFileListState = saveFileList && saveFileList.gameId === selectedSaveGameId ? saveFileList.state : { status: 'loading' };
 
   const inSyncCount = games.filter(g => g.status === 'In Sync').length;
@@ -1607,10 +1586,19 @@ export default function App() {
             <button className="btn btn-primary btn-sm" onClick={() => setConflictDialog(conflictDialogFor(activeConflict, selectedSaveGameName, visibleSaveVersions))}>{t('saves.reviewConflict')}</button>
           </div>
         )}
-        {activeTab === 'saves' && (
+        {activeTab === 'saves' && savesServerState === 'none' && (
+          <NoServerNotice message={t('noServer.saves')} onOpenSettings={openServerSettings} />
+        )}
+        {activeTab === 'saves' && savesServerState === 'unreachable' && (
+          <div className="card no-server-card" role="status">
+            <p className="no-server-text">{t('noServer.savesUnreachable')}</p>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={openServerSettings}>{t('noServer.checkSettings')}</button>
+          </div>
+        )}
+        {activeTab === 'saves' && savesServerState === 'ok' && (
           <div className="card">
             <h3 className="card-title">{t('saves.versions')}</h3>
-            <SaveVersionTimeline versions={visibleSaveVersions.length ? visibleSaveVersions : DEMO_SAVE_VERSIONS} onRestore={async (id) => { if (selectedSaveGameId === null) return; const res = await window.electronAPI.restoreSaveVersion(selectedSaveGameId, id); if (res.ok) showToast(res.message || t('saves.restoreRequested'), 'success'); else showToast(serverFailureMessage(res, t), 'error'); }} />
+            <SaveVersionTimeline versions={visibleSaveVersions} onRestore={async (id) => { if (selectedSaveGameId === null) return; const res = await window.electronAPI.restoreSaveVersion(selectedSaveGameId, id); if (res.ok) showToast(res.message || t('saves.restoreRequested'), 'success'); else showToast(serverFailureMessage(res, t), 'error'); }} />
           </div>
         )}
         {activeTab === 'saves' && (
@@ -1622,7 +1610,7 @@ export default function App() {
             )}
           </div>
         )}
-        {activeTab === 'saves' && (
+        {activeTab === 'saves' && savesServerState === 'ok' && (
           <div className="card">
             <h3 className="card-title">{t('saves.exclusions')}</h3>
             {!exclusionProfile ? (
@@ -1886,6 +1874,11 @@ export default function App() {
                 />
                 {t('settings.runInBackground')}
               </label>
+
+              <PrivacyToggles
+                settings={settings}
+                onChange={next => saveSettings({ trackersEnabled: next.trackersEnabled, artworkEnabled: next.artworkEnabled })}
+              />
 
               <h4 className="section-subtitle">{t('settings.steamGridTitle')}</h4>
               <p className="text-muted text-sm">
