@@ -205,10 +205,7 @@ export interface AchievementDetail {
   unlocked: boolean;
   unlockTime: string | null;
   rarity: number; // global percentage
-  localRarity: number; // user's library percentage
   hidden: boolean;
-  iconUrl: string;
-  iconGrayUrl: string;
   isSecret: boolean;
   steamApiName: string;
   createdAt: string;
@@ -216,7 +213,8 @@ export interface AchievementDetail {
 }
 
 // Rarity tier classification
-export type RarityTier = 'common' | 'uncommon' | 'rare' | 'ultra-rare' | 'epic' | 'legendary';
+// 'unknown': no usable global rarity (missing, <= 0 or non-numeric); never counted as rarest (DUN-007).
+export type RarityTier = 'common' | 'uncommon' | 'rare' | 'ultra-rare' | 'epic' | 'legendary' | 'unknown';
 
 export interface AchievementRarityTier {
   tier: RarityTier;
@@ -240,6 +238,8 @@ export const RARITY_TIERS: AchievementRarityTier[] = [
   { tier: 'rare', minPercent: 50, maxPercent: 80, label: 'Rare', color: '#00BFFF' },
   { tier: 'uncommon', minPercent: 80, maxPercent: 95, label: 'Uncommon', color: '#32CD32' },
   { tier: 'common', minPercent: 95, maxPercent: 101, label: 'Common', color: '#888888' },
+  // DUN-007: no numeric range; only assigned when rarity is <= 0, NaN or not a number.
+  { tier: 'unknown', minPercent: 0, maxPercent: 0, label: 'Unknown', color: '#555555' },
 ];
 
 // Playtime graph data for charts
@@ -354,7 +354,6 @@ export interface Device {
 
 export interface StorageEntry {
   gameId: number;
-  installBytes: number;
   saveBytes: number;
   cacheBytes: number;
   lastPlayed: string | null;
@@ -507,7 +506,6 @@ export interface ElectronAPI {
   onSyncProgress: (cb: (data: { percent: number; message: string }) => void) => () => void;
   
   // Playtime
-  recordPlaytime: (session: Omit<PlaytimeSession, 'id' | 'createdAt'>) => Promise<ServerResult<{ success?: boolean; message?: string }>>;
   onPlaytimeRecorded: (cb: (data: { game: string; durationMinutes: number }) => void) => () => void;
   getPlaytimeSummary: (game?: string) => Promise<ServerResult<{ success: boolean; summary: PlaytimeSummary[]; message?: string }>>;
   getRecentSessions: (limit?: number) => Promise<ServerResult<{ success: boolean; sessions: PlaytimeSession[]; message?: string }>>;
@@ -517,7 +515,6 @@ export interface ElectronAPI {
   exportPlaytimeData: (format: 'csv' | 'json', range?: 'all' | 'year' | 'month' | 'week' | 'custom', customRange?: { start: string; end: string }) => Promise<ServerResult<{ success: boolean; data: string; message?: string }>>;
   
   // Achievements
-  getAchievements: (game: string) => Promise<ServerResult<{ success: boolean; achievements: Achievement[]; message?: string }>>;
   getAchievementSummary: (game?: string) => Promise<ServerResult<{ success: boolean; summary: AchievementSummary[]; message?: string }>>;
   getRecentUnlocks: (limit?: number) => Promise<ServerResult<{ success: boolean; unlocks: Achievement[]; message?: string }>>;
   getAchievementDetail: (game: string) => Promise<ServerResult<{ success: boolean; achievements: AchievementDetail[]; progress?: AchievementProgress | null; message?: string }>>;
@@ -591,6 +588,8 @@ export interface ElectronAPI {
   getApiKeys: () => Promise<ServerResult<{ success: boolean; keys: ApiKeyInfo[]; message?: string }>>;
   addApiKey: (description?: string) => Promise<ServerResult<{ success: boolean; key?: string; message?: string }>>;
   removeApiKey: (id: string) => Promise<ServerResult<{ success: boolean; message?: string }>>;
+  /** DUN-115: the signed-in user; role gates admin-only UI. */
+  getCurrentUser(): Promise<ServerResult<{ id: string; name: string; role: 'admin' | 'member' }>>;
   
   // Ollama
   /** DUN-095/057: the server uses its stored endpoint only (admin-only). */

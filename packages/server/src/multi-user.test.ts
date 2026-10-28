@@ -108,6 +108,38 @@ describe('multi-user isolation over HTTP', () => {
     expect((await asAdmin(request(app).get('/api/users'))).status).toBe(200);
   });
 
+  // DUN-115: server-wide local sources, remote servers and settings are admin-only to write.
+  it('rejects member writes to server-wide config with 403 FORBIDDEN and lets admins write (DUN-115)', async () => {
+    const forbidden = { error: 'Admin privileges required', code: 'FORBIDDEN' };
+    const memberWrites: Array<() => request.Test> = [
+      () => request(app).post('/api/local-sources').send({ path: TMP }),
+      () => request(app).delete('/api/local-sources/1'),
+      () => request(app).post('/api/remote-servers').send({ url: 'http://peer.test:3030' }),
+      () => request(app).delete('/api/remote-servers/1'),
+      () => request(app).post('/api/settings').send({ maxVersions: 9 }),
+    ];
+    for (const write of memberWrites) {
+      const res = await asMember(write());
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual(forbidden);
+    }
+    // Nothing a member sent was applied.
+    const before = (await asAdmin(request(app).get('/api/settings'))).body.settings;
+    expect(before.maxVersions).not.toBe(9);
+    expect((await asAdmin(request(app).get('/api/local-sources'))).body.sources).toEqual([]);
+    expect((await asAdmin(request(app).get('/api/remote-servers'))).body.servers).toEqual([]);
+
+    // Admin can add, change and remove each.
+    const source = await asAdmin(request(app).post('/api/local-sources').send({ path: TMP }));
+    expect(source.status).toBe(200);
+    expect((await asAdmin(request(app).delete(`/api/local-sources/${source.body.source.id}`))).status).toBe(200);
+    const server = await asAdmin(request(app).post('/api/remote-servers').send({ url: 'http://peer.test:3030' }));
+    expect(server.status).toBe(200);
+    expect((await asAdmin(request(app).delete(`/api/remote-servers/${server.body.server.id}`))).status).toBe(200);
+    expect((await asAdmin(request(app).post('/api/settings').send({ maxVersions: 9 }))).status).toBe(200);
+    expect((await asAdmin(request(app).get('/api/settings'))).body.settings.maxVersions).toBe(9);
+  });
+
   it('ignores an unknown key entirely (401 without a key, 403 with a bad key)', async () => {
     expect((await request(app).get('/api/saves')).status).toBe(401);
     expect((await request(app).get('/api/saves').set('x-api-key', 'bogus')).status).toBe(403);

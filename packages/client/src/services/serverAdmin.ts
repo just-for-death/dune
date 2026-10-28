@@ -6,8 +6,8 @@
  * or `{ ok: false, status?, code, message }`. The HTTP status and code are
  * structured, so failures are classified from them, never from message text.
  */
-import type { ServerFailure } from '@dune/shared';
-import { checkServerUrl } from './serverUrl';
+import { checkServerUrl, type ServerFailure } from '@dune/shared';
+import { serverUrlMessage } from './serverUrl';
 import { defaultTranslator, type Locale, type Translator } from '../i18n';
 
 export type ServerErrorKind = 'forbidden' | 'unauthorized' | 'bad-request' | 'not-found' | 'unreachable' | 'no-server' | 'other';
@@ -114,10 +114,10 @@ function stripTrailingSeparators(path: string): string {
 /** Address of another Dune server to replicate to. Same rules as this PC's server address. */
 export function validateRemoteServerUrl(input: string, existing: readonly string[] = [], t: Translator = defaultTranslator): Check {
   if (!input.trim()) return { ok: false, error: t('where.check.serverEmpty') };
-  const result = checkServerUrl(input, t);
-  if (!result.ok) return { ok: false, error: result.error };
+  const result = checkServerUrl(input);
+  if (!result.ok) return { ok: false, error: serverUrlMessage(t, result) };
   const known = existing.map(url => {
-    const check = checkServerUrl(url, t);
+    const check = checkServerUrl(url);
     return check.ok ? check.url : url;
   });
   if (known.includes(result.url)) return { ok: false, error: t('where.check.serverDuplicate') };

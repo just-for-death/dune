@@ -15,6 +15,7 @@ describe('storage service', () => {
     expect(result.saveBytes).toBe(4);
     expect(result.cacheBytes).toBe(5);
     expect(result.lastPlayed).toBe('2026-01-01T00:00:00.000Z');
+    expect(result).not.toHaveProperty('installBytes'); // DUN-109: never measured, dropped
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

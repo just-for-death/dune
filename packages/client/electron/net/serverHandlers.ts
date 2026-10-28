@@ -1,5 +1,5 @@
 import type { ProviderKeyStatusResult, ServerFailure, ServerResult } from '@dune/shared';
-import { ServerCallError, toServerFailure } from './serverError';
+import { ServerCallError, UNKNOWN_SERVER_CODE, toServerFailure } from './serverError';
 import { invalidArgument, seg, type ServerClient, type ServerRequest } from './serverClient';
 
 /**
@@ -65,6 +65,9 @@ export interface ServerIpcOptions {
   artworkEnabled: () => boolean;
 }
 
+const USER_ROLES = ['admin', 'member'] as const;
+type CurrentUser = { id: string; name: string; role: (typeof USER_ROLES)[number] };
+
 const ARTWORK_DISABLED = { ok: false as const, code: 'ARTWORK_DISABLED', message: 'Artwork lookups are turned off in Settings.' };
 
 export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOptions): Record<string, Handler> {
@@ -92,6 +95,22 @@ export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOpt
     return res.ok ? { ok: true, set: res.set === true } : (res as ServerFailure);
   };
 
+  /**
+   * DUN-115: GET /api/users/me answers `{ success, user: { id, name, role } }`.
+   * Resolves to exactly `{ ok, id, name, role }`; a missing user or a role other
+   * than admin/member is a failure, never passed on. 401/403 pass through.
+   */
+  const currentUser = async (): Promise<ServerResult<CurrentUser>> => {
+    const res = await client.call<{ user?: unknown }>({ method: 'GET', path: '/api/users/me' });
+    if (!res.ok) return res as ServerFailure;
+    const u = res.user && typeof res.user === 'object' ? (res.user as Record<string, unknown>) : null;
+    if (!u || typeof u.id !== 'string' || typeof u.name !== 'string'
+      || typeof u.role !== 'string' || !(USER_ROLES as readonly string[]).includes(u.role)) {
+      return { ok: false, code: UNKNOWN_SERVER_CODE, message: 'The Dune Server sent an invalid user record.' };
+    }
+    return { ok: true, id: u.id, name: u.name, role: u.role as CurrentUser['role'] };
+  };
+
   return {
     // Playtime
     'playtime:summary': h((game) => ({ method: 'GET', path: '/api/playtime', query: { game: optionalString(game, 'game') } })),
@@ -110,7 +129,6 @@ export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOpt
     })),
 
     // Achievements
-    'achievements:get': h((game) => ({ method: 'GET', path: `/api/achievements/${seg(requireString(game, 'game'))}` })),
     'achievements:detail': h((game) => ({ method: 'GET', path: `/api/achievements/detail/${seg(requireString(game, 'game'))}` })),
     'achievements:summary': h((game) => ({ method: 'GET', path: '/api/achievements', query: { game: optionalString(game, 'game') } })),
     'achievements:recent': h((limit) => ({ method: 'GET', path: '/api/achievements/recent', query: { limit: optionalLimit(limit) } })),
@@ -147,7 +165,8 @@ export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOpt
 
     // SteamGridDB art (the key lives on the server only; DUN-092)
     'art:search': art(h((query) => ({ method: 'GET', path: '/api/search-art', query: { query: requireString(query, 'query') } }))),
-    'art:auto-match': art(h(() => ({ method: 'GET', path: '/api/auto-match-all' }))),
+    // DUN-113: auto-match changes thumbnails on the server, so it is a POST (no body).
+    'art:auto-match': art(h(() => ({ method: 'POST', path: '/api/auto-match-all' }))),
     'steamGridKey:status': keyStatus(() => ({ method: 'GET', path: '/api/provider-keys/steamgriddb' })),
     'steamGridKey:set': async (_event, key) => keyStatus(() => ({
       method: 'PUT', path: '/api/provider-keys/steamgriddb', body: { key: requireString(key, 'key', 500).trim() },
@@ -175,6 +194,9 @@ export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOpt
       if (typeof id !== 'string' || !API_KEY_ID.test(id)) throw new ServerCallError(invalidArgument('Invalid key id'));
       return { method: 'DELETE', path: `/api/api-keys/${seg(id)}` };
     }),
+
+    // Current user (DUN-115: renderer role gating)
+    'users:me': currentUser,
 
     // Ollama
     // DUN-095/057: the server uses only its stored Ollama endpoint (admin-only);

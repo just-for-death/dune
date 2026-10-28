@@ -1,5 +1,5 @@
 /** Display labels for enum-like values that come from shared data. */
-import type { AchievementRarityTier, Game } from '@dune/shared';
+import type { AchievementRarityTier, Game, RarityTier } from '@dune/shared';
 import type { MessageKey, Translator } from './index';
 
 const GAME_STATUS_KEYS: Record<Game['status'], MessageKey> = {
@@ -15,15 +15,16 @@ export function gameStatusLabel(status: string, t: Translator): string {
     : status;
 }
 
-const RARITY_KEYS: Record<string, MessageKey> = {
+const RARITY_KEYS: Record<RarityTier, MessageKey> = {
   legendary: 'rarity.legendary',
   epic: 'rarity.epic',
   'ultra-rare': 'rarity.ultraRare',
   rare: 'rarity.rare',
   uncommon: 'rarity.uncommon',
   common: 'rarity.common',
+  unknown: 'rarity.unknown',
 };
 
 export function rarityLabel(tier: Pick<AchievementRarityTier, 'tier' | 'label'>, t: Translator): string {
-  return Object.prototype.hasOwnProperty.call(RARITY_KEYS, tier.tier) ? t(RARITY_KEYS[tier.tier]) : tier.label;
+  return Object.prototype.hasOwnProperty.call(RARITY_KEYS, tier.tier) ? t(RARITY_KEYS[tier.tier as RarityTier]) : tier.label;
 }

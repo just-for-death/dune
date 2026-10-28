@@ -22,16 +22,6 @@ interface Settings {
   remoteServers?: Array<{ id: number; url: string }>;
 }
 
-interface PlaytimeSession {
-  id: number;
-  game: string;
-  platform: string;
-  sessionStart: string;
-  sessionEnd: string;
-  durationMinutes: number;
-  createdAt: string;
-}
-
 contextBridge.exposeInMainWorld('electronAPI', {
   // Config
   loadConfig: () => ipcRenderer.invoke('config:load'),
@@ -74,8 +64,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   
   // Playtime
-  recordPlaytime: (session: Omit<PlaytimeSession, 'id' | 'createdAt'>) => 
-    ipcRenderer.invoke('playtime:record', session),
   onPlaytimeRecorded: (cb: (data: { game: string; durationMinutes: number }) => void) => {
     const listener = (_event: unknown, data: { game: string; durationMinutes: number }) => cb(data);
     ipcRenderer.on('playtime:recorded', listener);
@@ -96,8 +84,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('playtime:export', format, range, customRange),
   
   // Achievements
-  getAchievements: (game: string) => 
-    ipcRenderer.invoke('achievements:get', game),
   getAchievementDetail: (game: string) =>
     ipcRenderer.invoke('achievements:detail', game),
   getAchievementSummary: (game?: string) => 
@@ -217,6 +203,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('api-keys:add', { description }),
   removeApiKey: (id: string) => 
     ipcRenderer.invoke('api-keys:remove', id),
+
+  // Current user (DUN-115: role for renderer gating)
+  getCurrentUser: () =>
+    ipcRenderer.invoke('users:me'),
   
   // Ollama
   // DUN-095/057: the server uses its stored endpoint; none is sent.

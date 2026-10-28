@@ -1,5 +1,5 @@
 import '@fontsource/inter';
-import { useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, useDeferredValue, type CSSProperties } from 'react';
 import type {
   Cloud,
   Toast,
@@ -24,7 +24,7 @@ import type {
   ServerFailure,
   DriveSpace,
 } from '@dune/shared';
-import { DEFAULT_TRACKERS_ENABLED, nextId, RARITY_TIERS } from '@dune/shared';
+import { DEFAULT_TRACKERS_ENABLED, nextId, normalizeServerUrl, RARITY_TIERS } from '@dune/shared';
 import { Icon } from './Icon';
 import { PlaytimeCharts } from './components/PlaytimeCharts';
 import { applyTheme, loadThemes, getActiveThemeId, setActiveThemeId } from './theme/manager';
@@ -43,7 +43,6 @@ import { createLatestGate } from './services/latest';
 import { createSaveQueue } from './services/saveQueue';
 import { SAVE_FILE_LIST_REJECTED, saveFileListState, type SaveFileListState } from './services/saveFiles';
 import { validateApiKey, validateServerUrl } from './services/settingsValidation';
-import { normalizeServerUrl } from './services/serverUrl';
 import { checkGameTitle } from './services/gameTitle';
 import { MAX_PREFIX_NAME, prefixFailureMessage, validateNewPrefixName } from './services/prefixes';
 import { ConfirmDialog } from './components/settings/ConfirmDialog';
@@ -83,14 +82,24 @@ function launchFailureMessage(t: Translator, name: string, reason: string, detai
   return detail?.trim() ? `${base} ${detail.trim()}` : base;
 }
 
+const UNKNOWN_RARITY = RARITY_TIERS.find((tier) => tier.tier === 'unknown')!;
+
+/** DUN-007: missing, <= 0 or NaN global rarity is 'unknown', never legendary. */
 function rarityTier(rarity: number) {
-  return RARITY_TIERS.find((tier) => rarity >= tier.minPercent && rarity < tier.maxPercent)
-    ?? RARITY_TIERS[RARITY_TIERS.length - 1];
+  if (typeof rarity !== 'number' || !Number.isFinite(rarity) || rarity <= 0) return UNKNOWN_RARITY;
+  return RARITY_TIERS.find((tier) => tier.tier !== 'unknown' && rarity >= tier.minPercent && rarity < tier.maxPercent)
+    ?? UNKNOWN_RARITY;
+}
+
+/** 'unknown' uses the neutral .rarity-unknown style (muted token, AA) instead of its shared color. */
+function rarityStyle(tier: { tier: string; color: string }, border = false): CSSProperties | undefined {
+  if (tier.tier === 'unknown') return undefined;
+  return border ? { color: tier.color, borderColor: tier.color } : { color: tier.color };
 }
 
 function isValidUrl(url: string): boolean {
-  // Exactly the main-process rule (electron/sync/serverUrl.ts normalizeServerUrl),
-  // mirrored in services/serverUrl.ts: absolute http(s) URL with a host only.
+  // The shared main-process rule (@dune/shared normalizeServerUrl):
+  // absolute http(s) URL with a host only.
   return normalizeServerUrl(url) !== null;
 }
 
@@ -1853,7 +1862,7 @@ export default function App() {
                           <strong>{a.displayName}</strong>
                           <div className="path-sub">{a.game} · {a.unlockTime ? formatDate(a.unlockTime, locale, t) : t('achievements.unlocked')}</div>
                         </div>
-                        <span className="badge" style={{ color: tier.color, borderColor: tier.color }}>{rarityLabel(tier, t)}</span>
+                        <span className={`badge rarity-${tier.tier}`} style={rarityStyle(tier, true)}>{rarityLabel(tier, t)}</span>
                       </div>
                     );
                   })}
@@ -1872,7 +1881,7 @@ export default function App() {
                 {achievementProgress?.rarestUnlocked && (
                   <p className="text-muted text-sm">
                     {formatRich(t('achievements.rarest'), {
-                      tier: <strong style={{ color: achievementProgress.rarestUnlocked.color }}>{rarityLabel(achievementProgress.rarestUnlocked, t)}</strong>,
+                      tier: <strong className={`rarity-${achievementProgress.rarestUnlocked.tier}`} style={rarityStyle(achievementProgress.rarestUnlocked)}>{rarityLabel(achievementProgress.rarestUnlocked, t)}</strong>,
                     })}
                   </p>
                 )}
@@ -1886,7 +1895,7 @@ export default function App() {
                         <div className="ach-desc">{secret ? t('achievements.hiddenDesc') : a.description}</div>
                         {a.unlocked && a.unlockTime && <div className="ach-time">{formatDate(a.unlockTime, locale, t)}</div>}
                         {a.rarity > 0 && (
-                          <div className="ach-rarity" style={{ color: tier.color }}>
+                          <div className={`ach-rarity rarity-${tier.tier}`} style={rarityStyle(tier)}>
                             {t('achievements.rarity', { tier: rarityLabel(tier, t), percent: a.rarity.toFixed(1) })}
                           </div>
                         )}

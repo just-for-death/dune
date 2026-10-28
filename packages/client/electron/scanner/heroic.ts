@@ -249,16 +249,6 @@ export function getHeroicWineVersion(game: HeroicGameLike): string | null {
 }
 
 /**
- * Get Heroic executable path for a game (for launching).
- */
-export function getHeroicGameLaunchCommand(game: HeroicGameLike): string[] | null {
-  const heroicExe = getHeroicExecutable();
-  if (!heroicExe) return null;
-  
-  return [heroicExe, '--run', game.id];
-}
-
-/**
  * Check if Heroic is installed and configured.
  */
 export function isHeroicAvailable(): boolean {

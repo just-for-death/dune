@@ -61,10 +61,10 @@ describe('server IPC arguments (DUN-072)', () => {
   it('string ids and names are encoded as one segment; . and .. are refused', async () => {
     const { handlers, calls } = setup();
     await handlers['conflicts:resolve']({}, 'c?1', 'local');
-    await handlers['achievements:get']({}, 'Half-Life 2: Ep/1');
+    await handlers['achievements:detail']({}, 'Half-Life 2: Ep/1');
     expect(calls.map((c) => c.url)).toEqual([
       'http://nas:3030/api/conflicts/c%3F1/resolve',
-      'http://nas:3030/api/achievements/Half-Life%202%3A%20Ep%2F1',
+      'http://nas:3030/api/achievements/detail/Half-Life%202%3A%20Ep%2F1',
     ]);
     for (const bad of ['.', '..', '']) expect(await handlers['conflicts:resolve']({}, bad, 'local')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
     expect(await handlers['conflicts:resolve']({}, 'c1', 'everything')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
@@ -82,6 +82,15 @@ describe('server code pass-through (DUN-121)', () => {
     const { handlers } = setup(() => httpError(400, { error: 'SteamGridDB key not set', code: 'PROVIDER_KEY_NOT_SET' }));
     expect(await handlers['art:search']({}, 'Hades')).toEqual({ ok: false, status: 400, code: 'PROVIDER_KEY_NOT_SET', message: 'SteamGridDB key not set' });
     expect(await handlers['art:auto-match']({})).toMatchObject({ code: 'PROVIDER_KEY_NOT_SET' });
+  });
+
+  it('DUN-113: art:auto-match is a POST with no body; DUN-010: achievements:get is gone', async () => {
+    const { handlers, calls } = setup();
+    await handlers['art:auto-match']({});
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: 'POST', url: 'http://nas:3030/api/auto-match-all' });
+    expect(calls[0].data).toBeUndefined();
+    expect(handlers['achievements:get']).toBeUndefined();
   });
 });
 
@@ -147,5 +156,53 @@ describe('save versions by game id (DUN-038)', () => {
     expect(await handlers['saves:restore']({}, 0, 'v1')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
     expect(await handlers['saves:restore']({}, 7, '')).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('current user (DUN-115)', () => {
+  const me = (user: unknown) => () => ({ status: 200, data: { success: true, user } });
+
+  it('GETs /api/users/me and returns exactly { ok, id, name, role }', async () => {
+    const { handlers, calls } = setup(me({ id: 'u-1', name: 'Test User', role: 'member', apiKey: 'LEAK' }));
+    expect(await handlers['users:me']({})).toEqual({ ok: true, id: 'u-1', name: 'Test User', role: 'member' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: 'GET', url: 'http://nas:3030/api/users/me' });
+    expect(calls[0].data).toBeUndefined();
+    const admin = setup(me({ id: 'u-2', name: 'Admin', role: 'admin' }));
+    expect(await admin.handlers['users:me']({})).toEqual({ ok: true, id: 'u-2', name: 'Admin', role: 'admin' });
+  });
+
+  it('401 and 403 pass through unchanged', async () => {
+    const unauth = setup(() => httpError(401, { error: 'API key required', code: 'UNAUTHORIZED' }));
+    expect(await unauth.handlers['users:me']({})).toEqual({ ok: false, status: 401, code: 'UNAUTHORIZED', message: 'API key required' });
+    const forbidden = setup(() => httpError(403, { error: 'Invalid API key', code: 'INVALID_API_KEY' }));
+    expect(await forbidden.handlers['users:me']({})).toEqual({ ok: false, status: 403, code: 'INVALID_API_KEY', message: 'Invalid API key' });
+  });
+
+  it('a bad role or malformed user is rejected, never passed on', async () => {
+    for (const bad of [
+      { id: 'u-1', name: 'X', role: 'superadmin' },
+      { id: 'u-1', name: 'X', role: 'Admin' },
+      { id: 'u-1', name: 'X' },
+      { id: 'u-1', name: 'X', role: 1 },
+      { id: 7, name: 'X', role: 'admin' },
+      { id: 'u-1', role: 'admin' },
+      null,
+      'admin',
+    ]) {
+      const { handlers } = setup(me(bad));
+      const res = await handlers['users:me']({});
+      expect(res).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+      expect(res).not.toHaveProperty('role');
+    }
+    const { handlers } = setup(() => ({ status: 200, data: { success: true } }));
+    expect(await handlers['users:me']({})).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+  });
+
+  it('no response is NETWORK with no status', async () => {
+    const { handlers } = setup(() => Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, request: {} }));
+    const res = await handlers['users:me']({});
+    expect(res).toMatchObject({ ok: false, code: 'NETWORK' });
+    expect(res).not.toHaveProperty('status');
   });
 });

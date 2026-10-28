@@ -551,6 +551,8 @@ label {
 .ach-name { font-weight: 600; margin-bottom: 4px; font-size: 13.5px; }
 .ach-desc { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
 .ach-time, .ach-rarity { font-size: 12px; color: var(--muted); }
+/* DUN-007: no usable global rarity; neutral muted token (AA on --panel/--panel-2), no tier color. */
+.rarity-unknown { color: var(--muted); border-color: var(--line); font-style: italic; }
 
 .checkbox-label {
   display: flex; align-items: center; gap: 10px;

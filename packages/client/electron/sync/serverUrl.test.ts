@@ -2,14 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { normalizeServerUrl } from '@dune/shared';
 import {
   SERVER_URL_SETTLE_MS,
   createPlaytimeFlushGate,
-  normalizeServerUrl,
   shouldFlushPlaytime,
 } from './serverUrl';
 
-describe('normalizeServerUrl', () => {
+// DUN-124: main uses the shared rules; these cases pin the behaviour main
+// relied on before the switch (unchanged).
+describe('normalizeServerUrl (@dune/shared, as used by main)', () => {
   it.each([
     ['http://192.168.1.100:3030', 'http://192.168.1.100:3030'],
     ['https://dune.example.com', 'https://dune.example.com'],

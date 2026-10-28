@@ -73,7 +73,7 @@ describe('checkServerUrl codes', () => {
     return r.ok ? 'ok' : r.code;
   };
 
-  it.each<[unknown, ServerUrlErrorCode]>([
+  it.each<[unknown, ServerUrlErrorCode | 'ok']>([
     ['', 'empty'],
     [null, 'empty'],
     ['192.168.1.100:3030', 'needScheme'],
@@ -89,6 +89,24 @@ describe('checkServerUrl codes', () => {
     ['http://10.1', 'fullIp'],
     ['http://169.254.169.254', 'blocked'],
     ['http://[fd00::1]', 'blocked'],
+    // DUN-139: whole fc00::/7, fe80::/10, and mapped/compatible IPv4.
+    ['http://[fc00::1]', 'blocked'],
+    ['http://[fdff::1]', 'blocked'],
+    ['http://[fe80::1]', 'blocked'],
+    ['http://[febf::1]', 'blocked'],
+    ['http://[::ffff:169.254.169.254]', 'blocked'],
+    ['http://[::ffff:a9fe:a9fe]', 'blocked'],
+    ['http://[::ffff:169.254.1.2]', 'blocked'],
+    ['http://[::ffff:100.100.100.200]', 'blocked'],
+    ['http://[0:0:0:0:0:ffff:a9fe:a9fe]', 'blocked'],
+    ['http://[::169.254.169.254]', 'blocked'],
+    // Outside the blocked ranges / allowed like their IPv4 form.
+    ['http://[fec0::1]', 'ok'],
+    ['http://[fbff::1]', 'ok'],
+    ['http://[::ffff:8.8.8.8]', 'ok'],
+    ['http://[::ffff:10.0.0.1]', 'ok'], // private IPv4 (10.0.0.1) is allowed
+    ['http://[::ffff:127.0.0.1]', 'ok'], // loopback (127.x) is allowed
+    ['http://[::1]', 'ok'],
   ])('%j -> %s', (input, expected) => {
     expect(code(input)).toBe(expected);
   });

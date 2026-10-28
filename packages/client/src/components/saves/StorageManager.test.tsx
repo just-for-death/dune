@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { StorageEntry } from '@dune/shared';
 import { StorageManager } from './StorageManager';
 
-const entry: StorageEntry = { gameId: 7, installBytes: 0, saveBytes: 20 * 1024, cacheBytes: 3 * 1024 ** 3, lastPlayed: null, drive: '/' };
+const entry: StorageEntry = { gameId: 7, saveBytes: 20 * 1024, cacheBytes: 3 * 1024 ** 3, lastPlayed: null, drive: '/' };
 
 describe('StorageManager', () => {
   it('shows the game name and readable sizes', () => {

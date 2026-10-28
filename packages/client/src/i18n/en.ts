@@ -308,6 +308,7 @@ export const en = {
   'rarity.rare': 'Rare',
   'rarity.ultraRare': 'Ultra Rare',
   'rarity.uncommon': 'Uncommon',
+  'rarity.unknown': 'Unknown rarity',
   // restore
   'restore.button': 'Restore from Server',
   'restore.complete': 'Restore complete',

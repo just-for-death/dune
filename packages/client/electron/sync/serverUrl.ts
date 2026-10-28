@@ -6,87 +6,16 @@
  * main process sees "h", "ht", ... "http://192.168.1.1", "http://192.168.1.10"
  * as separate saves. Two things keep the queue away from those drafts:
  *
- *  1. `normalizeServerUrl` only accepts complete, absolute http(s) URLs.
+ *  1. `normalizeServerUrl` (@dune/shared, DUN-124: the one set of server URL
+ *     rules for renderer and main) only accepts complete, absolute http(s)
+ *     URLs and applies the SSRF host / port block lists.
  *  2. `createPlaytimeFlushGate` waits until the saved URL has stopped changing
  *     (settled) before treating it as the saved server URL, and flushes only
  *     when `shouldFlushPlaytime` says the settled URL is valid and new.
  *
  * Everything here is free of Electron/store/network so it can be unit tested.
  */
-import { validateServerUrl } from '../utils';
-
-const ABSOLUTE_HTTP = /^(https?):\/\//i;
-
-/**
- * Normalise a server URL, or return null when it is not a complete absolute
- * http/https URL that is safe to POST playtime to.
- *
- * Accepts:  `http://host`, `https://host:3030`, `http://host/base/` (trailing
- *           slashes stripped, surrounding whitespace trimmed).
- * Rejects:  empty input, scheme-less input (`localhost:3030`, `h`), any scheme
- *           other than http/https, credentials (`user:pw@`), query/fragment,
- *           an empty port (`http://host:`), WHATWG IPv4 shorthand that would
- *           silently turn into a different address (`http://192.168.` →
- *           192.0.0.168, `http://1` → 0.0.0.1), and anything the shared
- *           `validateServerUrl` blocks (metadata/link-local hosts, bad ports).
- */
-export function normalizeServerUrl(input: unknown): string | null {
-  if (typeof input !== 'string') return null;
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-
-  const scheme = ABSOLUTE_HTTP.exec(trimmed);
-  if (!scheme) return null;
-
-  const rest = trimmed.slice(scheme[0].length);
-  const authority = rest.split(/[/?#]/, 1)[0];
-  if (!authority) return null;
-  // Credentials (even an empty `@host`) and query/fragment are never valid
-  // for a server base URL; the API path is appended to it.
-  if (authority.includes('@')) return null;
-  if (/[?#]/.test(rest)) return null;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-  if (parsed.username || parsed.password) return null;
-  if (!parsed.hostname) return null;
-
-  // Split the host the user actually typed from its port.
-  let rawHost: string;
-  let rawPort: string | undefined;
-  if (authority.startsWith('[')) {
-    const end = authority.indexOf(']');
-    if (end < 0) return null;
-    rawHost = authority.slice(0, end + 1);
-    const after = authority.slice(end + 1);
-    if (after && !after.startsWith(':')) return null;
-    rawPort = after ? after.slice(1) : undefined;
-  } else {
-    const colon = authority.indexOf(':');
-    rawHost = colon < 0 ? authority : authority.slice(0, colon);
-    rawPort = colon < 0 ? undefined : authority.slice(colon + 1);
-  }
-  if (rawPort !== undefined && !/^\d{1,5}$/.test(rawPort)) return null;
-  if (!rawHost.startsWith('[')) {
-    if (rawHost.endsWith('.') || rawHost.includes('..')) return null;
-    // Numeric hosts must be a full dotted quad; otherwise the URL parser
-    // expands shorthand (`10.1` → 10.0.0.1) and we'd post to the wrong box.
-    if (/^(0x[0-9a-f]*|[0-9.]+)$/i.test(rawHost) && parsed.hostname !== rawHost) return null;
-  }
-
-  const pathname = parsed.pathname.replace(/\/+$/, '');
-  const normalized = `${parsed.protocol}//${parsed.host}${pathname}`;
-
-  // Reuse the main-process SSRF / port policy for server URLs.
-  const check = validateServerUrl(normalized);
-  if (!check.valid) return null;
-  return normalized;
-}
+import { normalizeServerUrl } from '@dune/shared';
 
 /**
  * Decide whether saving `nextUrl` should flush the playtime queue: only when

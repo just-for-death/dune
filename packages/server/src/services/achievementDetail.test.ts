@@ -44,4 +44,34 @@ describe('achievement detail', () => {
     expect(progress.percentage).toBe(50);
     expect(progress.rarestUnlocked?.tier).toBe('legendary');
   });
+
+  it('classifies missing, zero, negative, NaN and non-numeric rarity as unknown (DUN-007)', () => {
+    for (const r of [0, -1, Number.NaN, undefined, null, '5', {}]) {
+      expect(getRarityTier(r).tier).toBe('unknown');
+    }
+    expect(getRarityTier(0.01).tier).toBe('legendary');
+    expect(getRarityTier(100).tier).toBe('common');
+    expect(getRarityTier(250).tier).toBe('common');
+  });
+
+  it('excludes unknown-rarity achievements from rarestUnlocked (DUN-007)', () => {
+    upsertAchievements('Game3', [
+      { apiName: 'a', displayName: 'A', unlocked: true, rarity: 0 },
+      { apiName: 'b', displayName: 'B', unlocked: true, rarity: 60 },
+    ]);
+    expect(getAchievementProgress('Game3').rarestUnlocked?.tier).toBe('rare');
+
+    upsertAchievements('Game4', [{ apiName: 'a', displayName: 'A', unlocked: true, rarity: 0 }]);
+    const onlyUnknown = getAchievementProgress('Game4');
+    expect(onlyUnknown.unlocked).toBe(1);
+    expect(onlyUnknown.rarestUnlocked).toBeNull();
+  });
+
+  it('emits no placeholder icon/localRarity fields (DUN-109)', () => {
+    upsertAchievements('Game5', [{ apiName: 'a', displayName: 'A', unlocked: false, rarity: 12 }]);
+    const [detail] = getAchievementDetails('Game5');
+    expect(detail).not.toHaveProperty('iconUrl');
+    expect(detail).not.toHaveProperty('iconGrayUrl');
+    expect(detail).not.toHaveProperty('localRarity');
+  });
 });

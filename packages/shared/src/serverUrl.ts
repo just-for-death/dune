@@ -60,6 +60,62 @@ export const BLOCKED_SERVER_HOSTS: readonly string[] = [
 /** Well-known non-HTTP service ports. */
 export const BLOCKED_SERVER_PORTS: readonly number[] = [21, 22, 23, 25, 53, 69, 110, 119, 123, 143, 161, 194, 445];
 
+/** IPv4 / hostname SSRF rules: metadata hosts and 169.254.0.0/16. */
+function isBlockedIpv4OrName(host: string): boolean {
+  return (
+    BLOCKED_SERVER_HOSTS.includes(host) ||
+    host.endsWith('.metadata.google.internal') ||
+    /^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)
+  );
+}
+
+/**
+ * Expand a WHATWG-serialised IPv6 address (no brackets, lowercase, hex
+ * hextets, at most one `::`) to 8 numbers, or null if it isn't one.
+ */
+function ipv6Hextets(addr: string): number[] | null {
+  const halves = addr.split('::');
+  if (halves.length > 2) return null;
+  const toNums = (part: string): number[] | null => {
+    if (!part) return [];
+    const nums: number[] = [];
+    for (const h of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/.test(h)) return null;
+      nums.push(parseInt(h, 16));
+    }
+    return nums;
+  };
+  const head = toNums(halves[0] ?? '');
+  const tail = halves.length === 2 ? toNums(halves[1] ?? '') : [];
+  if (!head || !tail) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const fill = 8 - head.length - tail.length;
+  if (fill < 1) return null;
+  return [...head, ...new Array<number>(fill).fill(0), ...tail];
+}
+
+/**
+ * SSRF host check. IPv6 (`[...]` as the URL parser serialises it, hex
+ * only): blocks fc00::/7 unique-local, fe80::/10 link-local, and
+ * IPv4-mapped (::ffff:a.b.c.d) / IPv4-compatible (::a.b.c.d) addresses whose
+ * embedded IPv4 the IPv4 rules block. Loopback (::1, 127.x) stays allowed.
+ */
+function isBlockedHost(host: string): boolean {
+  if (!host.startsWith('[')) return isBlockedIpv4OrName(host);
+  const h = ipv6Hextets(host.replace(/^\[|\]$/g, ''));
+  if (!h) return false;
+  const first = h[0] ?? 0;
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10
+  if (h.slice(0, 5).every((n) => n === 0) && (h[5] === 0xffff || h[5] === 0)) {
+    const hi = h[6] ?? 0;
+    const lo = h[7] ?? 0;
+    const v4 = `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+    if (isBlockedIpv4OrName(v4)) return true;
+  }
+  return false;
+}
+
 /**
  * Validate and normalise a Dune Server base URL.
  *
@@ -131,16 +187,7 @@ export function checkServerUrl(input: unknown): ServerUrlCheck {
 
   // SSRF + port policy (same lists as electron/utils.ts validateServerUrl).
   const host = parsed.hostname.toLowerCase();
-  if (
-    BLOCKED_SERVER_HOSTS.includes(host) ||
-    host.endsWith('.metadata.google.internal') ||
-    /^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)
-  ) {
-    return fail('blocked');
-  }
-  if (host.startsWith('fe80:') || host.startsWith('fd00:') || host.startsWith('[fe80:') || host.startsWith('[fd00:')) {
-    return fail('blocked');
-  }
+  if (isBlockedHost(host)) return fail('blocked');
   if (parsed.port && BLOCKED_SERVER_PORTS.includes(parseInt(parsed.port, 10))) {
     return { ok: false, code: 'portBlocked', port: parsed.port };
   }

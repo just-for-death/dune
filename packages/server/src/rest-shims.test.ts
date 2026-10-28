@@ -49,13 +49,12 @@ describe('REST shims auth gate', () => {
     ['get', '/api/playtime/comparison'],
     ['get', '/api/playtime/export'],
     ['get', '/api/achievements/recent'],
-    ['get', '/api/achievements/Bob'],
     ['get', '/api/achievements'],
     ['post', '/api/achievements/import'],
     ['get', '/api/hltb/Bob'],
     ['post', '/api/analyze-files-ai'],
     ['get', '/api/search-art?query=x'],
-    ['get', '/api/auto-match-all'],
+    ['post', '/api/auto-match-all'],
     ['get', '/api/local-sources'],
     ['post', '/api/local-sources'],
     ['delete', '/api/local-sources/1'],
@@ -169,9 +168,10 @@ describe('REST shims happy paths', () => {
     expect(csv.body.data).toContain('"Graph Shim Game","test"');
   });
 
-  it('achievements get/summary/recent shapes', async () => {
-    const one = await api(request(app).get('/api/achievements/Nonexistent'));
-    expect(one.body).toEqual({ success: true, achievements: [] });
+  it('achievements summary/recent shapes; removed per-game route is 404 (DUN-010)', async () => {
+    const gone = await api(request(app).get('/api/achievements/Nonexistent'));
+    expect(gone.status).toBe(404);
+    expect(Object.keys(gone.body).sort()).toEqual(['code', 'error']);
 
     const summary = await api(request(app).get('/api/achievements'));
     expect(summary.body.summary).toEqual([]);
@@ -224,7 +224,13 @@ describe('REST shims happy paths', () => {
   it('search-art and auto-match-all require a SteamGridDB key', async () => {
     expect((await api(request(app).get('/api/search-art?query=x'))).status).toBe(400);
     expect((await api(request(app).get('/api/search-art'))).status).toBe(400);
-    expect((await api(request(app).get('/api/auto-match-all'))).status).toBe(400);
+    expect((await api(request(app).post('/api/auto-match-all'))).status).toBe(400);
+  });
+
+  it('auto-match-all is POST only; GET is 404 (DUN-113)', async () => {
+    const res = await api(request(app).get('/api/auto-match-all'));
+    expect(res.status).toBe(404);
+    expect(Object.keys(res.body).sort()).toEqual(['code', 'error']);
   });
 
   it('local-sources CRUD + validation', async () => {

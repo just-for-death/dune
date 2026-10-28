@@ -4,52 +4,10 @@ import * as os from 'os';
 import { nextId } from '@dune/shared';
 import type { Game } from '@dune/shared';
 import {
-  createSaveResolver,
-  loadManifest,
   prefixUserDirs,
   toSaveFields,
-  type LoadManifestOptions,
   type SaveResolver,
 } from './savePaths.js';
-
-export interface DetectedGame {
-  id: number;
-  name: string;
-  winPath: string;
-  linPath: string;
-  status: 'Pending Upload' | 'In Sync' | 'Error';
-  lastSync: string;
-}
-
-export interface AutoDetectOptions extends LoadManifestOptions {
-  /** Pre-built resolver (skips manifest loading). */
-  resolver?: SaveResolver;
-}
-
-/**
- * Manifest-driven save discovery: every Ludusavi game whose save path exists
- * on disk. This finds *saves*, not the Steam library (see getSteamLibraryGames).
- */
-export async function autoDetectGames(customRoots: string[] = [], options: AutoDetectOptions = {}): Promise<DetectedGame[]> {
-  try {
-    let resolver = options.resolver;
-    if (!resolver) {
-      const manifest = await loadManifest(options);
-      if (!manifest) return [];
-      resolver = createSaveResolver(manifest, { customRoots });
-    }
-    return resolver.discoverAll().map(({ name, path: savePath }) => ({
-      id: nextId(),
-      name,
-      ...toSaveFields(savePath, resolver.platform),
-      status: 'Pending Upload' as const,
-      lastSync: 'Never',
-    }));
-  } catch (error) {
-    console.error('Scanner failed:', error);
-    return [];
-  }
-}
 
 export interface SteamLibraryFolder {
   path: string;

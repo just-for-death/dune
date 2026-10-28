@@ -288,7 +288,6 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       },
       setCustomArt: async () => false,
       onSyncProgress: () => () => {},
-      recordPlaytime: async () => ({ ok: true, success: true }),
       onPlaytimeRecorded: () => () => {},
       getPlaytimeSummary: async () => ({ ok: true, success: true, summary: [] }),
       getRecentSessions: async () => ({ ok: true, success: true, sessions: [] }),
@@ -299,7 +298,6 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       getPlaytimeComparison: async () => (opts.playtime?.comparison
         ? { ok: true, success: true, comparison: structuredClone(opts.playtime.comparison) }
         : { ok: false, status: 500, code: 'INTERNAL', message: 'Internal error' }),
-      getAchievements: async () => ({ ok: true, success: true, achievements: [] }),
       getAchievementSummary: async () => ({
         ok: true,
         success: true,
@@ -315,8 +313,8 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
           success: true,
           achievements: [{
             id: 1, game, apiName: 'ACH', displayName: `${game} first steps`, description: `Unlocked in ${game}`,
-            unlocked: true, unlockTime: '2026-01-01T00:00:00.000Z', rarity: 50, localRarity: 0, hidden: false,
-            iconUrl: '', iconGrayUrl: '', isSecret: false, steamApiName: 'ACH', createdAt: '', updatedAt: '',
+            unlocked: true, unlockTime: '2026-01-01T00:00:00.000Z', rarity: 50, hidden: false,
+            isSecret: false, steamApiName: 'ACH', createdAt: '', updatedAt: '',
           }],
           progress: { total: 1, unlocked: 1, percentage: 100, rarestUnlocked: null },
         };

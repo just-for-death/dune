@@ -261,11 +261,11 @@ type SyncState = Record<string, GameSyncState>;
 
 
 
-export function getSyncState(): SyncState {
+function getSyncState(): SyncState {
   return (store.get('syncState') as SyncState) || {};
 }
 
-export function saveGameState(game: string, patch: Partial<GameSyncState>): void {
+function saveGameState(game: string, patch: Partial<GameSyncState>): void {
   const state = getSyncState();
   state[game] = { ...(state[game] || {}), ...patch };
   store.set('syncState', state);
@@ -943,11 +943,11 @@ function removeOtherGameArt(gameId: number, keepPath: string): void {
 // ── Error log (crash reporting) ────────────────────────────────────────────
 // Renderer + main-process failures land here; inspected via "Open Error Log"
 // or by opening the file directly. Rotated at ~1 MB to bound disk use.
-export function errorLogPath(): string {
+function errorLogPath(): string {
   return path.join(app.getPath('userData'), 'dune-errors.log');
 }
 
-export function appendErrorLog(source: string, payload: Record<string, unknown>): void {
+function appendErrorLog(source: string, payload: Record<string, unknown>): void {
   try {
     const file = errorLogPath();
     const line = JSON.stringify({ ts: new Date().toISOString(), source, ...payload }) + '\n';
@@ -1060,23 +1060,6 @@ ipcMain.handle('game:fetchArt', async (_event, id: unknown): Promise<FetchArtRes
 })
 
 // ── NEW IPC Handlers for Server Integration ─────────────────────────────────────
-
-// Playtime
-ipcMain.handle('playtime:record', async (_event, session: PlaytimeSessionPayload) => {
-  try {
-    const res = await postPlaytimeSession(session);
-    if (res.ok) {
-      void flushPlaytimeQueue();
-      mainWindow?.webContents.send('playtime:recorded', {
-        game: session.game,
-        durationMinutes: session.durationMinutes,
-      });
-    }
-    return res;
-  } catch (e) {
-    return toServerFailure(e);
-  }
-})
 
 // Server-only calls (playtime, achievements, saves, conflicts, art, sources,
 // keys, Ollama): validated arguments, gated URL, ServerResult (net/serverHandlers.ts).

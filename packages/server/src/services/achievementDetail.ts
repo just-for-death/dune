@@ -2,8 +2,14 @@ import { RARITY_TIERS } from '@dune/shared';
 import { getGameAchievements } from './achievements.js';
 import type { AchievementDetail, AchievementRarityTier, AchievementProgress } from '@dune/shared';
 
-export function getRarityTier(rarity: number): AchievementRarityTier {
-  return RARITY_TIERS.find((tier) => rarity >= tier.minPercent && rarity < tier.maxPercent) ?? RARITY_TIERS[RARITY_TIERS.length - 1];
+const UNKNOWN_TIER = RARITY_TIERS.find((tier) => tier.tier === 'unknown') as AchievementRarityTier;
+const RANGED_TIERS = RARITY_TIERS.filter((tier) => tier.tier !== 'unknown');
+const COMMON_TIER = RARITY_TIERS.find((tier) => tier.tier === 'common') as AchievementRarityTier;
+
+/** DUN-007: missing, NaN, non-numeric or <= 0 rarity is 'unknown'; > 100 clamps to common. */
+export function getRarityTier(rarity: unknown): AchievementRarityTier {
+  if (typeof rarity !== 'number' || Number.isNaN(rarity) || rarity <= 0) return UNKNOWN_TIER;
+  return RANGED_TIERS.find((tier) => rarity >= tier.minPercent && rarity < tier.maxPercent) ?? COMMON_TIER;
 }
 
 export function getAchievementDetails(game: string, ownerId?: string): AchievementDetail[] {
@@ -16,10 +22,7 @@ export function getAchievementDetails(game: string, ownerId?: string): Achieveme
     unlocked: achievement.unlocked,
     unlockTime: achievement.unlockTime,
     rarity: achievement.rarity,
-    localRarity: 0,
     hidden: achievement.hidden,
-    iconUrl: '',
-    iconGrayUrl: '',
     isSecret: achievement.hidden,
     steamApiName: achievement.apiName,
     createdAt: achievement.createdAt,
@@ -32,6 +35,7 @@ export function getAchievementProgress(game: string, ownerId?: string): Achievem
   const unlocked = details.filter((achievement) => achievement.unlocked);
   const rarest = unlocked
     .map((achievement) => getRarityTier(achievement.rarity))
+    .filter((tier) => tier.tier !== 'unknown') // DUN-007: unknown rarity is never "rarest"
     .sort((a, b) => a.maxPercent - b.maxPercent)[0] ?? null;
   return {
     total: details.length,

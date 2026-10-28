@@ -41,7 +41,6 @@ export function scanStorage(root: string, lastPlayed: string | null = null): Omi
   const drive = path.parse(path.resolve(root)).root || root;
 
   return {
-    installBytes: 0,
     saveBytes: saveBytesByCategory.save + saveBytesByCategory.config + saveBytesByCategory.other,
     cacheBytes: saveBytesByCategory.cache,
     lastPlayed,

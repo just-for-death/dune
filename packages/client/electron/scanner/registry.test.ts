@@ -12,10 +12,8 @@ vi.mock('electron', () => ({
 }));
 vi.mock('axios', () => ({ default: { get: vi.fn(async () => { throw new Error('network disabled in tests'); }) } }));
 
-import { fullScan, scanSource, setSourceEnabled, getSources } from './registry.js';
+import { fullScan, gameRegistry } from './registry.js';
 import { dedupeGames } from './dedupe.js';
-import { autoDetectGames as legacyAutoDetect } from '../scanner.js';
-import { createSaveResolver, parseManifest } from './savePaths.js';
 
 const realHome = os.homedir();
 const savedEnv = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_DATA_HOME: process.env.XDG_DATA_HOME, GOG_GAMES_ROOTS: process.env.GOG_GAMES_ROOTS };
@@ -150,7 +148,7 @@ function assertNoInstallPathsInSaveFields(games: Game[]) {
 describe('registry fullScan', () => {
   it('builds the Steam source from the installed library, with manifest save paths', async () => {
     const opts = manifestOptions();
-    const games = await scanSource('steam', { ...opts, steamPath: steamRoot });
+    const games = (await fullScan([], { ...opts, steamPath: steamRoot })).filter(g => g.sourceId === 'steam');
     expect(opts.download).toHaveBeenCalledTimes(1);
     expect(games.map(g => g.name).sort()).toEqual(['Hollow Knight', 'Portal 2']);
     const hk = games.find(g => g.name === 'Hollow Knight')!;
@@ -173,8 +171,8 @@ describe('registry fullScan', () => {
   });
 
   it('scans every source with one manifest load, no install paths in save fields, and dedupes', async () => {
-    setSourceEnabled('lutris', true);
-    setSourceEnabled('gog', true);
+    gameRegistry.getSource('lutris')!.enabled = true;
+    gameRegistry.getSource('gog')!.enabled = true;
     try {
       const opts = manifestOptions();
       const games = await fullScan([], { ...opts, steamPath: steamRoot });
@@ -209,11 +207,11 @@ describe('registry fullScan', () => {
       expect(gog[0]).toMatchObject({ source: 'heroic', heroicId: 'heroic-gog', linPath: path.join(home, '.local', 'share', 'GOGGame') });
 
       // Sources survive a full scan (previously registry.clear() dropped them).
-      expect(getSources().length).toBeGreaterThan(0);
-      expect(getSources().find(s => s.id === 'steam')?.gameCount).toBe(2);
+      expect(gameRegistry.getAllSources().length).toBeGreaterThan(0);
+      expect(gameRegistry.getAllSources().find(s => s.id === 'steam')?.gameCount).toBe(2);
     } finally {
-      setSourceEnabled('lutris', false);
-      setSourceEnabled('gog', false);
+      gameRegistry.getSource('lutris')!.enabled = false;
+      gameRegistry.getSource('gog')!.enabled = false;
     }
   });
 
@@ -236,15 +234,6 @@ describe('registry fullScan', () => {
       expect(g.linPath).toBe('');
       expect(g.winPath).toBe('');
     }
-  });
-});
-
-describe('legacy electron/scanner.ts entry point', () => {
-  it('is a thin re-export of the shared manifest scanner', async () => {
-    const resolver = createSaveResolver(parseManifest(MANIFEST_YAML)!, { home, env: {}, platform: 'linux' });
-    const found = await legacyAutoDetect([], { resolver });
-    expect(found.map(g => g.name)).toContain('Unrelated Game');
-    expect(found.find(g => g.name === 'Unrelated Game')?.linPath).toBe(path.join(home, '.local', 'share', 'Unrelated'));
   });
 });
 

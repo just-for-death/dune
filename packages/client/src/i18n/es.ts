@@ -291,6 +291,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   'rarity.rare': 'Raro',
   'rarity.ultraRare': 'Ultrarraro',
   'rarity.uncommon': 'Poco común',
+  'rarity.unknown': 'Rareza desconocida',
   'restore.button': 'Restaurar desde el servidor',
   'restore.complete': 'Restauración completa',
   'restore.confirm': 'Pulsa otra vez para sobrescribir las partidas locales',

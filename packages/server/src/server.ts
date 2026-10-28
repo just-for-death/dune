@@ -38,7 +38,7 @@ if (process.versions.node) {
 }
 
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime, getPlaytimeGraphData, getPlaytimeComparison, exportPlaytimeData } from './services/playtime.js';
-import { getGameAchievements, getAchievementSummary, getRecentUnlocks, upsertAchievements } from './services/achievements.js';
+import { getAchievementSummary, getRecentUnlocks, upsertAchievements } from './services/achievements.js';
 import { getAchievementDetails, getAchievementProgress } from './services/achievementDetail.js';
 import { getHLTBTimes } from './services/hltb.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels, storedOllamaConfig } from './services/ollama.js';
@@ -390,14 +390,6 @@ app.get('/api/achievements/recent', authMiddleware, (req: AuthenticatedRequest, 
   }
 });
 
-app.get('/api/achievements/:game', authMiddleware, (req: AuthenticatedRequest, res) => {
-  try {
-    res.json({ success: true, achievements: getGameAchievements(req.params.game.toString(), ownerScope(req)) });
-  } catch (e) {
-    restError(req, res, e, 'API internal error');
-  }
-});
-
 app.get('/api/achievements/detail/:game', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     const game = req.params.game.toString();
@@ -454,7 +446,8 @@ app.get('/api/search-art', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/api/auto-match-all', authMiddleware, async (req: AuthenticatedRequest, res) => {
+// DUN-113: writes thumbnails, so POST only. Same auth as before: any user, own games only.
+app.post('/api/auto-match-all', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     const games = req.user ? database.getGamesForUser(req.user) : [];
     const matched = await withSteamGridKey((apiKey) => autoMatchAll(apiKey, games));

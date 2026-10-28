@@ -183,16 +183,6 @@ export function getLutrisWineVersion(game: Partial<LutrisGame>): string | null {
 }
 
 /**
- * Get Lutris executable path for a game (for launching).
- */
-export function getLutrisGameLaunchCommand(game: Partial<LutrisGame>): string[] | null {
-  const lutrisExe = getLutrisExecutable();
-  if (!lutrisExe) return null;
-  
-  return [lutrisExe, 'lutris:rungame/' + game.slug];
-}
-
-/**
  * Check if Lutris is installed and configured.
  */
 export function isLutrisAvailable(): boolean {
