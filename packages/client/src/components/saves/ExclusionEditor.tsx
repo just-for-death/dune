@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { BackupProfile } from '@dune/shared';
 import { useI18n } from '../../i18n/context';
+import { formatBytes } from '../../services/format';
 import type { MessageKey } from '../../i18n';
 import { CATEGORY_GLOBS, type CategorizedSaveFile, type SaveFileCategory } from '../../services/saveFiles';
 
@@ -18,13 +19,6 @@ const CATEGORY_KEYS: Record<Category, MessageKey> = {
   Cache: 'exclusions.category.cache',
   Other: 'exclusions.category.other',
 };
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
-}
 
 function excludedFromProfile(profile: BackupProfile): Set<Category> {
   const excluded = new Set<Category>();

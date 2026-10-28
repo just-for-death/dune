@@ -2,6 +2,7 @@ import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, SyntheticEvent } from 'react';
 import type { ConflictRecord, SaveVersion } from '@dune/shared';
 import { useI18n } from '../../i18n/context';
+import { formatBytes } from '../../services/format';
 
 type Resolution = 'local' | 'remote' | 'both' | 'later';
 
@@ -15,13 +16,6 @@ interface Props {
 }
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
-}
 
 function VersionDetails({ version }: { version?: SaveVersion }) {
   const { locale, t, tc } = useI18n();
