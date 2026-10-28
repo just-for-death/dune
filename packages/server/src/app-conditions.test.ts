@@ -217,7 +217,7 @@ describe('D. adversarial app conditions', () => {
   });
 });
 
-describe('E. new-module wiring (config hot-reload + folder scan)', () => {
+describe('E. new-module wiring (config hot-reload)', () => {
   it('config manager persists updates and cleans up watchers', async () => {
     const { initConfig } = await import('./utils/config.js');
     const mgr = initConfig(path.join(TMP, 'config', 'dune.config.json'));
@@ -235,19 +235,4 @@ describe('E. new-module wiring (config hot-reload + folder scan)', () => {
     }
   });
 
-  it('folder tracker finds a fake steam game by markers', async () => {
-    const { FolderTracker } = await import('./services/folderTracker.js');
-    const root = path.join(TMP, 'steam-mount', 'steamapps', 'common');
-    const fake = path.join(root, 'FakeQuest');
-    fs.mkdirSync(path.join(fake, 'saves'), { recursive: true });
-    fs.writeFileSync(path.join(fake, 'game.exe'), 'MZ');
-    const tracker = new FolderTracker({ watchDirs: [root] });
-    try {
-      const folder = await tracker.scanDirectory(root);
-      expect(folder).not.toBeNull();
-      expect(folder?.gameFolders.map((g) => g.name)).toContain('FakeQuest');
-    } finally {
-      tracker.stop();
-    }
-  });
 });

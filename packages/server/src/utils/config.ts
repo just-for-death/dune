@@ -11,15 +11,6 @@ export interface DuneConfig {
     savesDir: string;
     backupDir: string;
     hltbCacheDir: string;
-    watchDirs?: string[];
-  };
-  ollama: {
-    endpoint: string;
-    model: string;
-  };
-  ollamaAI: {
-    enabled: boolean;
-    timeout: number;
   };
   sync: {
     maxVersions: number;
@@ -41,14 +32,6 @@ const DEFAULT_CONFIG: DuneConfig = {
     savesDir: 'data/saves',
     backupDir: 'data/backups',
     hltbCacheDir: 'data/hltb-cache',
-  },
-  ollama: {
-    endpoint: 'http://localhost:11434',
-    model: 'phi4-mini:latest',
-  },
-  ollamaAI: {
-    enabled: true,
-    timeout: 60000,
   },
   sync: {
     maxVersions: 10,
@@ -284,8 +267,6 @@ export function getConfig(): DuneConfig {
 export const config = {
   get server() { return getConfig().server; },
   get data() { return getConfig().data; },
-  get ollama() { return getConfig().ollama; },
-  get ollamaAI() { return getConfig().ollamaAI; },
   get sync() { return getConfig().sync; },
   get client() { return getConfig().client; },
 };

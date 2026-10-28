@@ -17,7 +17,7 @@ export function encodeHeaderValue(value: string): string {
  * (ASCII by construction) and is not encoded; the server reads it raw.
  */
 export function uploadFileHeaders(gameName: string, relativePath: string, syncId: string): Record<string, string> {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(syncId)) throw new Error('Invalid sync id');
+  if (!/^\d{1,20}$/.test(syncId)) throw new Error('Invalid sync id');
   return {
     'x-game': encodeHeaderValue(gameName),
     'x-path': encodeHeaderValue(relativePath),

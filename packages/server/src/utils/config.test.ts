@@ -116,7 +116,6 @@ describe('ConfigManager', () => {
     expect(config.sync.maxVersions).toBeGreaterThan(0);
     expect(config.data.savesDir).toContain('saves');
     expect(typeof config.client.minimizeToTray).toBe('boolean');
-    expect(typeof config.ollamaAI.timeout).toBe('number');
     expect('steamGridDb' in config).toBe(false); // DUN-092: never in the config file
   });
 });

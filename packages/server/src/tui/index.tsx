@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { render, Text, Box, useInput, useApp } from 'ink';
 import { getConfig } from '../utils/config.js';
-import { getTrackedFolders } from '../services/folderTracker.js';
 import { database } from '../db/index.js';
 import { steamGridKeyStatus } from '../services/providerKeys.js';
 
-type ViewName = 'dashboard' | 'games' | 'sync' | 'settings' | 'folder-tracker' | 'logs';
+type ViewName = 'dashboard' | 'games' | 'sync' | 'settings' | 'logs';
 
 interface LogEntry {
   time: string;
@@ -17,13 +16,12 @@ interface AppState {
   currentView: ViewName;
   selectedGame: string | null;
   games: Array<{ id: number | string; name: string; status?: string; platform?: string; lastSync?: string }>;
-  folders: Array<{ id: string; name: string; path: string; platform: string; gameFolders?: unknown[] }>;
   syncStatus: 'idle' | 'syncing' | 'success' | 'error';
   logs: LogEntry[];
   showHelp: boolean;
 }
 
-const VIEWS: ViewName[] = ['dashboard', 'games', 'sync', 'settings', 'folder-tracker', 'logs'];
+const VIEWS: ViewName[] = ['dashboard', 'games', 'sync', 'settings', 'logs'];
 
 function safeGetConfig(): ReturnType<typeof getConfig> {
   try {
@@ -32,7 +30,6 @@ function safeGetConfig(): ReturnType<typeof getConfig> {
     return {
       server: { port: 3030, host: '0.0.0.0' },
       sync: { autoSync: false, syncInterval: 300000, maxVersions: 10 },
-      ollama: { endpoint: 'http://localhost:11434', model: 'phi4-mini:latest' },
     } as ReturnType<typeof getConfig>;
   }
 }
@@ -43,8 +40,7 @@ function Header({ currentView }: { currentView: ViewName }) {
     { key: '2', label: 'Games', view: 'games' },
     { key: '3', label: 'Sync', view: 'sync' },
     { key: '4', label: 'Settings', view: 'settings' },
-    { key: '5', label: 'Folders', view: 'folder-tracker' },
-    { key: '6', label: 'Logs', view: 'logs' },
+    { key: '5', label: 'Logs', view: 'logs' },
   ];
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="cyan" paddingX={1}>
@@ -77,10 +73,6 @@ function DashboardView({ state }: { state: AppState }) {
         <Box borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1} marginRight={1}>
           <Text bold>{state.games.length}</Text>
           <Text color="gray"> Tracked Games</Text>
-        </Box>
-        <Box borderStyle="round" borderColor="green" paddingX={2} paddingY={1} marginRight={1}>
-          <Text bold>{state.folders.length}</Text>
-          <Text color="gray"> Folders</Text>
         </Box>
         <Box borderStyle="round" borderColor="yellow" paddingX={2} paddingY={1}>
           <Text bold>{state.syncStatus.toUpperCase()}</Text>
@@ -200,51 +192,11 @@ function SettingsView({ cfg }: { cfg: ReturnType<typeof getConfig> }) {
         </Box>
       </Box>
       <Box borderStyle="round" borderColor="cyan" padding={1} marginTop={1} flexDirection="column">
-        <Text bold>Ollama AI</Text>
-        <Box flexDirection="row">
-          <Text>Endpoint: </Text>
-          <Text color="cyan">{cfg.ollama.endpoint}</Text>
-        </Box>
-        <Box flexDirection="row">
-          <Text>Model: </Text>
-          <Text color="cyan">{cfg.ollama.model}</Text>
-        </Box>
-      </Box>
-      <Box borderStyle="round" borderColor="cyan" padding={1} marginTop={1} flexDirection="column">
         <Text bold>SteamGridDB</Text>
         <Box flexDirection="row">
           <Text>API Key: </Text>
           <Text color={sgdbSet ? 'green' : 'red'}>{sgdbSet ? 'Set' : 'Not Set'}</Text>
         </Box>
-      </Box>
-    </Box>
-  );
-}
-
-function FolderTrackerView({ state }: { state: AppState }) {
-  return (
-    <Box flexDirection="column" padding={1}>
-      <Box flexDirection="row">
-        <Text bold>Folder Tracker</Text>
-        <Text color="gray"> Monitors game folders for changes</Text>
-      </Box>
-      <Box borderStyle="round" borderColor="cyan" padding={1} marginTop={1} flexDirection="column">
-        <Text bold>Tracked Folders:</Text>
-        {state.folders.length === 0 ? (
-          <Text color="gray">No folders tracked yet. Add watch directories in config.</Text>
-        ) : (
-          state.folders.map((folder) => (
-            <Box key={folder.id} flexDirection="row">
-              <Box width={32}>
-                <Text color="cyan">{folder.name.slice(0, 30)}</Text>
-              </Box>
-              <Box width={12}>
-                <Text color="yellow">{folder.platform.slice(0, 10)}</Text>
-              </Box>
-              <Text color="gray">{folder.gameFolders?.length ?? 0} games</Text>
-            </Box>
-          ))
-        )}
       </Box>
     </Box>
   );
@@ -279,7 +231,7 @@ function LogsView({ state }: { state: AppState }) {
 function HelpView() {
   const rows: Array<[string, string]> = [
     ['Tab', 'Switch views'],
-    ['1-6', 'Switch views'],
+    ['1-5', 'Switch views'],
     ['H', 'Toggle help'],
     ['Q / Ctrl+C', 'Quit'],
     ['S', 'Start sync'],
@@ -310,7 +262,6 @@ export default function App() {
     currentView: 'dashboard',
     selectedGame: null,
     games: [],
-    folders: [],
     syncStatus: 'idle',
     logs: [],
     showHelp: false,
@@ -332,26 +283,15 @@ export default function App() {
     }
   }, [addLog]);
 
-  const refreshFolders = useCallback(() => {
-    try {
-      const folders = getTrackedFolders();
-      setState((prev) => ({ ...prev, folders }));
-    } catch (error) {
-      addLog('error', `Failed to load folders: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }, [addLog]);
-
   useEffect(() => {
     refreshGames();
-    refreshFolders();
     setState((prev) => ({
       ...prev,
       logs: [
         { time: new Date().toLocaleTimeString(), level: 'info', message: 'Dune TUI started' },
-        { time: new Date().toLocaleTimeString(), level: 'info', message: 'Folder tracker initialized' },
       ],
     }));
-  }, [refreshGames, refreshFolders]);
+  }, [refreshGames]);
 
   const handleSync = useCallback(async () => {
     setState((prev) => ({ ...prev, syncStatus: 'syncing' }));
@@ -404,7 +344,6 @@ export default function App() {
     }
     if (lower === 'r') {
       refreshGames();
-      refreshFolders();
       return;
     }
     if (lower === 's') {
@@ -416,8 +355,7 @@ export default function App() {
       '2': 'games',
       '3': 'sync',
       '4': 'settings',
-      '5': 'folder-tracker',
-      '6': 'logs',
+      '5': 'logs',
     };
     const next = viewByKey[input];
     if (next) {
@@ -435,8 +373,6 @@ export default function App() {
         return <SyncView state={state} cfg={cfg} />;
       case 'settings':
         return <SettingsView cfg={cfg} />;
-      case 'folder-tracker':
-        return <FolderTrackerView state={state} />;
       case 'logs':
         return <LogsView state={state} />;
       default:
@@ -449,7 +385,7 @@ export default function App() {
       <Header currentView={state.currentView} />
       {state.showHelp ? <HelpView /> : renderCurrentView()}
       <Box paddingX={1}>
-        <Text color="gray">Tab: switch | 1-6: views | S: sync | R: refresh | H: help | Q: quit</Text>
+        <Text color="gray">Tab: switch | 1-5: views | S: sync | R: refresh | H: help | Q: quit</Text>
       </Box>
     </Box>
   );

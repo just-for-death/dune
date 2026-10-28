@@ -26,8 +26,12 @@ describe('uploadFileHeaders', () => {
     expect(uploadFileHeaders('100% Orange Juice', 'a.sav', '1')['x-game']).toBe('100%25%20Orange%20Juice');
   });
 
-  it('rejects a non-ASCII or empty sync id', () => {
+  it('accepts only 1-20 decimal digits as the sync id (server rule)', () => {
     expect(() => uploadFileHeaders('G', 'a', '')).toThrow();
     expect(() => uploadFileHeaders('G', 'a', 'id™')).toThrow();
+    expect(() => uploadFileHeaders('G', 'a', 'abc')).toThrow();
+    expect(() => uploadFileHeaders('G', 'a', '12-3')).toThrow();
+    expect(() => uploadFileHeaders('G', 'a', '1'.repeat(21))).toThrow();
+    expect(() => uploadFileHeaders('G', 'a', '1'.repeat(20))).not.toThrow();
   });
 });
