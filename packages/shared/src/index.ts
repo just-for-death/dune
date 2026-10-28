@@ -468,7 +468,6 @@ export type FetchArtResult = ServerResult<{ thumbnail: string }>;
 /** DUN-092: provider keys are write-only; the server answers `{ set }` only. */
 export type ProviderKeyStatusResult = ServerResult<{ set: boolean }>;
 
-/** DUN-073: the local Dune Server API key is write-only too. `unreadable`: stored but can't be decrypted. */
 /**
  * One save/config location from the Ludusavi manifest (getManifestSuggestions). `path` is absolute plain
  * text expanded on this machine, filtered to the home dir, the game's installPath or its prefix; `exists`
@@ -476,6 +475,7 @@ export type ProviderKeyStatusResult = ServerResult<{ set: boolean }>;
  */
 export interface ManifestSuggestion { path: string; kind: 'save' | 'config'; exists: boolean }
 
+/** DUN-073: the local Dune Server API key is write-only too. `unreadable`: stored but can't be decrypted. */
 export type ServerKeyStatus = { set: boolean; unreadable?: true };
 
 /** DUN-028: opt-in update checks; download and install only on a click. */
@@ -634,6 +634,13 @@ export interface ElectronAPI {
    * Settings.manifestEnabled is on, a local manifest fetch otherwise. Paths are expanded on this machine.
    */
   getManifestSuggestions(gameId: string): Promise<ServerResult<{ suggestions: ManifestSuggestion[]; attribution: string; pageUrl: string | null; stale?: true }>>;
+  /**
+   * Set a game's save path for this platform (linPath on Linux, winPath on Windows), e.g. a confirmed
+   * manifest suggestion. Main checks it like the suggestions (absolute and expanded, no `..`, inside home,
+   * the game's installPath or its prefix, also after symlinks). Codes: INVALID_GAME_ID, INVALID_SAVE_PATH,
+   * GAME_NOT_FOUND, SAVE_PATH_ESCAPE, SAVE_PATH_OUTSIDE_ROOTS, SAVE_PATH_ERROR. Never touches save files.
+   */
+  setSavePath(gameId: number, path: string): Promise<ServerResult<{ game: Game }>>;
   
   // Ollama
   /** DUN-095/057: the server uses its stored endpoint only (admin-only). */

@@ -254,6 +254,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // App updates (DUN-028). Manual release check: always runs (the click is the opt-in).
   checkForUpdates: (opts?: { force?: boolean }) =>
     ipcRenderer.invoke('updates:checkRelease', opts),
+
+  // Save-path suggestions (Ludusavi manifest): main expands and checks every path; nothing is applied here.
+  getManifestSuggestions: (gameId: string) =>
+    ipcRenderer.invoke('manifest:suggestions', gameId),
+  setSavePath: (gameId: number, savePath: string) =>
+    ipcRenderer.invoke('game:setSavePath', gameId, savePath),
   getUpdateStatus: () =>
     ipcRenderer.invoke('updates:status'),
   downloadUpdate: () =>

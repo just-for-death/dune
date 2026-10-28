@@ -38,6 +38,8 @@ import { ExclusionEditor } from './components/saves/ExclusionEditor';
 import { BigPicture } from './components/BigPicture';
 import { HLTBView } from './components/HLTBView';
 import { GamePathInfo, SourceBadge } from './components/GamePathInfo';
+import { SavePathSuggestions } from './components/manifest/SavePathSuggestions';
+import { savePathOf } from './services/gameInfo';
 import { buildSearchIndex, searchIndex } from './services/search';
 import { createLatestGate } from './services/latest';
 import { createSaveQueue } from './services/saveQueue';
@@ -212,6 +214,60 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number)
 }
 
 
+// ── Save-path suggestions (Saves tab) ───────────────────────────────────────
+// ElectronAPI has no save-path setter yet, so the suggestions only mount when
+// the bridge exposes one at runtime.
+
+type SavePathSetter = (gameId: number, path: string) => Promise<unknown>;
+
+// TODO(DUN shared setSavePath): delete this check once ElectronAPI declares
+// setSavePath, and call api.setSavePath directly.
+function savePathSetterOf(api: object | null | undefined): SavePathSetter | null {
+  if (!api || !('setSavePath' in api)) return null;
+  const setter = (api as Record<string, unknown>).setSavePath;
+  if (typeof setter !== 'function') return null;
+  return async (gameId, path) => {
+    const reply: unknown = await setter.call(api, gameId, path);
+    return reply;
+  };
+}
+
+/** A `{ ok: false }` reply from the setter counts as a failed apply. */
+function isFailedReply(res: unknown): boolean {
+  return typeof res === 'object' && res !== null && 'ok' in res && res.ok === false;
+}
+
+export interface SavePathSectionProps {
+  game: Pick<Game, 'id' | 'linPath' | 'winPath' | 'installPath'>;
+  api: ElectronAPI | null | undefined;
+  /** Reloads the game list after a path is applied. */
+  onApplied: () => Promise<unknown>;
+}
+
+/** Hook-free: renders nothing until the bridge has a save-path setter. */
+export function SavePathSection({ game, api, onApplied }: SavePathSectionProps) {
+  const setSavePath = savePathSetterOf(api);
+  if (!setSavePath) return null;
+  const onApply = async (path: string) => {
+    // Throwing makes the component show its own inline apply error.
+    if (isFailedReply(await setSavePath(game.id, path))) throw new Error('setSavePath failed');
+    await onApplied();
+  };
+  return (
+    <div className="card" style={{ minWidth: 0 }}>
+      <GamePathInfo game={game} />
+      <SavePathSuggestions
+        key={game.id}
+        gameId={String(game.id)}
+        currentSavePath={savePathOf(game)}
+        onApply={onApply}
+        api={api}
+        idPrefix={`save-path-${game.id}`}
+      />
+    </div>
+  );
+}
+
 export default function App() {
   const { locale, setLocale, t, tc } = useI18n();
   // Latest translators for long-lived callbacks (save queues, IPC listeners),
@@ -339,7 +395,8 @@ export default function App() {
   const selectedSaveGameName = games.some(game => game.name === selectedSaveGame)
     ? selectedSaveGame
     : (games[0]?.name ?? '');
-  const selectedSaveGameId = games.find(game => game.name === selectedSaveGameName)?.id ?? null;
+  const selectedSaveGameRecord = games.find(game => game.name === selectedSaveGameName) ?? null;
+  const selectedSaveGameId = selectedSaveGameRecord?.id ?? null;
 
   const achievementImportGameName = games.some(game => game.name === achievementImportGame)
     ? achievementImportGame
@@ -1733,6 +1790,9 @@ export default function App() {
             </>
             )}
           </div>
+        )}
+        {activeTab === 'saves' && selectedSaveGameRecord && (
+          <SavePathSection game={selectedSaveGameRecord} api={window.electronAPI} onApplied={loadConfig} />
         )}
         <ConflictModal conflict={conflictDialog?.conflict ?? null} localVersion={conflictDialog?.local} remoteVersion={conflictDialog?.remote} open={conflictDialog !== null} onClose={() => setConflictDialog(null)} onResolve={async (resolution) => {
           // Always acts on the conflict the dialog is showing, whatever game is selected now.

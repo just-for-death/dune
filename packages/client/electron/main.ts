@@ -33,6 +33,10 @@ import { createUpdateController, type UpdaterLike } from './system/updater'
 import { fetchArtViaServer } from './art/fetchArt'
 import { createElectronLocalProviders } from './providers/electron'
 import { createProviderRouting, type HltbIpcResult, type SearchArtIpcResult } from './providers/routing'
+import { buildExpandContext } from './manifest/expand'
+import { createLocalManifestLookup, type LocalManifestLookup } from './manifest/local'
+import { createManifestSuggestions } from './manifest/suggestions'
+import { setGameSavePath } from './manifest/savePath'
 import type { LocalProviders } from './providers/localProviders'
 import { isUpdateCheckEnabled } from './providers/updateFlag'
 import { getAchievementRoots, scanLocalAchievements } from './achievements/local'
@@ -1120,6 +1124,43 @@ ipcMain.handle('game:fetchArt', async (_event, id: unknown): Promise<FetchArtRes
   }
   return res
 })
+
+// Save-path suggestions (Ludusavi manifest; electron/manifest/**). Server first (its flag decides,
+// answers pass through); only an unreachable server falls back to the local provider, which runs
+// only when the local Settings.manifestEnabled is on. Paths are expanded and confined here; nothing
+// is applied until the user confirms one through game:setSavePath (which re-checks it).
+function manifestEnabledLocally(): boolean {
+  return (store.get('settings') as Settings | undefined)?.manifestEnabled === true
+}
+function manifestUserName(): string {
+  try { return os.userInfo().username } catch { return process.env.USER || 'user' }
+}
+function manifestContext(game: Game) {
+  return buildExpandContext(game, { home: app.getPath('home'), userName: manifestUserName(), env: process.env, resolveManagedPrefix: resolveManagedPrefixPath })
+}
+let localManifestLookup: LocalManifestLookup | null = null
+const getManifestSuggestions = createManifestSuggestions({
+  client: serverClient,
+  localEnabled: manifestEnabledLocally,
+  localLookup: (query) => {
+    localManifestLookup ??= createLocalManifestLookup({ userDataDir: app.getPath('userData'), fetch: net.fetch, enabled: manifestEnabledLocally })
+    return localManifestLookup(query)
+  },
+  findGame: async (id) => {
+    await gameStoreMigration
+    return ((store.get('games') || []) as Game[]).find((g) => g.id === id) ?? null
+  },
+  expandContext: manifestContext,
+})
+ipcMain.handle('manifest:suggestions', (_event, gameId: unknown) => getManifestSuggestions(gameId))
+ipcMain.handle('game:setSavePath', (_event, gameId: unknown, savePath: unknown) => setGameSavePath({
+  getGames: async () => {
+    await gameStoreMigration
+    return (store.get('games') || []) as Game[]
+  },
+  setGames: (games) => store.set('games', games),
+  expandContext: manifestContext,
+}, gameId, savePath))
 
 // ── NEW IPC Handlers for Server Integration ─────────────────────────────────────
 
