@@ -221,7 +221,19 @@ describe('REST shims happy paths', () => {
     expect(res.body.message).toMatch(/failed/i);
   });
 
+  it('search-art and auto-match-all are opt-in: 403 PROVIDER_DISABLED by default, no key read (FEAT-providers-2a)', async () => {
+    await api(request(app).post('/api/settings')).send({ artworkEnabled: false });
+    for (const r of [await api(request(app).get('/api/search-art?query=x')), await api(request(app).post('/api/auto-match-all'))]) {
+      expect(r.status).toBe(403);
+      expect(r.body).toEqual({ error: 'SteamGridDB artwork is disabled (Settings.artworkEnabled)', code: 'PROVIDER_DISABLED' });
+    }
+    expect((await api(request(app).post('/api/settings')).send({ artworkEnabled: 'yes' })).body).toMatchObject({ code: 'INVALID_SETTINGS' });
+    expect((await api(request(app).post('/api/settings')).send({ artworkEnabled: true })).status).toBe(200);
+    expect((await api(request(app).get('/api/settings'))).body.settings.artworkEnabled).toBe(true);
+  });
+
   it('search-art and auto-match-all require a SteamGridDB key', async () => {
+    await api(request(app).post('/api/settings')).send({ artworkEnabled: true });
     expect((await api(request(app).get('/api/search-art?query=x'))).status).toBe(400);
     expect((await api(request(app).get('/api/search-art'))).status).toBe(400);
     expect((await api(request(app).post('/api/auto-match-all'))).status).toBe(400);

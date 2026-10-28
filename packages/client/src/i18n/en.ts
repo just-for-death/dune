@@ -502,6 +502,7 @@ export const en = {
   'toast.dismiss': 'Dismiss notification',
   'toast.playtimeRecorded': 'Recorded {duration} for {game}',
   // where
+  'where.adminOnly': 'Only an admin can change this.',
   'where.heading': 'Where it runs',
   'where.needsAdmin': 'Needs an admin key',
   'where.noServer': 'Connect a Dune server to manage this',

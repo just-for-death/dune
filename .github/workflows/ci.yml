@@ -22,14 +22,20 @@ jobs:
       - name: Build shared
         run: npm run build:shared
 
+      - name: Build providers
+        run: npm run build:providers
+
       - name: Build server
         run: npm run build:server
 
-      - name: Lint server
+      - name: Lint providers, server and client
         run: npm run lint
 
       - name: Test shared
         run: npm run test --workspace=@dune/shared
+
+      - name: Test providers (with coverage gate)
+        run: npm run test:coverage --workspace=@dune/providers
 
       - name: Test server (with coverage gate)
         run: npm run test:coverage --workspace=@dune/server
@@ -56,6 +62,7 @@ jobs:
       - run: npm ci
 
       - run: npm run build:shared
+      - run: npm run build:providers
       - run: npm run build:client
 
       - name: Cache Playwright browsers

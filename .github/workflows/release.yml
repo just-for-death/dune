@@ -69,6 +69,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fakeroot
 
       - run: npm run build:shared
+      - run: npm run build:providers
       - run: npm run build:client
 
       - name: Package AppImage + deb

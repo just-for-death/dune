@@ -11,6 +11,7 @@ WORKDIR /build
 # .npmrc carries legacy-peer-deps (required for a clean install)
 COPY package.json package-lock.json .npmrc ./
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/providers/package.json ./packages/providers/
 COPY packages/server/package.json ./packages/server/
 COPY packages/client/package.json ./packages/client/
 RUN npm ci --ignore-scripts
@@ -19,6 +20,11 @@ RUN npm ci --ignore-scripts
 COPY packages/shared/tsconfig.json ./packages/shared/
 COPY packages/shared/src ./packages/shared/src
 RUN npm run build --workspace=@dune/shared
+
+# Providers next: server imports @dune/providers (outbound integrations)
+COPY packages/providers/tsconfig.json ./packages/providers/
+COPY packages/providers/src ./packages/providers/src
+RUN npm run build --workspace=@dune/providers
 
 COPY packages/server/tsconfig.json ./packages/server/
 COPY packages/server/src ./packages/server/src
@@ -49,6 +55,9 @@ COPY --from=backend-builder /build/node_modules ./node_modules
 RUN rm -rf ./node_modules/@dune/shared && mkdir -p ./node_modules/@dune/shared
 COPY --from=backend-builder /build/packages/shared/dist ./node_modules/@dune/shared/dist
 COPY --from=backend-builder /build/packages/shared/package.json ./node_modules/@dune/shared/package.json
+RUN rm -rf ./node_modules/@dune/providers && mkdir -p ./node_modules/@dune/providers
+COPY --from=backend-builder /build/packages/providers/dist ./node_modules/@dune/providers/dist
+COPY --from=backend-builder /build/packages/providers/package.json ./node_modules/@dune/providers/package.json
 
 # Built backend
 COPY --from=backend-builder /build/packages/server/dist ./dist

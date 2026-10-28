@@ -36,7 +36,7 @@ Transform Dune from a game-save sync tool into a **unified game hub** (like Play
 
 ## Competitive Feature Absorption (Hydra / Ascendara / Arcane)
 
-Dune should absorb the best ideas from these projects while staying focused on **legitimate library management + save sync + analytics**. Piracy/downloader features are explicitly out of scope.
+Dune should absorb the best ideas from these projects while staying focused on **legitimate library management + save sync + analytics**. Piracy stays out of scope. A content-agnostic download engine (http(s) only, ships with no bundled sources; user-added sources only) is in scope per docs/competitive-design.md (Lead ruling 2026-10-28).
 
 ### In scope to absorb
 
@@ -61,8 +61,8 @@ Dune should absorb the best ideas from these projects while staying focused on *
 
 ### Explicitly out of scope
 
-- Torrent or direct download of pirated games.
-- Scraping copyrighted game download sources.
+- Bundling, recommending or scraping copyrighted game download sources (the engine ships with none).
+- Torrent support.
 - Cloud-only lock-in.
 - Silent overwrite during sync conflicts.
 
@@ -73,7 +73,7 @@ Dune should absorb the best ideas from these projects while staying focused on *
 | Layer | Technology |
 |-------|------------|
 | Frontend | React 19, Vite 8, Electron 44, React 19, Ink 8 (TUI) |
-| Backend | Express 5, tRPC 11, Zod 4, Node 22+ |
+| Backend | Express 5 (REST), Zod 4, Node 22+ |
 | Database | SQLite (node:sqlite), existing schema extended |
 | Game Detection | Custom scanners for Steam, Heroic, Lutris |
 | Achievement Sources | Steam Web API, RetroAchievements API, local .ini parsers, GOG API, Epic API |
@@ -82,7 +82,7 @@ Dune should absorb the best ideas from these projects while staying focused on *
 | Launch Methods | Steam protocol, Heroic CLI, Lutris CLI, Steam protocol, Wine/Proton, umu-launcher |
 | Wine/Proton | umu-launcher, Proton-GE, Wine-GE, Proton-GE via umu |
 | Game Metadata | Steam Store API, SteamSpy, IGDB, Giant Bomb (via PlayniteAchievements reference) |
-| Build | Vite 8 (Rolldown), TypeScript 6, tRPC 11, Zod 4 |
+| Build | Vite 8 (Rolldown), TypeScript 6, Zod 4 |
 | Testing | Vitest (unit), Playwright (e2e), Vitest coverage 80/80/70/80 |
 
 ---
@@ -153,10 +153,9 @@ dune/
 │   │   │   └── scanner.ts      # Auto-detection logic
 │   │   └── build/              # electron-builder config
 │   │
-│   ├── server/                 # Express + tRPC server
+│   ├── server/                 # Express REST server
 │   │   ├── src/
 │   │   │   ├── routes/         # REST endpoints
-│   │   │   ├── trpc/           # tRPC routers
 │   │   │   ├── services/       # GameService, AchievementService, PrefixService, HLTBService, PlaytimeService, AchievementDetailService
 │   │   │   ├── db/             # SQLite schema + migrations
 │   │   │   └── server.ts       # Express entry
@@ -224,7 +223,7 @@ export function useGames() {
 | Level | Tool | Scope |
 |-------|------|-------|
 | Unit | Vitest | Pure functions (scanners, parsers, utils) |
-| Integration | Vitest | Services, tRPC routers, DB |
+| Integration | Vitest | Services, REST routes, DB |
 | e2e | Playwright | Electron app flows (launch, scan, sync) |
 | Coverage | Vitest | 80% statements, 80% branches, 70% functions, 80% lines |
 
@@ -234,7 +233,7 @@ export function useGames() {
 
 | Always Do | Ask First | Never Do |
 |-----------|-----------|----------|
-| Run `npm run lint` before commit | Schema changes (DB, tRPC) | Commit secrets |
+| Run `npm run lint` before commit | Schema changes (DB, REST API, shared contracts) | Commit secrets |
 | Write tests for new pure functions | Add new dependencies | Edit vendor dirs |
 | Update `CHANGELOG.md` per change | Change CI config | Remove failing tests |
 | Keep `CHANGELOG.md` current | Modify DB schema | Hardcode paths |

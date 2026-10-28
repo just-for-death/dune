@@ -18,6 +18,7 @@
     "tui:dev": "tsx watch src/tui/index.tsx"
   },
   "dependencies": {
+    "@dune/providers": "file:../providers",
     "@dune/shared": "file:../shared",
     "axios": "^1.7.0",
     "cors": "^2.8.5",

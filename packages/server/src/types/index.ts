@@ -56,6 +56,10 @@ export interface Settings {
   apiKeys: string[]; // Valid API keys for authentication
   localSources: LocalSource[];
   remoteServers: RemoteServer[];
+  /** Opt-in HowLongToBeat lookups; off (false) by default. Only `=== true` enables. */
+  hltbEnabled: boolean;
+  /** Opt-in SteamGridDB artwork lookups; off (false) by default. Only `=== true` enables. */
+  artworkEnabled: boolean;
 }
 
 export interface LocalSource {

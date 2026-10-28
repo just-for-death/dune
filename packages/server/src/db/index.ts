@@ -30,7 +30,10 @@ const defaultSettings: Settings = {
   ollamaModel: 'phi4-mini:latest',
   apiKeys: [],
   localSources: [],
-  remoteServers: []
+  remoteServers: [],
+  // Outbound providers are opt-in (no request leaves the server until enabled).
+  hltbEnabled: false,
+  artworkEnabled: false,
 };
 
 function readSettingsRow(): Settings {

@@ -42,7 +42,7 @@ import { getAchievementSummary, getRecentUnlocks, upsertAchievements } from './s
 import { getAchievementDetails, getAchievementProgress } from './services/achievementDetail.js';
 import { getHLTBTimes } from './services/hltb.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels, storedOllamaConfig } from './services/ollama.js';
-import { searchArt, autoMatchAll } from './services/steamGridDB.js';
+import { searchArt, autoMatchAll, requireArtworkEnabled } from './services/steamGridDB.js';
 import { withSteamGridKey, steamGridKeyStatus, setSteamGridKey, clearSteamGridKey } from './services/providerKeys.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -440,6 +440,7 @@ app.get('/api/search-art', authMiddleware, async (req, res) => {
   try {
     const { query } = req.query;
     if (!query) return sendError(res, 400, 'BAD_REQUEST', 'query required');
+    requireArtworkEnabled();
     res.json(await withSteamGridKey((apiKey) => searchArt(apiKey, query.toString())));
   } catch (e) {
     restError(req, res, e, 'API internal error');
@@ -449,6 +450,7 @@ app.get('/api/search-art', authMiddleware, async (req, res) => {
 // DUN-113: writes thumbnails, so POST only. Same auth as before: any user, own games only.
 app.post('/api/auto-match-all', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
+    requireArtworkEnabled();
     const games = req.user ? database.getGamesForUser(req.user) : [];
     const matched = await withSteamGridKey((apiKey) => autoMatchAll(apiKey, games));
     for (const m of matched) {
@@ -685,6 +687,8 @@ app.get('/api/settings', authMiddleware, (req, res) => {
         apiKeys: s.apiKeys.map(() => '****'),
         localSources: s.localSources,
         remoteServers: s.remoteServers,
+        hltbEnabled: s.hltbEnabled === true,
+        artworkEnabled: s.artworkEnabled === true,
       },
     });
   } catch (e) {
@@ -718,6 +722,12 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
       }
     }
     if (typeof input.ollamaModel === 'string') merged.ollamaModel = input.ollamaModel;
+    // Provider opt-ins: strictly boolean, never coerced ("true"/1 are rejected).
+    for (const flag of ['hltbEnabled', 'artworkEnabled'] as const) {
+      if (!(flag in input)) continue;
+      if (typeof input[flag] !== 'boolean') return sendError(res, 400, 'INVALID_SETTINGS', `${flag} must be true or false`);
+      merged[flag] = input[flag];
+    }
     database.saveSettings(merged);
     res.json({ success: true });
   } catch (e) {

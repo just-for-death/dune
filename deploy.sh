@@ -15,17 +15,21 @@ case "$cmd" in
   build)
     echo "==> Building @dune/shared…"
     npm run build --workspace=@dune/shared
+    echo "==> Building @dune/providers…"
+    npm run build --workspace=@dune/providers
     echo "==> Building @dune/server…"
     npm run build --workspace=@dune/server
     echo "==> Building @dune/client (vite)…"
     npm run build --workspace=@dune/client
     ;;
   test)
-    echo "==> Running server tests…"
+    echo "==> Running providers + server tests…"
+    npm run test --workspace=@dune/providers
     npm run test --workspace=@dune/server
     ;;
   lint)
-    echo "==> Linting server…"
+    echo "==> Linting providers + server…"
+    npm run lint --workspace=@dune/providers || true
     npm run lint --workspace=@dune/server || true
     ;;
   docker:build)

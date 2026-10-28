@@ -474,6 +474,7 @@ export const es: Partial<Record<MessageKey, string>> = {
   'toast.dismiss': 'Cerrar notificación',
   'toast.playtimeRecorded': 'Se registraron {duration} en {game}',
   // where
+  'where.adminOnly': 'Solo un administrador puede cambiar esto.',
   'where.heading': 'Dónde se ejecuta',
   'where.needsAdmin': 'Necesita una clave de administrador',
   'where.noServer': 'Conecta un servidor Dune para gestionar esto',

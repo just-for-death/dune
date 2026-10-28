@@ -47,7 +47,11 @@ afterAll(() => {
   delete process.env.LOG_LEVEL;
   fs.rmSync(TMP, { recursive: true, force: true });
 });
-beforeEach(() => { getMock.mockReset(); });
+beforeEach(() => {
+  getMock.mockReset();
+  // FEAT-providers-2a: artwork is opt-in; these tests exercise the enabled path.
+  database.saveSettings({ ...database.getSettings(), artworkEnabled: true });
+});
 
 /** Every byte the server persisted under DATA_DIR (DB + journal + anything else). */
 function allPersistedBytes(): string {
@@ -81,7 +85,7 @@ describe('SteamGridDB key (DUN-092)', () => {
     // Server-side use: the provider client receives the key as a Bearer token.
     getMock.mockImplementation(async (url: string) => {
       if (String(url).includes('autocomplete')) throw new Error(`upstream 401 for token ${KEY}`);
-      return { data: { success: false } };
+      return { status: 200, headers: {}, data: { success: false } };
     });
     const art = await admin(request(app).get('/api/search-art').query({ query: 'Hades' }));
     responses.push(JSON.stringify(art.body));

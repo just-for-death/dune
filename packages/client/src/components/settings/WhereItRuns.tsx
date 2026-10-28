@@ -16,6 +16,7 @@ import {
   type FailureInfo,
 } from '../../services/serverAdmin';
 import { ConfirmDialog } from './ConfirmDialog';
+import { isLockedForRole, useIsAdmin, type AdminState } from '../../services/currentUser';
 
 export { NEEDS_ADMIN };
 
@@ -29,6 +30,11 @@ interface Props {
   /** Element ids of the server address and key fields on this page. */
   serverUrlFieldId: string;
   serverKeyFieldId: string;
+  /**
+   * DUN-115: role override (tests, or a caller that already knows it).
+   * When omitted the role is fetched with getCurrentUser for this connection.
+   */
+  adminState?: AdminState;
 }
 
 type ListState<T> =
@@ -135,11 +141,20 @@ function SectionStatus({ message }: { message: string }) {
   return <p className="section-status" role="status" aria-live="polite">{message}</p>;
 }
 
+/**
+ * DUN-115: visible reason next to controls disabled for members. Plain text
+ * (not color), referenced by the controls via aria-describedby.
+ */
+function AdminOnlyNote({ id }: { id: string }) {
+  const { t } = useI18n();
+  return <p id={id} className="form-hint">{t('where.adminOnly')}</p>;
+}
+
 interface RowError { id: string | number; message: string }
 
 /* ── Sources ─────────────────────────────────────────────────────────────── */
 
-function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serverUrlFieldId: string }) {
+function SourcesSection({ enabled, serverUrlFieldId, locked }: { enabled: boolean; serverUrlFieldId: string; locked: boolean }) {
   const { t, tc } = useI18n();
   const { state, reload, setItems } = useServerList(enabled, loadSources);
   const [draft, setDraft] = useState('');
@@ -150,11 +165,11 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
   const [rowError, setRowError] = useState<RowError | null>(null);
   const [announce, setAnnounce] = useState('');
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const ids = { heading: useId(), input: useId(), hint: useId(), error: useId() };
+  const ids = { heading: useId(), input: useId(), hint: useId(), error: useId(), adminOnly: useId(), removeAdminOnly: useId() };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (adding) return;
+    if (adding || locked) return;
     const check = validateSourcePath(draft, state.items.map(s => s.path), t);
     if (!check.ok) { setFieldError(check.error); return; }
     setFieldError(null);
@@ -184,7 +199,7 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
     headingRef.current?.focus();
   };
 
-  const describedBy = [ids.hint, fieldError ? ids.error : null].filter(Boolean).join(' ');
+  const describedBy = [ids.hint, fieldError ? ids.error : null, locked ? ids.adminOnly : null].filter(Boolean).join(' ');
 
   return (
     <section className="card admin-card" aria-labelledby={ids.heading}>
@@ -205,9 +220,11 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                     type="button"
                     className="btn btn-secondary btn-sm"
                     aria-label={t('where.sources.removeLabel', { path: source.path })}
+                    disabled={locked || undefined}
+                    aria-describedby={locked ? ids.removeAdminOnly : undefined}
                     aria-disabled={removing === source.id || undefined}
                     aria-busy={removing === source.id || undefined}
-                    onClick={() => { if (removing !== source.id) setConfirm(source); }}
+                    onClick={() => { if (!locked && removing !== source.id) setConfirm(source); }}
                   >
                     {t('common.remove')}
                   </button>
@@ -215,6 +232,7 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
               ))}
             </ul>
           )}
+          {locked && state.items.length > 0 && <AdminOnlyNote id={ids.removeAdminOnly} />}
           {state.status !== 'error' && (
             <form className="admin-form" onSubmit={submit} noValidate>
               <div className="form-group">
@@ -233,8 +251,15 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                 />
                 <p id={ids.hint} className="form-hint">{t('where.sources.hint')}</p>
                 {fieldError && <p id={ids.error} className="error-text" role="alert">{fieldError}</p>}
+                {locked && <AdminOnlyNote id={ids.adminOnly} />}
               </div>
-              <button type="submit" className="btn btn-primary" aria-disabled={adding || undefined}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={locked || undefined}
+                aria-describedby={locked ? ids.adminOnly : undefined}
+                aria-disabled={adding || undefined}
+              >
                 {adding ? t('where.adding') : t('where.sources.add')}
               </button>
             </form>
@@ -258,7 +283,7 @@ function SourcesSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
 
 /* ── Servers ─────────────────────────────────────────────────────────────── */
 
-function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serverUrlFieldId: string }) {
+function ServersSection({ enabled, serverUrlFieldId, locked }: { enabled: boolean; serverUrlFieldId: string; locked: boolean }) {
   const { t, tc } = useI18n();
   const { state, reload, setItems } = useServerList(enabled, loadServers);
   const [draft, setDraft] = useState('');
@@ -269,11 +294,11 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
   const [rowError, setRowError] = useState<RowError | null>(null);
   const [announce, setAnnounce] = useState('');
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const ids = { heading: useId(), input: useId(), hint: useId(), error: useId(), testReason: useId() };
+  const ids = { heading: useId(), input: useId(), hint: useId(), error: useId(), testReason: useId(), adminOnly: useId(), removeAdminOnly: useId() };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (adding) return;
+    if (adding || locked) return;
     const check = validateRemoteServerUrl(draft, state.items.map(s => s.url), t);
     if (!check.ok) { setFieldError(check.error); return; }
     setFieldError(null);
@@ -303,7 +328,7 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
     headingRef.current?.focus();
   };
 
-  const describedBy = [ids.hint, fieldError ? ids.error : null].filter(Boolean).join(' ');
+  const describedBy = [ids.hint, fieldError ? ids.error : null, locked ? ids.adminOnly : null].filter(Boolean).join(' ');
 
   return (
     <section className="card admin-card" aria-labelledby={ids.heading}>
@@ -335,9 +360,11 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                       type="button"
                       className="btn btn-secondary btn-sm"
                       aria-label={t('where.servers.removeLabel', { url: server.url })}
+                      disabled={locked || undefined}
+                      aria-describedby={locked ? ids.removeAdminOnly : undefined}
                       aria-disabled={removing === server.id || undefined}
                       aria-busy={removing === server.id || undefined}
-                      onClick={() => { if (removing !== server.id) setConfirm(server); }}
+                      onClick={() => { if (!locked && removing !== server.id) setConfirm(server); }}
                     >
                       {t('common.remove')}
                     </button>
@@ -347,6 +374,7 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
             </ul>
           )}
           {state.items.length > 0 && <p id={ids.testReason} className="form-hint">{t('where.servers.testReason', { reason: t('where.notAvailableYet') })}</p>}
+          {locked && state.items.length > 0 && <AdminOnlyNote id={ids.removeAdminOnly} />}
           {state.status !== 'error' && (
             <form className="admin-form" onSubmit={submit} noValidate>
               <div className="form-group">
@@ -366,8 +394,15 @@ function ServersSection({ enabled, serverUrlFieldId }: { enabled: boolean; serve
                 />
                 <p id={ids.hint} className="form-hint">{t('where.servers.hint')}</p>
                 {fieldError && <p id={ids.error} className="error-text" role="alert">{fieldError}</p>}
+                {locked && <AdminOnlyNote id={ids.adminOnly} />}
               </div>
-              <button type="submit" className="btn btn-primary" aria-disabled={adding || undefined}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={locked || undefined}
+                aria-describedby={locked ? ids.adminOnly : undefined}
+                aria-disabled={adding || undefined}
+              >
                 {adding ? t('where.adding') : t('where.servers.add')}
               </button>
             </form>
@@ -607,16 +642,20 @@ function ApiKeysSection({ enabled, serverKeySet, serverUrlFieldId, serverKeyFiel
 }
 
 /** DUN-032: settings for what the Dune server scans, copies to, and which keys it accepts. */
-export function WhereItRuns({ serverUrl, serverKeySet, connectionVersion, serverUrlFieldId, serverKeyFieldId }: Props) {
+export function WhereItRuns({ serverUrl, serverKeySet, connectionVersion, serverUrlFieldId, serverKeyFieldId, adminState }: Props) {
   const { t } = useI18n();
   const enabled = serverUrl.trim() !== '';
   // Remount on connection change: lists reload and drafts/one-time keys are dropped.
   const key = enabled ? `${serverUrl}#${connectionVersion}` : 'no-server';
+  // DUN-115: disable server-wide writes only for a known member; 'unknown' keeps
+  // them enabled and the server's 403 (where.needsAdmin) explains instead.
+  const fetchedRole = useIsAdmin(enabled && adminState === undefined, key);
+  const locked = isLockedForRole(adminState ?? fetchedRole);
   return (
     <section className="where-it-runs" aria-labelledby="where-it-runs-heading">
       <h3 id="where-it-runs-heading" className="section-subtitle where-heading">{t('where.heading')}</h3>
-      <SourcesSection key={`sources-${key}`} enabled={enabled} serverUrlFieldId={serverUrlFieldId} />
-      <ServersSection key={`servers-${key}`} enabled={enabled} serverUrlFieldId={serverUrlFieldId} />
+      <SourcesSection key={`sources-${key}`} enabled={enabled} serverUrlFieldId={serverUrlFieldId} locked={locked} />
+      <ServersSection key={`servers-${key}`} enabled={enabled} serverUrlFieldId={serverUrlFieldId} locked={locked} />
       <ApiKeysSection key={`keys-${key}`} enabled={enabled} serverKeySet={serverKeySet} serverUrlFieldId={serverUrlFieldId} serverKeyFieldId={serverKeyFieldId} />
     </section>
   );

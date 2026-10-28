@@ -47,6 +47,7 @@ import { checkGameTitle } from './services/gameTitle';
 import { MAX_PREFIX_NAME, prefixFailureMessage, validateNewPrefixName } from './services/prefixes';
 import { ConfirmDialog } from './components/settings/ConfirmDialog';
 import { WhereItRuns } from './components/settings/WhereItRuns';
+import { isLockedForRole, useIsAdmin } from './services/currentUser';
 import { NoServerNotice } from './components/NoServerNotice';
 import { PrivacyToggles } from './components/settings/PrivacyToggles';
 import { artworkDisabledMessage, isArtworkDisabled } from './components/settings/privacyToggleHelpers';
@@ -1041,6 +1042,10 @@ export default function App() {
   }, [activeTab]);
 
   const hasServer = isValidUrl(cloud.url);
+  // DUN-115: role fetched once here and shared with WhereItRuns. Only a known
+  // member is locked out; 'unknown' keeps controls on and the server's 403 explains.
+  const adminState = useIsAdmin(hasServer, `${cloud.url}#${serverConnectionVersion}`);
+  const adminLocked = isLockedForRole(adminState);
 
   useEffect(() => {
     if (activeTab !== 'settings' || !hasServer) return;
@@ -1938,7 +1943,7 @@ export default function App() {
               {!hasServer ? (
                 <p className="text-muted text-sm">{t('settings.steamGridNeedsServer')}</p>
               ) : (
-                <form noValidate onSubmit={e => { e.preventDefault(); void handleSaveSteamGridKey(); }}>
+                <form noValidate onSubmit={e => { e.preventDefault(); if (!adminLocked) void handleSaveSteamGridKey(); }}>
                   <p id="steamgriddb-key-status" className="key-status-line" role="status" aria-live="polite">
                     {formatRich(t('settings.steamGridKeyStatus'), {
                       status: (
@@ -1960,14 +1965,30 @@ export default function App() {
                       data-lpignore="true"
                       className={`masked-input${steamGridKeyError ? ' input-error' : ''}`}
                       aria-invalid={steamGridKeyError ? true : undefined}
-                      aria-describedby={steamGridKeyError ? 'steamgriddb-key-status steamgriddb-key-error' : 'steamgriddb-key-status steamgriddb-key-hint'}
+                      aria-describedby={`${steamGridKeyError ? 'steamgriddb-key-status steamgriddb-key-error' : 'steamgriddb-key-status steamgriddb-key-hint'}${adminLocked ? ' steamgriddb-key-admin-only' : ''}`}
                       value={steamGridKeyDraft}
                       onChange={e => { setSteamGridKeyDraft(e.target.value); if (steamGridKeyError) setSteamGridKeyError(null); }}
                       placeholder={steamGridKeySet ? t('settings.steamGridReplacePlaceholder') : t('settings.steamGridPlaceholder')}
                     />
-                    <button type="submit" className="btn btn-secondary" aria-disabled={steamGridKeyBusy || undefined}>{t('settings.steamGridSave')}</button>
+                    <button
+                      type="submit"
+                      className="btn btn-secondary"
+                      disabled={adminLocked || undefined}
+                      aria-describedby={adminLocked ? 'steamgriddb-key-admin-only' : undefined}
+                      aria-disabled={steamGridKeyBusy || undefined}
+                    >
+                      {t('settings.steamGridSave')}
+                    </button>
                     {steamGridKeySet && (
-                      <button type="button" className="btn btn-secondary" disabled={steamGridKeyBusy} onClick={() => setConfirmClearSteamGridKey(true)}>{t('settings.clearKey')}</button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={steamGridKeyBusy || adminLocked}
+                        aria-describedby={adminLocked ? 'steamgriddb-key-admin-only' : undefined}
+                        onClick={() => { if (!adminLocked) setConfirmClearSteamGridKey(true); }}
+                      >
+                        {t('settings.clearKey')}
+                      </button>
                     )}
                   </div>
                   {steamGridKeyError ? (
@@ -1975,6 +1996,7 @@ export default function App() {
                   ) : (
                     <p id="steamgriddb-key-hint" className="form-hint">{t('settings.steamGridKeyHint')}</p>
                   )}
+                  {adminLocked && <p id="steamgriddb-key-admin-only" className="form-hint">{t('where.adminOnly')}</p>}
                 </form>
               )}
               <ConfirmDialog
@@ -2122,6 +2144,7 @@ export default function App() {
               connectionVersion={serverConnectionVersion}
               serverUrlFieldId="server-url"
               serverKeyFieldId="server-api-key"
+              adminState={adminState}
             />
 
             <div className="card">

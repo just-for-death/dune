@@ -576,7 +576,28 @@ describe('DUN-103: backup profiles validate globs and apply autoExcludeCache', (
 
 // ── DUN-105 (route) ──────────────────────────────────────────────────────────
 describe('DUN-105: HLTB route', () => {
+  it('is opt-in: off by default -> PROVIDER_DISABLED with no outbound request; flag must be boolean', async () => {
+    getMock.mockClear();
+    postMock.mockClear();
+    const settings = await api(request(app).get('/api/settings'));
+    expect(settings.body.settings).toMatchObject({ hltbEnabled: false, artworkEnabled: false });
+    const off = await api(request(app).get('/api/hltb/Offline%20Game'));
+    expect(off.status).toBe(200);
+    expect(off.body).toMatchObject({ success: false, code: 'PROVIDER_DISABLED' });
+    expect(getMock).not.toHaveBeenCalled();
+    expect(postMock).not.toHaveBeenCalled();
+    for (const bad of ['true', 1, null]) {
+      const r = await api(request(app).post('/api/settings')).send({ hltbEnabled: bad });
+      expect(r.status).toBe(400);
+      expect(r.body).toMatchObject({ code: 'INVALID_SETTINGS' });
+    }
+    const on = await api(request(app).post('/api/settings')).send({ hltbEnabled: true });
+    expect(on.status).toBe(200);
+    expect((await api(request(app).get('/api/settings'))).body.settings.hltbEnabled).toBe(true);
+  });
+
   it('rejects an invalid title with 400 and reports a typed failure offline', async () => {
+    await api(request(app).post('/api/settings')).send({ hltbEnabled: true });
     const bad = await api(request(app).get(`/api/hltb/${encodeURIComponent('bad\u0001title')}`));
     expect(bad.status).toBe(400);
     const res = await api(request(app).get('/api/hltb/Offline%20Game'));

@@ -433,6 +433,8 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         srv.keys = srv.keys.filter((k) => k.id !== id);
         return { ok: true, success: true };
       },
+      // DUN-115: signed-in user; admin so server-wide controls stay enabled (403 fallback still covers srv.admin=false).
+      getCurrentUser: async () => ({ ok: true, id: 'u1', name: 'Admin', role: 'admin' }),
       launchGame: async (gameId: number) => {
         const game = store.games.find((g) => g.id === gameId);
         calls.push({ method: 'launchGame', args: [gameId] });

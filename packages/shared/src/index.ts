@@ -95,6 +95,8 @@ export interface Settings {
   trackersEnabled?: TrackersEnabled;
   /** SteamGridDB artwork lookups; off until the user turns them on. Backend reads the same flag. */
   artworkEnabled?: boolean;
+  /** HowLongToBeat lookups; off until the user turns them on (server default false, enabled only when === true). */
+  hltbEnabled: boolean;
 }
 
 /** Per-tracker opt-in; every field defaults to false. */

@@ -1,11 +1,15 @@
-import axios from 'axios';
+/**
+ * Server adapter over @dune/providers' SteamGridDB provider (FEAT-providers-2a).
+ * Owns only what is server-specific: the opt-in flag (Settings.artworkEnabled
+ * must be exactly true), the axios transport, pino logging and the legacy
+ * route contract. The key comes from providerKeys (withSteamGridKey) per call
+ * and is never stored, logged or returned here.
+ */
+import { createSteamGridDbProvider, type ProviderFailure, type SteamGridDbProvider } from '@dune/providers';
+import { database } from '../db/index.js';
 import { logger, redactText } from '../middleware/logging.js';
-
-/** DUN-092: an error message must never carry the key, even if a library echoes it. */
-function safeMessage(error: unknown, apiKey: string): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return redactText(apiKey ? message.split(apiKey).join('[REDACTED]') : message);
-}
+import { ApiError } from '../utils/apiError.js';
+import { axiosTransport } from './providerTransport.js';
 
 export interface SteamGridDBResponse {
   success: boolean;
@@ -13,75 +17,61 @@ export interface SteamGridDBResponse {
   message?: string;
 }
 
+/** Opt-in: only Settings.artworkEnabled === true lets any SteamGridDB request happen. */
+export function artworkEnabled(): boolean {
+  return database.getSettings().artworkEnabled === true;
+}
+
+/** Route guard: 403 PROVIDER_DISABLED ({error, code}) before the key is even read. */
+export function requireArtworkEnabled(): void {
+  if (!artworkEnabled()) throw new ApiError(403, 'PROVIDER_DISABLED', 'SteamGridDB artwork is disabled (Settings.artworkEnabled)');
+}
+
+function provider(apiKey: string): SteamGridDbProvider {
+  return createSteamGridDbProvider({ transport: axiosTransport, enabled: artworkEnabled, key: () => apiKey, logger });
+}
+
+/** DUN-092: messages are already redacted by the provider; scrub again in case. */
+function safeMessage(r: ProviderFailure, apiKey: string): string {
+  return redactText(apiKey ? r.message.split(apiKey).join('[REDACTED]') : r.message);
+}
+
+function failed(r: ProviderFailure, apiKey: string, fields: Record<string, unknown>, msg: string): void {
+  if (r.code === 'PROVIDER_DISABLED') requireArtworkEnabled();
+  logger.warn({ err: safeMessage(r, apiKey), code: r.code, ...fields }, msg);
+}
+
 export async function searchGame(apiKey: string, query: string): Promise<{ id: number; name: string } | null> {
-  try {
-    const response = await axios.get(
-      `https://www.steamgriddb.com/api/v2/search/autocomplete/${encodeURIComponent(query)}`,
-      { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 10000 }
-    );
-    
-    if (!response.data.success || !response.data.data || response.data.data.length === 0) {
-      return null;
-    }
-    
-    return { id: response.data.data[0].id, name: response.data.data[0].name };
-  } catch (error: unknown) {
-    logger.warn({ err: safeMessage(error, apiKey), query }, 'SteamGridDB search failed');
-    return null;
-  }
+  const r = await provider(apiKey).searchGame(query);
+  if (r.ok) return r.value;
+  failed(r, apiKey, { query }, 'SteamGridDB search failed');
+  return null;
 }
 
 export async function getGridImages(apiKey: string, gameId: number): Promise<string[]> {
-  try {
-    const response = await axios.get(
-      `https://www.steamgriddb.com/api/v2/grids/game/${gameId}?dimensions=600x900,460x215,920x430`,
-      { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 10000 }
-    );
-    
-    if (!response.data.success || !response.data.data || response.data.data.length === 0) {
-      return [];
-    }
-    
-    return response.data.data.map((g: { url: string }) => g.url);
-  } catch (error: unknown) {
-    logger.warn({ err: safeMessage(error, apiKey), gameId }, 'SteamGridDB grids failed');
+  const r = await provider(apiKey).getGrids(gameId);
+  if (r.ok) return r.value;
+  failed(r, apiKey, { gameId }, 'SteamGridDB grids failed');
+  return [];
+}
+
+/** Route contract unchanged: lookup failures still answer { success: true, results: [] } (and are logged). */
+export async function searchArt(apiKey: string, query: string): Promise<SteamGridDBResponse> {
+  const r = await provider(apiKey).searchArt(query);
+  if (r.ok) return { success: true, results: r.value };
+  failed(r, apiKey, { query }, 'SteamGridDB search failed');
+  return { success: true, results: [] };
+}
+
+/** First CDN grid for each game without a thumbnail (300 ms between games). */
+export async function autoMatchAll(apiKey: string, games: Array<{ name: string; thumbnail: string }>): Promise<Array<{ name: string; thumbnail: string }>> {
+  const r = await provider(apiKey).autoMatch(games);
+  if (!r.ok) {
+    failed(r, apiKey, {}, 'SteamGridDB auto-match failed');
     return [];
   }
-}
-
-export async function searchArt(apiKey: string, query: string): Promise<SteamGridDBResponse> {
-  const game = await searchGame(apiKey, query);
-  if (!game) {
-    return { success: true, results: [] };
+  if (r.value.errors.length > 0) {
+    logger.warn({ errors: r.value.errors.map((e) => ({ game: e.game, code: e.code, error: redactText(e.message.split(apiKey).join('[REDACTED]')) })) }, 'Some games failed auto-match');
   }
-  
-  const images = await getGridImages(apiKey, game.id);
-  return { success: true, results: images };
-}
-
-export async function autoMatchAll(apiKey: string, games: Array<{ name: string; thumbnail: string }>): Promise<Array<{ name: string; thumbnail: string }>> {
-  const matched: Array<{ name: string; thumbnail: string }> = [];
-  const errors: Array<{ game: string; error: string }> = [];
-  
-  for (const game of games) {
-    if (game.thumbnail) continue;
-    
-    try {
-      const response = await searchArt(apiKey, game.name);
-      if (response.success && response.results && response.results.length > 0) {
-        matched.push({ name: game.name, thumbnail: response.results[0] });
-      }
-      await new Promise(r => setTimeout(r, 300));
-    } catch (error) {
-      const message = safeMessage(error, apiKey);
-      logger.warn({ err: message, game: game.name }, 'SteamGridDB auto-match failed for game');
-      errors.push({ game: game.name, error: message });
-    }
-  }
-  
-  if (errors.length > 0) {
-    logger.warn({ errors }, 'Some games failed auto-match');
-  }
-  
-  return matched;
+  return r.value.matched;
 }

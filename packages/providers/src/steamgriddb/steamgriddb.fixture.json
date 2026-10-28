@@ -1,0 +1,22 @@
+{
+  "_note": "Shapes of SteamGridDB API v2 responses (docs: https://www.steamgriddb.com/api/v2), trimmed; ids/urls illustrative, offline only.",
+  "autocomplete": {
+    "success": true,
+    "data": [
+      { "id": 5248055, "name": "Hades", "types": ["steam"], "verified": true, "release_date": 1600387200 },
+      { "id": 5251208, "name": "Hades II", "types": ["steam"], "verified": true, "release_date": 1715040000 }
+    ]
+  },
+  "autocompleteEmpty": { "success": true, "data": [] },
+  "grids": {
+    "success": true,
+    "page": 0,
+    "total": 3,
+    "limit": 50,
+    "data": [
+      { "id": 101, "score": 12, "style": "alternate", "width": 600, "height": 900, "nsfw": false, "humor": false, "mime": "image/png", "language": "en", "url": "https://cdn2.steamgriddb.com/grid/0a1b2c3d4e5f.png", "thumb": "https://cdn2.steamgriddb.com/thumb/0a1b2c3d4e5f.jpg", "lock": false, "epilepsy": false, "upvotes": 12, "downvotes": 0, "author": { "name": "artist", "steam64": "76561190000000000", "avatar": "https://avatars.steamstatic.com/x.jpg" } },
+      { "id": 102, "score": 4, "style": "material", "width": 920, "height": 430, "nsfw": false, "humor": false, "mime": "image/webp", "language": "en", "url": "https://cdn2.steamgriddb.com/grid/1b2c3d4e5f6a.webp", "thumb": "https://cdn2.steamgriddb.com/thumb/1b2c3d4e5f6a.jpg", "lock": false, "epilepsy": false, "upvotes": 4, "downvotes": 0, "author": { "name": "artist2", "steam64": "76561190000000001", "avatar": "https://avatars.steamstatic.com/y.jpg" } }
+    ]
+  },
+  "unauthorized": { "success": false, "errors": ["Authentication Required"] }
+}

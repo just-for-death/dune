@@ -1,0 +1,92 @@
+{
+  "_source": "DUN-132: real howlongtobeat.com responses, all fetched live 2026-10-28 (17:55-18:07 IST). homepageHtml = the live homepage's inline Turbopack bootstrap (TURBOPACK.push({otherChunks:[...]})) plus its _next <script> tags, in document order (rest of the page dropped). searchChunk = excerpt of the live /_next/static/chunks/0ovmds8czs1lw.js, the 2nd eagerly loaded chunk (the site's search context: GET /api/search/site/init?t=<ms> -> {token}, POST /api/search/site with x-auth-token, refresh+retry once on 403). init = GET /api/search/site/init body (token redacted). search = POST /api/search/site body for 'Hollow Knight' (size 5, per-game fields trimmed, userData emptied).",
+  "searchChunkPath": "/_next/static/chunks/0ovmds8czs1lw.js",
+  "homepageHtml": "<!DOCTYPE html><html><head><script>(globalThis[\"TURBOPACK\"] || (globalThis[\"TURBOPACK\"] = [])).push({\"otherChunks\":[\"static/chunks/1nribswvb-smp.js\",\"static/chunks/0ovmds8czs1lw.js\",\"static/chunks/3sy1lskch0tct.js\",\"static/chunks/15zr7uhmc49iw.js\",\"static/chunks/1ip4u_c7v73bt.js\",\"static/chunks/0x29bm9bz2_46.js\",\"static/chunks/41d-tlcd5wcqr.js\",\"static/chunks/2hzm4a_nvnhp1.js\",\"static/chunks/1u7ia0dczqgsz.js\",\"static/chunks/43b08_ay-1eu9.css\",\"static/chunks/2iar4-f7zylcn.css\"],\"runtimeModuleIds\":[10783,56703]});\n(globalThis[\"TURBOPACK\"] || (globalThis[\"TURBOPACK\"] = [])).push({\"otherChunks\":[\"static/chunks/2d-r8b0nj7beh.css\",\"static/chunks/2iar4-f7zylcn.css\",\"static/chunks/1qp5sp9pooz5j.js\"],\"runtimeModuleIds\":[10783,21899]});</script><script src=\"/_next/static/chunks/1nribswvb-smp.js\" defer=\"\"></script><script src=\"/_next/static/chunks/0ovmds8czs1lw.js\" defer=\"\"></script><script src=\"/_next/static/chunks/3sy1lskch0tct.js\" defer=\"\"></script><script src=\"/_next/static/chunks/15zr7uhmc49iw.js\" defer=\"\"></script><script src=\"/_next/static/chunks/1ip4u_c7v73bt.js\" defer=\"\"></script><script src=\"/_next/static/chunks/0x29bm9bz2_46.js\" defer=\"\"></script><script src=\"/_next/static/chunks/41d-tlcd5wcqr.js\" defer=\"\"></script><script src=\"/_next/static/chunks/2hzm4a_nvnhp1.js\" defer=\"\"></script><script src=\"/_next/static/chunks/1u7ia0dczqgsz.js\" defer=\"\"></script><script src=\"/_next/static/chunks/turbopack-2c3mg3r-05n1w.js\" defer=\"\"></script><script src=\"/_next/static/chunks/1qp5sp9pooz5j.js\" defer=\"\"></script><script src=\"/_next/static/liixr6QPisxghANfwUuFH/_buildManifest.js\" defer=\"\"></script><script src=\"/_next/static/liixr6QPisxghANfwUuFH/_ssgManifest.js\" defer=\"\"></script><script src=\"/_next/static/liixr6QPisxghANfwUuFH/_clientMiddlewareManifest.js\" defer=\"\"></script></head><body><div id=\"__next\"></div></body></html>",
+  "searchChunk": "(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push([\"object\"==typeof document?document.currentScript:void 0,50286,e=>{a.useState)(0),[z,Y]=(0,a.useState)({count:0,data:[]}),[Q,X]=(0,a.useState)(1),[Z,ee]=(0,a.useState)({token:null}),et=(0,a.useRef)(!1),ea=(0,a.useCallback)(()=>g(!0),[]),el=(0,a.useCallback)(()=>g(!1),[]),er=async()=>{try{let e=await fetch(`/api/search/site/init?t=${Date.now()}`);if(e.ok){let t=await e.json();return ee({token:t.token}),t}}catch(e){console.error(\"Search security init failed\",e)}return null};(0,a.useEffect)(()=>{er()},[]),(0,a.useEffect)(()=>{if(_&&(et.current=!0,window?.Pogo&&googletag?.setConfig))try{window.Pogo.run()}catch(e){console.error(\"Error refreshing ads\",e)}},[_]);let es=async(e=null)=>{let t=e?.token||Z.token;if(!t&&!e)return;(0,i.z)({eventName:\"search\",params:{search_type:m,search_terms:p,search_page:Q}}),(d?.query?.q?.length>0||p?.length>0)&&l.default.replace({pathname:d.pathname,query:{...d.query,q:encodeURIComponent(p)}},void 0,{shallow:!0});let a={searchType:m,searchTerms:p.trim().split(\" \"),searchPage:Q,size:20,searchOptions:{games:{userId:c?.user_id?c.user_id:0,platform:b,sortCategory:y,rangeCategory:k,rangeTime:{min:parseInt(C),max:parseInt($)},gameplay:{perspective:L,flow:A,genre:I},year:j,modifier:F},users:{sortCategory:K},lists:{sortCategory:M},filter:H,sort:parseInt(D),randomizer:parseInt(U)},useCache:!(c?.user_id>0)},r=await fetch(\"/api/search/site\",{method:\"POST\",headers:{\"Content-Type\":\"application/json\",\"x-auth-token\":t},body:JSON.stringify(a)});if(403===r.status&&!e){console.warn(\"Search token expired, refreshing and retrying...\");let e=await er();return e?es(e):void 0}}]);",
+  "init": {
+    "token": "REDACTED-TEST-TOKEN"
+  },
+  "search": {
+    "color": "blue",
+    "title": "",
+    "category": "games",
+    "count": 7,
+    "pageCurrent": 1,
+    "pageTotal": 2,
+    "pageSize": 5,
+    "data": [
+      {
+        "game_id": 26286,
+        "game_name": "Hollow Knight",
+        "game_type": "game",
+        "release_world": 2017,
+        "comp_main": 97125,
+        "comp_main_count": 2762,
+        "comp_plus": 149856,
+        "comp_plus_count": 4719,
+        "comp_100": 236269,
+        "comp_100_count": 2043,
+        "comp_all": 150630,
+        "comp_all_count": 9524
+      },
+      {
+        "game_id": 65945,
+        "game_name": "Hollow Knight: Silksong",
+        "game_type": "game",
+        "release_world": 2025,
+        "comp_main": 101662,
+        "comp_main_count": 576,
+        "comp_plus": 170331,
+        "comp_plus_count": 1214,
+        "comp_100": 236273,
+        "comp_100_count": 1044,
+        "comp_all": 180646,
+        "comp_all_count": 2834
+      },
+      {
+        "game_id": 69681,
+        "game_name": "Hollow Knight - Godmaster",
+        "game_type": "dlc",
+        "release_world": 2018,
+        "comp_main": 45240,
+        "comp_main_count": 15,
+        "comp_plus": 130015,
+        "comp_plus_count": 18,
+        "comp_100": 140578,
+        "comp_100_count": 14,
+        "comp_all": 97311,
+        "comp_all_count": 47
+      },
+      {
+        "game_id": 66081,
+        "game_name": "Hollow Knight - The Grimm Troupe",
+        "game_type": "dlc",
+        "release_world": 2017,
+        "comp_main": 8710,
+        "comp_main_count": 22,
+        "comp_plus": 16087,
+        "comp_plus_count": 10,
+        "comp_100": 17004,
+        "comp_100_count": 17,
+        "comp_all": 13486,
+        "comp_all_count": 49
+      },
+      {
+        "game_id": 66083,
+        "game_name": "Hollow Knight - Lifeblood",
+        "game_type": "dlc",
+        "release_world": 2018,
+        "comp_main": 2449,
+        "comp_main_count": 16,
+        "comp_plus": 7597,
+        "comp_plus_count": 5,
+        "comp_100": 13971,
+        "comp_100_count": 13,
+        "comp_all": 6344,
+        "comp_all_count": 34
+      }
+    ],
+    "userData": [],
+    "displayModifier": null
+  }
+}
