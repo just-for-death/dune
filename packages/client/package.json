@@ -18,6 +18,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@dune/providers": "file:../providers",
     "@dune/shared": "file:../shared",
     "@fontsource/inter": "^5.2.8",
     "adm-zip": "^0.6.1",

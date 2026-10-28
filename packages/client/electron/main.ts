@@ -6,7 +6,7 @@ import * as fs from 'fs'
 import Store from 'electron-store'
 import AdmZip from 'adm-zip'
 import { nextId, DEFAULT_TRACKERS_ENABLED } from '@dune/shared'
-import type { FileManifest, HashManifest, Game, Settings, Cloud, CloudSyncResult, FetchArtResult, ImportLocalAchievementsResult, RestoreBackupInfo, ScannerSourceToggles, ServerFailure, ServerResult, SyncFailureItem } from '@dune/shared'
+import type { FileManifest, HashManifest, Game, Settings, Cloud, CloudSyncResult, FetchArtResult, ImportLocalAchievementsResult, ProviderKeyStatusResult, RestoreBackupInfo, ScannerSourceToggles, ServerFailure, ServerResult, SyncFailureItem } from '@dune/shared'
 import { fullScan, gameRegistry } from './scanner/registry'
 import { applyScannerSources, listScannerSources, sanitizeScannerSources, setScannerSource } from './scanner/sourceToggles'
 import { createSaveResolver, loadManifest } from './scanner/savePaths'
@@ -23,13 +23,18 @@ import { writeRestoreFiles, type RestoreRejection } from './sync/restoreWrite'
 import { acceptsRelativePath, listSaveFiles, resolveSaveTarget } from './sync/saveTarget'
 import { backupLocalFiles, fingerprintOf, planRestore } from './sync/restorePlan'
 import { commitGameStatusPatches, type GameStatusPatch } from './sync/gameStatus'
-import { uploadFileHeaders } from './net/uploadHeaders'
+import { uploadFileHeaders, type UploadStoreIds } from './net/uploadHeaders'
+import { backfillStoreIds } from './scanner/storeIds'
 import { ServerCallError, failureFromResponse, toServerFailure } from './net/serverError'
 import { createServerClient, createServerHttp } from './net/serverClient'
 import { createServerIpcHandlers } from './net/serverHandlers'
 import { createServerKeyVault, type SafeStorageLike } from './security/serverKey'
 import { createUpdateController, type UpdaterLike } from './system/updater'
 import { fetchArtViaServer } from './art/fetchArt'
+import { createElectronLocalProviders } from './providers/electron'
+import { createProviderRouting, type HltbIpcResult, type SearchArtIpcResult } from './providers/routing'
+import type { LocalProviders } from './providers/localProviders'
+import { isUpdateCheckEnabled } from './providers/updateFlag'
 import { getAchievementRoots, scanLocalAchievements } from './achievements/local'
 import { discoverPrefixes, defaultDiscoverDeps, openDiscoveredPrefix } from './prefix/manager'
 import { createNavigationGuards } from './security/navigation'
@@ -37,6 +42,7 @@ import { importLocalAchievementsFromDisk } from './achievements/import'
 import { PrefixRegistry, createPrefixIpcHandlers, defaultPrefixRegistryPaths, isStrictlyInside } from './prefix/registry'
 import { getDiskSpace, buildDefaultDiskPaths, detectSteamLibraries } from './system/diskSpace'
 import { autoUpdater } from 'electron-updater'
+import { createDownloadsIpcHandlers, createDownloadsQuitHandler, forwardDownloadEvents, openDownloads, type DownloadManagerLike, type DownloadsSettingsStore, type DownloadsStoredSettings } from './downloads/ipc'
 import {
   expandPath,
   asString,
@@ -66,14 +72,19 @@ const store = new Store({
       autoSyncEnabled: false,
       autoSyncFreq: 'never',
       scanRoots: [] as string[],
-      // DUN-028: update checks are opt-in.
-      updateChecks: false,
+      // DUN-028: the automatic update check is opt-in (manual checks always run).
+      updateCheckEnabled: false,
       // DUN-077: saved scanner source toggles (main-owned; see scanner/sourceToggles.ts).
       scannerSources: {} as ScannerSourceToggles,
       // Remote trackers and SteamGridDB artwork are opt-in.
       trackersEnabled: { ...DEFAULT_TRACKERS_ENABLED },
       artworkEnabled: false,
-    }
+      hltbEnabled: false,
+      manifestEnabled: false,
+    },
+    // Downloads: base dir + concurrency, under their own key so config:save's
+    // sanitizeSettings never drops them. Written by main only (downloads/ipc.ts).
+    downloads: {} as DownloadsStoredSettings,
   }
 })
 
@@ -299,15 +310,16 @@ async function refreshRemoteManifest(gameName: string): Promise<void> {
   saveGameState(gameName, { remote: manifest });
 }
 
-async function uploadFile(gameName: string, localPath: string, relativePath: string, syncId: string) {
+async function uploadFile(gameName: string, localPath: string, relativePath: string, syncId: string, ids: UploadStoreIds = {}) {
   const stream = fs.createReadStream(localPath);
   try {
     // DUN-064/127: x-game / x-path are encodeURIComponent'd (net/uploadHeaders.ts).
+    // Store ids go as x-steam-app-id / x-gog-id only when valid (else omitted: the server keeps its value).
     const res = await serverClient.raw<{ success?: boolean }>({
       method: 'POST',
       path: '/api/upload-file',
       body: stream,
-      headers: uploadFileHeaders(gameName, relativePath, syncId),
+      headers: uploadFileHeaders(gameName, relativePath, syncId, ids),
       transfer: true,
     });
     if (!(res.data && res.data.success)) {
@@ -428,7 +440,7 @@ async function performCloudSync(progress: ProgressFn = () => {}): Promise<CloudS
       plans.push({ game, p: planUpload(game.name, files, getSyncState, isIncluded), fileCount: files.length, partial });
     }
 
-    const toUpload = plans.flatMap(({ game, p }) => p.plan.map((f) => ({ ...f, gameId: game.id })));
+    const toUpload = plans.flatMap(({ game, p }) => p.plan.map((f) => ({ ...f, gameId: game.id, ids: { steamAppId: game.steamAppId, gogId: game.gogId } })));
     const syncId = Date.now().toString();
     const CHUNK_SIZE = 5;
     const failedByGame = new Map<number, string[]>();
@@ -441,7 +453,7 @@ async function performCloudSync(progress: ProgressFn = () => {}): Promise<CloudS
       progress(percent, `Uploading: Batch ${Math.floor(i / CHUNK_SIZE) + 1} / ${Math.ceil(total / CHUNK_SIZE)}`);
       await Promise.all(chunk.map(async (file) => {
         try {
-          await uploadFile(file.game, file.local, file.rel, syncId);
+          await uploadFile(file.game, file.local, file.rel, syncId, file.ids);
         } catch (e) {
           const failure = toServerFailure(e);
           failedByGame.set(file.gameId, [...(failedByGame.get(file.gameId) || []), file.rel]);
@@ -756,7 +768,8 @@ ipcMain.handle('games:autodetect', async (_event, customRoots) => {
   const scanned = await fullScan(roots, { includeManifestSaves: true });
   const detected = scanned.filter((g) => g.sourceId !== 'manual');
   await gameStoreMigration;
-  const games = (store.get('games') || []) as Game[];
+  // Already-stored games get missing Steam/GOG ids from the scan (never overwriting a valid one).
+  const games = backfillStoreIds((store.get('games') || []) as Game[], detected).games;
   let added = 0;
   for (const d of detected) {
     if (!games.find((g: Game) => g.name === d.name)) {
@@ -991,7 +1004,8 @@ function getUpdateController() {
   updateController ??= createUpdateController({
     updater: autoUpdater as unknown as UpdaterLike,
     isPackaged: app.isPackaged,
-    enabled: () => (store.get('settings') as Settings | undefined)?.updateChecks === true,
+    // Automatic checks only: Settings.updateCheckEnabled, read through the one helper.
+    enabled: () => isUpdateCheckEnabled(store.get('settings')),
     currentVersion: app.getVersion(),
     send: (status) => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', status);
@@ -1003,6 +1017,9 @@ function getUpdateController() {
 ipcMain.handle('updates:status', () => getUpdateController().status());
 ipcMain.handle('updates:download', () => getUpdateController().download());
 ipcMain.handle('updates:install', () => getUpdateController().install());
+// Manual release check via @dune/providers (api.github.com, cached), beside electron-updater.
+// PL ruling: the click is the opt-in, so this always runs; only automatic checks use the flag. Check only.
+ipcMain.handle('updates:checkRelease', (_event, opts: unknown) => providerRouting.checkForUpdates(opts));
 
 ipcMain.handle('game:setCustomArt', async (_event, id) => {
   if (!mainWindow) return false
@@ -1031,29 +1048,74 @@ ipcMain.handle('game:setCustomArt', async (_event, id) => {
   return `local://${targetPath}`
 })
 
-/** Artwork lookups are opt-in (settings.artworkEnabled); nothing reaches SteamGridDB until then. */
+/**
+ * Local artwork opt-in (settings.artworkEnabled). Only used when no Dune Server
+ * is configured: with a server, the server's own artwork flag decides and its
+ * 403 PROVIDER_DISABLED passes through unchanged.
+ */
 function artworkEnabled(): boolean {
   return (store.get('settings') as Settings | undefined)?.artworkEnabled === true
 }
-const PROVIDER_DISABLED: ServerFailure = { ok: false, code: 'PROVIDER_DISABLED', message: 'Artwork lookups are turned off in Settings.' }
 
-// SteamGridDB art through the Dune Server (its write-only provider key; DUN-092).
+// Provider routing (server vs local; electron/providers/routing.ts). No server:
+// local @dune/providers behind the local flags. Server: the server decides; only
+// an unreachable server (NETWORK, no status) falls back to local, still gated.
+const serverIpcHandlers = createServerIpcHandlers(serverClient, { artworkEnabled })
+let localProviders: LocalProviders | null = null
+function getLocalProviders(): LocalProviders {
+  localProviders ??= createElectronLocalProviders(localProviderFlags, { warn: (message) => appendErrorLog('providers', { message }) })
+  return localProviders
+}
+function localProviderFlags() {
+  const s = store.get('settings') as Settings | undefined
+  return { hltbEnabled: s?.hltbEnabled === true, artworkEnabled: s?.artworkEnabled === true, updateCheckEnabled: isUpdateCheckEnabled(s) }
+}
+const providerRouting = createProviderRouting({
+  get local() { return getLocalProviders() },
+  getServerUrl: () => serverClient.baseUrl(),
+  getLocalSettings: localProviderFlags,
+  server: {
+    getHltbTimes: (name) => serverIpcHandlers['hltb:get'](null, name) as Promise<HltbIpcResult>,
+    searchArt: (query) => serverIpcHandlers['art:search'](null, query) as Promise<SearchArtIpcResult>,
+    getSteamGridKeyStatus: () => serverIpcHandlers['steamGridKey:status'](null) as Promise<ProviderKeyStatusResult>,
+    setSteamGridKey: (key) => serverIpcHandlers['steamGridKey:set'](null, key) as Promise<ProviderKeyStatusResult>,
+    clearSteamGridKey: () => serverIpcHandlers['steamGridKey:clear'](null) as Promise<ProviderKeyStatusResult>,
+    // SteamGridDB art through the Dune Server (its write-only provider key; DUN-092).
+    fetchArt: (game) => fetchArtViaServer(game.id, game.name, {
+      client: serverClient,
+      http: serverHttp,
+      thumbDir,
+      writeFile: (file, data) => writeGameArt(game.id, file, (target) => fs.writeFileSync(target, data)),
+    }),
+  },
+  resolveGame: async (id) => {
+    const gameId = parseGameId(id)
+    if (gameId === null) return { ok: false, code: 'INVALID_GAME_ID', message: 'Invalid game id' }
+    await gameStoreMigration
+    const game = ((store.get('games') || []) as Game[]).find((g) => g.id === gameId)
+    if (!game) return { ok: false, code: 'GAME_NOT_FOUND', message: 'Game not found' }
+    return { ok: true, id: gameId, name: game.name }
+  },
+  appVersion: app.getVersion(),
+  saveArt: (gameId, ext, bytes) => {
+    const target = path.join(thumbDir, `${gameId}${ext}`)
+    writeGameArt(gameId, target, (file) => fs.writeFileSync(file, bytes))
+    return `local://${target}`
+  },
+})
+const ROUTED_CHANNELS = new Set(['hltb:get', 'art:search', 'steamGridKey:status', 'steamGridKey:set', 'steamGridKey:clear'])
+ipcMain.handle('hltb:get', (_event, name: unknown) => providerRouting.getHltbTimes(name))
+ipcMain.handle('art:search', (_event, query: unknown) => providerRouting.searchArt(query))
+ipcMain.handle('steamGridKey:status', () => providerRouting.getSteamGridKeyStatus())
+ipcMain.handle('steamGridKey:set', (_event, key: unknown) => providerRouting.setSteamGridKey(key))
+ipcMain.handle('steamGridKey:clear', () => providerRouting.clearSteamGridKey())
+
 ipcMain.handle('game:fetchArt', async (_event, id: unknown): Promise<FetchArtResult> => {
-  if (!artworkEnabled()) return PROVIDER_DISABLED
-  const gameId = parseGameId(id)
-  if (gameId === null) return { ok: false, code: 'INVALID_GAME_ID', message: 'Invalid game id' }
-  await gameStoreMigration
-  const game = ((store.get('games') || []) as Game[]).find((g) => g.id === gameId)
-  if (!game) return { ok: false, code: 'GAME_NOT_FOUND', message: 'Game not found' }
-  const res = await fetchArtViaServer(gameId, game.name, {
-    client: serverClient,
-    http: serverHttp,
-    thumbDir,
-    writeFile: (file, data) => writeGameArt(gameId, file, (target) => fs.writeFileSync(target, data)),
-  })
+  const res = await providerRouting.fetchArt(id)
   if (res.ok) {
     // Fresh read: patch only this game's thumbnail.
     const games = (store.get('games') || []) as Game[]
+    const gameId = parseGameId(id)
     store.set('games', games.map((g) => (g.id === gameId ? { ...g, thumbnail: res.thumbnail } : g)))
   }
   return res
@@ -1063,8 +1125,8 @@ ipcMain.handle('game:fetchArt', async (_event, id: unknown): Promise<FetchArtRes
 
 // Server-only calls (playtime, achievements, saves, conflicts, art, sources,
 // keys, Ollama): validated arguments, gated URL, ServerResult (net/serverHandlers.ts).
-for (const [channel, handler] of Object.entries(createServerIpcHandlers(serverClient, { artworkEnabled }))) {
-  ipcMain.handle(channel, handler)
+for (const [channel, handler] of Object.entries(serverIpcHandlers)) {
+  if (!ROUTED_CHANNELS.has(channel)) ipcMain.handle(channel, handler)
 }
 
 // Achievements
@@ -1198,6 +1260,30 @@ ipcMain.handle('server-key:set', (_event, key: unknown) => {
   serverKeyVault.save(typeof key === 'string' ? key : '');
   return serverKeyVault.status();
 });
+
+// ── Downloads (content-agnostic engine; handlers in downloads/ipc.ts) ────────
+// The renderer never hands main a path to open: folders come from main's own
+// dialog, showInFolder looks items up by id, and a destDir is re-validated.
+let downloadManager: DownloadManagerLike | null = null
+const downloadSettings: DownloadsSettingsStore = {
+  get: () => {
+    const v = store.get('downloads') as unknown
+    return v && typeof v === 'object' ? (v as DownloadsStoredSettings) : {}
+  },
+  set: (value) => store.set('downloads', value),
+}
+const downloadsHandlers = createDownloadsIpcHandlers({
+  getManager: () => downloadManager,
+  showFolderDialog: async (options) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return { canceled: true, filePaths: [] }
+    return dialog.showOpenDialog(mainWindow, options)
+  },
+  shell,
+  settings: downloadSettings,
+})
+for (const [channel, handler] of Object.entries(downloadsHandlers)) ipcMain.handle(channel, handler)
+// Hold the first quit until in-flight downloads are saved as paused.
+app.on('before-quit', createDownloadsQuitHandler(() => downloadManager, () => app.quit()))
 
 // DUN-063: every webContents (the main window and anything it could spawn)
 // may only show the app itself. Off-origin navigation and redirects are
@@ -1372,6 +1458,14 @@ if (!gotSingleInstanceLock) {
     });
 
     createWindow();
+    void openDownloads({
+      settings: downloadSettings,
+      defaultBaseDir: path.join(app.getPath('downloads'), 'Dune'),
+      stateDir: app.getPath('userData'),
+    }).then((manager) => {
+      downloadManager = manager
+      forwardDownloadEvents(manager, () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null))
+    }).catch((err) => appendErrorLog('downloads', { message: `Could not open the download queue: ${errorMessage(err)}` }));
     setupAutoSync();
     getUpdateController().refresh();
     void flushPlaytimeQueue();

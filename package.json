@@ -10,7 +10,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build:shared && npm run build:providers && npm run build:server && npm run build:client",
     "build:shared": "npm run build --workspace=@dune/shared",
     "build:providers": "npm run build --workspace=@dune/providers",
     "build:server": "npm run build --workspace=@dune/server",

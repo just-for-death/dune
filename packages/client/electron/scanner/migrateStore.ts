@@ -17,7 +17,8 @@
  *         manifest resolves for this game (the old Steam scanner stored real
  *         save paths).
  *      2. Steam games are matched to the installed library (by app id, else
- *         name) to fill a missing `steamAppId` / `installPath`.
+ *         name) to fill a missing `steamAppId` / `installPath`. Stored
+ *         `steamAppId` / `gogId` are kept when valid digit strings, else null.
  *      3. winPath/linPath are replaced by the manifest save path for this
  *         platform, or emptied when the manifest has no existing save path.
  *  - With no manifest available the migration does nothing and is retried on
@@ -38,6 +39,7 @@ import * as path from 'path';
 import type { Game } from '@dune/shared';
 import { normalizeGameName, toSaveFields, type SaveResolver } from './savePaths.js';
 import { getProtonUserDirs, type SteamLibraryGame } from './steam.js';
+import { normalizeGameStoreIds, normalizeStoreId } from './storeIds.js';
 
 export const GAMES_MIGRATION_VERSION = 1;
 export const GAMES_MIGRATION_KEY = 'gamesMigrationVersion';
@@ -60,8 +62,9 @@ export interface MigrationContext {
 }
 
 function findSteamGame(game: Game, steamGames: SteamLibraryGame[]): SteamLibraryGame | undefined {
-  if (game.steamAppId) {
-    const byId = steamGames.find(g => g.appId === game.steamAppId);
+  const appId = normalizeStoreId(game.steamAppId);
+  if (appId) {
+    const byId = steamGames.find(g => g.appId === appId);
     if (byId) return byId;
   }
   const name = normalizeGameName(game.name);
@@ -72,14 +75,18 @@ export function migrateGame(game: Game, resolver: SaveResolver, ctx: MigrationCo
   if (!isScannerGame(game)) return game;
   const platform = resolver.platform;
   const source = sourceOf(game);
-  const next: Game = { ...game };
+  const next: Game = normalizeGameStoreIds({ ...game });
 
   const steam = source === 'steam' ? findSteamGame(game, ctx.steamGames ?? []) : undefined;
-  if (steam && !next.steamAppId) next.steamAppId = steam.appId;
+  if (steam && !next.steamAppId) {
+    const appId = normalizeStoreId(steam.appId);
+    if (appId) next.steamAppId = appId;
+  }
 
   const lookup = () => ({
     name: next.name,
     steamAppId: next.steamAppId,
+    gogId: next.gogId,
     installPath: next.installPath || undefined,
     winePrefix: next.winePrefix,
     extraRoots: steam ? getProtonUserDirs(steam.libraryPath, steam.appId) : undefined,

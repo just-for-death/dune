@@ -4,6 +4,7 @@ import * as os from 'os';
 import { nextId } from '@dune/shared';
 import type { Game } from '@dune/shared';
 import { toSaveFields, type SaveResolver } from './savePaths.js';
+import { normalizeStoreId } from './storeIds.js';
 
 function envRoots(name: string, defaults: string[]): string[] {
   const value = process.env[name];
@@ -22,9 +23,10 @@ function makeGame(
   installPath: string,
   source: NonNullable<Game['source']>,
   resolver: SaveResolver | null | undefined,
+  gogId: string | null = null,
 ): Game {
   const now = new Date().toISOString();
-  const savePath = resolver ? resolver.resolve({ name, installPath }) : '';
+  const savePath = resolver ? resolver.resolve({ name, installPath, gogId }) : '';
   return {
     id: nextId(),
     name,
@@ -35,6 +37,7 @@ function makeGame(
     thumbnail: '',
     source,
     sourceId: source,
+    ...(gogId ? { gogId } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -117,9 +120,12 @@ export function getGogGames(roots?: string[], resolver?: SaveResolver | null): G
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const installPath = path.join(root, entry.name);
-      const hasGogMarker = fs.readdirSync(installPath).some((file) => /^goggame-.*\.info$/i.test(file) || file.toLowerCase() === 'gog_game.info');
+      const files = fs.readdirSync(installPath);
+      const hasGogMarker = files.some((file) => /^goggame-.*\.info$/i.test(file) || file.toLowerCase() === 'gog_game.info');
       if (hasGogMarker) {
-        games.push(makeGame(entry.name, installPath, 'gog', resolver));
+        // goggame-<productId>.info names the GOG product id; take the first valid one.
+        const gogId = files.map((f) => /^goggame-(\d+)\.info$/i.exec(f)?.[1]).map(normalizeStoreId).find((id) => id) ?? null;
+        games.push(makeGame(entry.name, installPath, 'gog', resolver, gogId));
       }
     }
   }

@@ -5,6 +5,7 @@ import type {
   CloudSyncResult,
   CreatePrefixResult,
   DeletePrefixResult,
+  DownloadSnapshot,
   DriveSpace,
   ElectronAPI,
   Game,
@@ -15,6 +16,7 @@ import type {
   SaveFileListResult,
   ServerFailure,
   Settings,
+  UpdateInfo,
 } from '@dune/shared';
 
 type FailReason<R> = Extract<R, { ok: false }> extends { reason: infer X } ? X : never;
@@ -105,6 +107,17 @@ export interface StubOptions {
     failCode?: Extract<SaveFileListResult, { ok: false }>['code'];
     delayMs?: number;
   };
+  /**
+   * Downloads IPC (stub only): queue items for listDownloads (default none) and
+   * a code that makes listDownloads fail. No events are pushed.
+   */
+  downloads?: { items?: DownloadSnapshot[]; listFail?: 'NOT_READY' | 'IO_ERROR' };
+  /**
+   * checkForUpdates reply. Default: ok, isNewer false (current 1.0.0).
+   * `update` overrides fields, `stale` marks a cached answer, `fail` answers
+   * this ServerFailure, 'missing' leaves checkForUpdates off the bridge.
+   */
+  updates?: { update?: Partial<UpdateInfo>; stale?: boolean; fail?: ServerFailure; delayMs?: number } | 'missing';
 }
 
 export const sampleGames = [
@@ -218,6 +231,8 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         artworkEnabled: false,
         // Server-wide HowLongToBeat opt-in (admin); off by default.
         hltbEnabled: false,
+        manifestEnabled: false,
+        updateCheckEnabled: false,
       } satisfies Settings,
     };
     const calls: { method: string; args: unknown[] }[] = [];
@@ -237,7 +252,7 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
     let serverKey = opts.serverKey ?? 'e2e-key';
     let serverKeyUnreadable = opts.serverKeyUnreadable === true;
     let steamGridKeySet = opts.steamGridKeySet === true;
-    let providerFlags = { hltbEnabled: false, artworkEnabled: false };
+    let providerFlags = { hltbEnabled: false, artworkEnabled: false, manifestEnabled: false };
     const serverWait = () => new Promise((r) => setTimeout(r, opts.server?.delayMs ?? 0));
     // Shapes and codes as main / the server emit them (net/serverError.ts, middleware/auth.ts, server.ts).
     const noServer = { ok: false as const, code: 'NO_SERVER', message: 'No Dune Server configured' };
@@ -250,6 +265,17 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         : { ok: false as const, ...f };
     };
     const record = (method: string, ...args: unknown[]) => calls.push({ method, args });
+    // Downloads (stub only): an in-memory queue and flat settings; e2e-stub path, not a real folder.
+    let downloadItems: DownloadSnapshot[] = structuredClone(opts.downloads?.items ?? []);
+    let downloadSettings = { baseDir: '/e2e-stub/downloads', concurrency: 2, maxConcurrency: 4, autoResume: false };
+    const downloadAction = (method: string, status?: DownloadSnapshot['status']) => async (id: string) => {
+      record(method, id);
+      const item = downloadItems.find((i) => i.id === id);
+      if (!item) return { ok: false as const, code: 'NOT_FOUND' as const, message: 'No such download (e2e stub)' };
+      if (status) Object.assign(item, { status, speed: 0, eta: null, updatedAt: new Date().toISOString() });
+      if (method === 'removeDownload') downloadItems = downloadItems.filter((i) => i.id !== id);
+      return { ok: true as const, item: structuredClone(item) };
+    };
     const wait = (game: string) => new Promise((r) => setTimeout(r, opts.delayMs?.[game] ?? 0));
     const versionsFor = (game: string) => structuredClone(opts.perGame?.[game]?.versions ?? opts.versions ?? []);
     const conflictsFor = (game?: string) =>
@@ -440,11 +466,24 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       getCurrentUser: async () => ({ ok: true, id: 'u1', name: 'Admin', role: 'admin' }),
       // Server provider flags (admin-only writes): both off by default; set merges the patch and returns the saved flags.
       getServerProviderFlags: async () => ({ ok: true, ...providerFlags }),
-      setServerProviderFlags: async (patch: Partial<{ hltbEnabled: boolean; artworkEnabled: boolean }>) => {
+      setServerProviderFlags: async (patch: Partial<{ hltbEnabled: boolean; artworkEnabled: boolean; manifestEnabled: boolean }>) => {
         record('setServerProviderFlags', patch);
         providerFlags = { ...providerFlags, ...patch };
         return { ok: true, ...providerFlags };
       },
+      // Manual update check (always allowed; Settings.updateCheckEnabled gates only main's automatic check).
+      ...(opts.updates === 'missing' ? {} : {
+        checkForUpdates: async (o?: { force?: boolean }) => {
+          const u = opts.updates === 'missing' ? undefined : opts.updates;
+          record('checkForUpdates', o ?? null);
+          await new Promise((r) => setTimeout(r, u?.delayMs ?? 0));
+          if (u?.fail) return structuredClone(u.fail);
+          const update: UpdateInfo = {
+            version: '1.0.0', current: '1.0.0', releaseUrl: 'https://github.com/dune/dune/releases/tag/v1.0.0', notes: '', isNewer: false, ...u?.update,
+          };
+          return u?.stale ? { ok: true as const, update, stale: true as const } : { ok: true as const, update };
+        },
+      }),
       launchGame: async (gameId: number) => {
         const game = store.games.find((g) => g.id === gameId);
         calls.push({ method: 'launchGame', args: [gameId] });
@@ -481,6 +520,37 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         else delete game.emulator;
         return { ok: true, game: structuredClone(game) };
       },
+      listDownloads: async () => (opts.downloads?.listFail
+        ? { ok: false, code: opts.downloads.listFail, message: 'downloads unavailable (e2e stub)' }
+        : { ok: true, items: structuredClone(downloadItems) }),
+      addDownload: async () => ({ ok: false, code: 'INVALID_ARGUMENT', message: 'addDownload is not stubbed' }),
+      pauseDownload: downloadAction('pauseDownload', 'paused'),
+      resumeDownload: downloadAction('resumeDownload', 'queued'),
+      cancelDownload: downloadAction('cancelDownload', 'cancelled'),
+      retryDownload: downloadAction('retryDownload', 'queued'),
+      removeDownload: downloadAction('removeDownload'),
+      getDownloadSettings: async () => ({ ok: true, ...downloadSettings }),
+      setDownloadConcurrency: async (n: number) => {
+        record('setDownloadConcurrency', n);
+        downloadSettings = { ...downloadSettings, concurrency: Math.min(downloadSettings.maxConcurrency, Math.max(1, Math.round(n))) };
+        return { ok: true, ...downloadSettings };
+      },
+      setDownloadAutoResume: async (enabled: boolean) => {
+        record('setDownloadAutoResume', enabled);
+        downloadSettings = { ...downloadSettings, autoResume: enabled };
+        return { ok: true, ...downloadSettings };
+      },
+      // No native dialog under Playwright: behave as if the user closed it.
+      chooseDownloadBaseDir: async () => ({ ok: false, code: 'CANCELLED', message: 'dialog closed (e2e stub)' }),
+      chooseDownloadFolder: async () => ({ ok: false, code: 'CANCELLED', message: 'dialog closed (e2e stub)' }),
+      showDownloadInFolder: async (id: string) => {
+        record('showDownloadInFolder', id);
+        return downloadItems.some((i) => i.id === id) ? { ok: true } : { ok: false, code: 'NOT_FOUND', message: 'No such download (e2e stub)' };
+      },
+      onDownloadProgress: () => () => {},
+      onDownloadStatus: () => () => {},
+      onDownloadCompleted: () => () => {},
+      onDownloadFailed: () => () => {},
       getDiskSpace: async () => {
         if (opts.drives === 'throw') throw new Error('disk (e2e stub)');
         return structuredClone(opts.drives ?? []);

@@ -7,3 +7,4 @@ export * from './core/index.js';
 export * from './hltb/index.js';
 export * from './steamgriddb/index.js';
 export * from './updates/index.js';
+export * from './manifest/index.js';

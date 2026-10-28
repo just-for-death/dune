@@ -5,6 +5,7 @@ import { app } from 'electron';
 import { nextId } from '@dune/shared';
 import type { Game } from '@dune/shared';
 import { toSaveFields, type SaveResolver } from './savePaths.js';
+import { normalizeStoreId } from './storeIds.js';
 
 export interface HeroicGame {
   id: string;
@@ -130,8 +131,10 @@ export function getHeroicGames(resolver: SaveResolver | null = null, config: Her
     .filter(g => g.isInstalled)
     .map(game => {
       const installPath = getHeroicInstallPath(game, platform);
+      // Heroic's GOG entries use the GOG product id as appName (and id).
+      const gogId = game.platform === 'gog' ? (normalizeStoreId(game.appName) ?? normalizeStoreId(game.id)) : null;
       const savePath = resolver
-        ? resolver.resolve({ name: game.title, installPath: installPath || undefined, winePrefix: game.prefixPath })
+        ? resolver.resolve({ name: game.title, gogId, installPath: installPath || undefined, winePrefix: game.prefixPath })
         : '';
       return {
         id: nextId(),
@@ -145,6 +148,7 @@ export function getHeroicGames(resolver: SaveResolver | null = null, config: Her
         source: 'heroic' as const,
         sourceId: 'heroic',
         heroicId: game.id,
+        ...(gogId ? { gogId } : {}),
         executable: game.executable,
         installPathOverride: game.installPathOverride,
         prefixPath: game.prefixPath,

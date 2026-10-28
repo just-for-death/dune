@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createServerClient, type ServerHttp } from './serverClient';
 import { createServerIpcHandlers } from './serverHandlers';
 
-function setup(respond: (cfg: Record<string, unknown>) => unknown = () => ({ data: { success: true }, status: 200 }), artOn = true) {
+function setup(respond: (cfg: Record<string, unknown>) => unknown = () => ({ data: { success: true }, status: 200 }), artOn = true, baseUrl: string | null = 'http://nas:3030') {
   const calls: Record<string, unknown>[] = [];
   const http = {
     request: vi.fn(async (cfg: Record<string, unknown>) => {
@@ -12,7 +12,7 @@ function setup(respond: (cfg: Record<string, unknown>) => unknown = () => ({ dat
       return r;
     }),
   } as unknown as ServerHttp;
-  const handlers = createServerIpcHandlers(createServerClient({ http, baseUrl: () => 'http://nas:3030', apiKey: () => 'k' }), { artworkEnabled: () => artOn });
+  const handlers = createServerIpcHandlers(createServerClient({ http, baseUrl: () => baseUrl, apiKey: () => 'k' }), { artworkEnabled: () => artOn });
   return { handlers, calls };
 }
 
@@ -128,12 +128,33 @@ describe('SteamGridDB key (DUN-092, write-only)', () => {
   });
 });
 
-describe('artwork opt-in (settings.artworkEnabled)', () => {
-  it('art routes answer PROVIDER_DISABLED and send nothing while artwork is off', async () => {
-    const { handlers, calls } = setup(undefined, false);
-    expect(await handlers['art:search']({}, 'Hades')).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
-    expect(await handlers['art:auto-match']({})).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
-    expect(calls).toHaveLength(0);
+describe('artwork gating', () => {
+  it('with a server, the server decides: no local pre-gate, its 403 PROVIDER_DISABLED passes through unchanged', async () => {
+    const { handlers, calls } = setup(() => httpError(403, { error: 'Artwork is disabled on this server', code: 'PROVIDER_DISABLED' }), false);
+    const disabled = { ok: false, status: 403, code: 'PROVIDER_DISABLED', message: 'Artwork is disabled on this server' };
+    expect(await handlers['art:search']({}, 'Hades')).toEqual(disabled);
+    expect(await handlers['art:auto-match']({})).toEqual(disabled);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['GET', 'http://nas:3030/api/search-art'],
+      ['POST', 'http://nas:3030/api/auto-match-all'],
+    ]);
+  });
+
+  it('with a server and the server flag on, art works even if the local flag is off', async () => {
+    const { handlers, calls } = setup(() => ({ data: { success: true, results: ['x'] }, status: 200 }), false);
+    expect(await handlers['art:search']({}, 'Hades')).toMatchObject({ ok: true, results: ['x'] });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('without a server, the local artworkEnabled gates: PROVIDER_DISABLED and nothing sent while off', async () => {
+    const off = setup(undefined, false, null);
+    expect(await off.handlers['art:search']({}, 'Hades')).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
+    expect(await off.handlers['art:auto-match']({})).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
+    expect(off.calls).toHaveLength(0);
+    // On locally but still no server: the usual NO_SERVER.
+    const on = setup(undefined, true, null);
+    expect(await on.handlers['art:search']({}, 'Hades')).toMatchObject({ ok: false, code: 'NO_SERVER' });
+    expect(on.calls).toHaveLength(0);
   });
 });
 
@@ -208,19 +229,19 @@ describe('current user (DUN-115)', () => {
 });
 
 describe('server provider flags (settings:providerFlags:*)', () => {
-  const settings = { maxVersions: 5, ollamaEndpoint: 'http://x', apiKeys: ['****'], localSources: [], steamGridApiKeySet: true, hltbEnabled: true, artworkEnabled: false };
+  const settings = { maxVersions: 5, ollamaEndpoint: 'http://x', apiKeys: ['****'], localSources: [], steamGridApiKeySet: true, hltbEnabled: true, artworkEnabled: false, manifestEnabled: true };
   const ok = (cfg: Record<string, unknown>) => (cfg.method === 'GET' ? { status: 200, data: { success: true, settings } } : { status: 200, data: { success: true } });
 
-  it('get GETs /api/settings and returns only the two flags', async () => {
+  it('get GETs /api/settings and returns only the three flags', async () => {
     const { handlers, calls } = setup(ok);
-    expect(await handlers['settings:providerFlags:get']({})).toEqual({ ok: true, hltbEnabled: true, artworkEnabled: false });
+    expect(await handlers['settings:providerFlags:get']({})).toEqual({ ok: true, hltbEnabled: true, artworkEnabled: false, manifestEnabled: true });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ method: 'GET', url: 'http://nas:3030/api/settings' });
     expect(calls[0].data).toBeUndefined();
   });
 
   it('get rejects a response with missing or non-boolean flags', async () => {
-    for (const bad of [{ hltbEnabled: 'true', artworkEnabled: false }, { hltbEnabled: true }, null]) {
+    for (const bad of [{ hltbEnabled: 'true', artworkEnabled: false, manifestEnabled: false }, { hltbEnabled: true }, { hltbEnabled: true, artworkEnabled: false }, { hltbEnabled: true, artworkEnabled: false, manifestEnabled: 'false' }, null]) {
       const { handlers } = setup(() => ({ status: 200, data: { success: true, settings: bad } }));
       const res = await handlers['settings:providerFlags:get']({});
       expect(res).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
@@ -230,20 +251,22 @@ describe('server provider flags (settings:providerFlags:*)', () => {
 
   it('set POSTs only the patch to /api/settings, then reads the flags back', async () => {
     const { handlers, calls } = setup(ok);
-    expect(await handlers['settings:providerFlags:set']({}, { hltbEnabled: true })).toEqual({ ok: true, hltbEnabled: true, artworkEnabled: false });
+    expect(await handlers['settings:providerFlags:set']({}, { hltbEnabled: true })).toEqual({ ok: true, hltbEnabled: true, artworkEnabled: false, manifestEnabled: true });
     expect(calls.map((c) => [c.method, c.url, c.data])).toEqual([
       ['POST', 'http://nas:3030/api/settings', { hltbEnabled: true }],
       ['GET', 'http://nas:3030/api/settings', undefined],
     ]);
     await handlers['settings:providerFlags:set']({}, { hltbEnabled: false, artworkEnabled: true });
     expect(calls[2].data).toEqual({ hltbEnabled: false, artworkEnabled: true });
+    await handlers['settings:providerFlags:set']({}, { manifestEnabled: false });
+    expect(calls[4]).toMatchObject({ method: 'POST', data: { manifestEnabled: false } });
   });
 
   it('invalid patches are refused locally and nothing is sent', async () => {
     const { handlers, calls } = setup(ok);
     for (const bad of [
       undefined, null, 'hltbEnabled', true, [], {},
-      { hltbEnabled: 'true' }, { artworkEnabled: 1 }, { hltbEnabled: null },
+      { hltbEnabled: 'true' }, { artworkEnabled: 1 }, { hltbEnabled: null }, { manifestEnabled: 'true' }, { manifestEnabled: true, updateCheckEnabled: true },
       { maxVersions: 3 }, { hltbEnabled: true, ollamaEndpoint: 'http://169.254.169.254/' }, { __proto__: { hltbEnabled: true } },
     ]) {
       expect(await handlers['settings:providerFlags:set']({}, bad)).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });

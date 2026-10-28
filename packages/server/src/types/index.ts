@@ -9,8 +9,18 @@ export interface Game {
   analysis?: Record<string, FileAnalysis>;
   /** Owning user id. Every game has exactly one owner (DUN-087). */
   ownerId: string;
+  /** FEAT-server-storeIds: Steam app id (digit string) or null when unknown. */
+  steamAppId?: string | null;
+  /** FEAT-server-storeIds: GOG product id (digit string) or null when unknown. */
+  gogId?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Store ids a client may send for a game; an absent key keeps the stored value. */
+export interface GameStoreIds {
+  steamAppId?: string;
+  gogId?: string;
 }
 
 export type UserRole = 'admin' | 'member';
@@ -60,6 +70,8 @@ export interface Settings {
   hltbEnabled: boolean;
   /** Opt-in SteamGridDB artwork lookups; off (false) by default. Only `=== true` enables. */
   artworkEnabled: boolean;
+  /** Opt-in Ludusavi manifest (PCGamingWiki save paths) lookups; off (false) by default. Only `=== true` enables. */
+  manifestEnabled: boolean;
 }
 
 export interface LocalSource {
@@ -81,6 +93,8 @@ export interface UploadHeaders {
   'x-game': string;
   'x-path': string;
   'x-sync-id'?: string;
+  'x-steam-app-id'?: string;
+  'x-gog-id'?: string;
 }
 
 export interface APIResponse<T = unknown> {

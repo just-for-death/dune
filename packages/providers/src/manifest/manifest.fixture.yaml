@@ -1,0 +1,68 @@
+---
+# Trimmed from the Ludusavi manifest (data/manifest.yaml, 2026-10), PCGamingWiki-derived, CC BY-NC-SA 3.0.
+"! That Bastard Is Trying To Steal Our Gold !":
+  installDir:
+    "! That Bastard Is Trying To Steal Our Gold !": {}
+  launch:
+    "<base>/TDTTSOG.exe":
+      - arguments: "--evil"
+        when:
+          - os: windows
+            store: steam
+  registry:
+    HKEY_CURRENT_USER/SOFTWARE/WTFOMGames/That Dick Trying To Steal Our Gold:
+      tags:
+        - config
+        - save
+  steam:
+    id: 449940
+"!Anyway!":
+  cloud:
+    steam: true
+  files:
+    "<winLocalAppData>/anyway":
+      tags:
+        - save
+      when:
+        - os: windows
+    "<home>/.config/anyway":
+  id:
+    steamExtra:
+      - 867990
+  installDir:
+    Anyway: {}
+  steam:
+    id: 866510
+Hollow Knight:
+  files:
+    "<winLocalAppDataLow>/Team Cherry/Hollow Knight/*.dat":
+      tags:
+        - save
+      when:
+        - os: windows
+    "<home>/.config/unity3d/Team Cherry/Hollow Knight/*.dat":
+      tags:
+        - save
+      when:
+        - os: linux
+  gog:
+    id: 1308320804
+  notes:
+    - message: Steam Cloud also syncs saves.
+  steam:
+    id: 367520
+  futureField: ignored
+HK:
+  alias: Hollow Knight
+Alias Of Alias:
+  alias: HK
+Broken Alias:
+  alias: Does Not Exist
+Bad Files Game:
+  files:
+    - not
+    - a
+    - mapping
+Bad Steam Id:
+  steam:
+    id: "not a number"

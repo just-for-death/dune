@@ -8,6 +8,7 @@ import {
   toSaveFields,
   type SaveResolver,
 } from './savePaths.js';
+import { normalizeStoreId } from './storeIds.js';
 
 export interface SteamLibraryFolder {
   path: string;
@@ -312,7 +313,7 @@ export function getSteamLibraryGames(resolver: SaveResolver | null, steamPath: s
       name: g.name,
       ...toSaveFields(savePath, resolver?.platform ?? process.platform),
       installPath: g.installPath,
-      steamAppId: g.appId,
+      steamAppId: normalizeStoreId(g.appId),
       lastSync: 'Never',
       status: 'Pending Upload' as const,
       thumbnail: '',

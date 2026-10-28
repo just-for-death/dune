@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -25,7 +25,11 @@ const h = vi.hoisted(() => {
     save: { canceled: false, filePath: '' as string | undefined },
     open: { canceled: false, filePaths: [] as string[] },
   };
-  return { root, home, saved, handlers, sent, dialogs, storeData: new Map<string, unknown>() };
+  // Local providers (electron/providers): the real ones unless a test sets an override;
+  // every overridden call is recorded. fetchArtViaServer calls are recorded too.
+  const local = { override: null as Record<string, (...args: unknown[]) => unknown> | null, calls: [] as string[] };
+  const serverArtCalls: number[] = [];
+  return { root, home, saved, handlers, sent, dialogs, storeData: new Map<string, unknown>(), local, serverArtCalls };
 });
 
 /** A do-nothing object that tolerates any property access, call or `new`. */
@@ -98,11 +102,29 @@ vi.mock('./scanner/migrateStore', () => ({ runStoredGamesMigration: async () => 
 // only has to hand main's writeFile a target in thumbDir, like the real one.
 vi.mock('./art/fetchArt', () => ({
   fetchArtViaServer: async (gameId: number, _name: string, deps: { thumbDir: string; writeFile: (f: string, d: Buffer) => void }) => {
+    h.serverArtCalls.push(gameId);
     const target = path.join(deps.thumbDir, `${gameId}.webp`);
     deps.writeFile(target, Buffer.from('fetched-webp'));
     return { ok: true, thumbnail: `local://${target}` };
   },
 }));
+
+// Scoped: delegates to the real local providers unless a test sets h.local.override.
+vi.mock('./providers/electron', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./providers/electron')>();
+  return {
+    createElectronLocalProviders: (...args: Parameters<typeof actual.createElectronLocalProviders>) => {
+      const real = actual.createElectronLocalProviders(...args);
+      return new Proxy(real, {
+        get(target, key, receiver) {
+          const fake = typeof key === 'string' ? h.local.override?.[key] : undefined;
+          if (!fake) return Reflect.get(target, key, receiver);
+          return (...a: unknown[]) => { h.local.calls.push(String(key)); return fake(...a); };
+        },
+      });
+    },
+  };
+});
 
 const thumbDir = () => path.join(h.root, 'electron', 'userData', 'thumbnails');
 async function invoke(channel: string, ...args: unknown[]) {
@@ -198,6 +220,10 @@ describe('sync:export (DUN-080)', () => {
 });
 
 describe('art slot (DUN-081)', () => {
+  afterEach(() => {
+    h.local.override = null;
+    h.storeData.set('settings', { ...(h.storeData.get('settings') as object), artworkEnabled: false });
+  });
   const slot = (id: number) => fs.readdirSync(thumbDir()).filter((f) => path.parse(f).name === String(id)).sort();
   let src: string;
   beforeEach(() => {
@@ -246,12 +272,81 @@ describe('art slot (DUN-081)', () => {
 
   it('fetched art with a different extension removes the old custom art', async () => {
     h.storeData.set('settings', { ...(h.storeData.get('settings') as object), artworkEnabled: true });
+    h.local.override = localArtFake();
     fs.writeFileSync(path.join(thumbDir(), '7.png'), 'old-png');
     fs.writeFileSync(path.join(thumbDir(), '7.jpeg'), 'old-jpeg');
     const res = await invoke('game:fetchArt', 7) as { ok: boolean; thumbnail?: string };
     expect(res.ok).toBe(true);
     expect(slot(7)).toEqual(['7.webp']);
     expect(fs.readFileSync(path.join(thumbDir(), '7.webp'), 'utf8')).toBe('fetched-webp');
+  });
+});
+
+/** Fake local SteamGridDB: one CDN result, a webp image. No network. */
+function localArtFake(): Record<string, (...args: unknown[]) => unknown> {
+  return {
+    searchArt: async () => ({ ok: true, results: ['https://cdn2.steamgriddb.com/grid/x.webp'] }),
+    downloadArt: async () => ({ ok: true, bytes: new TextEncoder().encode('fetched-webp'), contentType: 'image/webp', cached: false }),
+  };
+}
+
+describe('game:fetchArt routing (server vs local)', () => {
+  const thumbOf = (id: number) => (h.storeData.get('games') as Array<{ id: number; thumbnail: string }>).find((g) => g.id === id)?.thumbnail;
+  const setArt = (on: boolean) => h.storeData.set('settings', { ...(h.storeData.get('settings') as object), artworkEnabled: on });
+  /** Save a server URL through config:save and let the gate settle (fake timers; no request is made). */
+  async function setServerUrl(url: string) {
+    vi.useFakeTimers();
+    try {
+      await invoke('config:save', { cloud: { url } });
+      await vi.advanceTimersByTimeAsync(2_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  beforeEach(() => {
+    for (const f of fs.readdirSync(thumbDir())) fs.rmSync(path.join(thumbDir(), f), { force: true });
+    h.storeData.set('games', [game(7, 'Hades', '')]);
+    h.local.calls.length = 0;
+    h.serverArtCalls.length = 0;
+  });
+  afterEach(() => { h.local.override = null; setArt(false); });
+
+  it('no server: uses the local providers and saves the art in the game slot', async () => {
+    setArt(true);
+    h.local.override = localArtFake();
+    const res = await invoke('game:fetchArt', 7) as { ok: boolean; thumbnail?: string };
+    const target = path.join(thumbDir(), '7.webp');
+    expect(res).toEqual({ ok: true, thumbnail: `local://${target}` });
+    expect(h.local.calls).toEqual(['searchArt', 'downloadArt']);
+    expect(h.serverArtCalls).toEqual([]);
+    expect(fs.readFileSync(target, 'utf8')).toBe('fetched-webp');
+    expect(thumbOf(7)).toBe(`local://${target}`);
+  });
+
+  it('no server and artwork off: PROVIDER_DISABLED, no local or server call, nothing written', async () => {
+    setArt(false);
+    h.local.override = localArtFake();
+    expect(await invoke('game:fetchArt', 7)).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
+    expect(h.local.calls).toEqual([]);
+    expect(h.serverArtCalls).toEqual([]);
+    expect(fs.readdirSync(thumbDir())).toEqual([]);
+  });
+
+  it('server configured: uses fetchArtViaServer, not local, and ignores the local flag', async () => {
+    setArt(false);
+    h.local.override = localArtFake();
+    await setServerUrl('http://127.0.0.1:9');
+    try {
+      const res = await invoke('game:fetchArt', 7) as { ok: boolean; thumbnail?: string };
+      expect(res).toEqual({ ok: true, thumbnail: `local://${path.join(thumbDir(), '7.webp')}` });
+      expect(h.serverArtCalls).toEqual([7]);
+      expect(h.local.calls).toEqual([]);
+    } finally {
+      await setServerUrl('');
+    }
+    // Back to local mode for the rest of the file.
+    expect(await invoke('game:fetchArt', 7)).toMatchObject({ ok: false, code: 'PROVIDER_DISABLED' });
   });
 });
 

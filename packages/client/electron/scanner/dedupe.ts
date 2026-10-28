@@ -2,7 +2,7 @@
  * Deterministic cross-source dedupe for scanner results.
  *
  * Two scanner games are the same game when they share (in this order):
- *   1. a Steam app id,
+ *   1. a Steam app id or a GOG id (valid digit strings only),
  *   2. a normalized install path,
  *   3. a normalized name within the same source family
  *      (e.g. Heroic's GOG entry and the GOG folder scanner are both "gog").
@@ -14,6 +14,7 @@
 import * as path from 'path';
 import type { Game } from '@dune/shared';
 import { normalizeGameName } from './savePaths.js';
+import { normalizeStoreId, validStoreIds } from './storeIds.js';
 
 const SOURCE_RANK: Record<string, number> = {
   steam: 0,
@@ -59,7 +60,9 @@ export function normalizeInstallPath(p: string, platform: NodeJS.Platform = proc
 
 function keysFor(game: Game): string[] {
   const keys: string[] = [];
-  if (game.steamAppId) keys.push(`steam:${game.steamAppId}`);
+  const { steamAppId, gogId } = validStoreIds(game);
+  if (steamAppId) keys.push(`steam:${steamAppId}`);
+  if (gogId) keys.push(`gog:${gogId}`);
   if (game.installPath) keys.push(`install:${normalizeInstallPath(game.installPath)}`);
   const name = normalizeGameName(game.name || '');
   if (name) {
@@ -69,7 +72,7 @@ function keysFor(game: Game): string[] {
 }
 
 const MERGE_FIELDS: Array<keyof Game> = [
-  'winPath', 'linPath', 'installPath', 'steamAppId', 'heroicId', 'lutrisSlug',
+  'winPath', 'linPath', 'installPath', 'steamAppId', 'gogId', 'heroicId', 'lutrisSlug',
   'winePrefix', 'protonPath', 'executable', 'thumbnail',
 ];
 
@@ -81,6 +84,12 @@ function mergeInto(primary: Game, other: Game): Game {
     if (!target[field] && source[field]) target[field] = source[field];
   }
   if (other.tags?.length) merged.tags = Array.from(new Set([...(primary.tags ?? []), ...other.tags]));
+  // Ids: a valid one wins over a missing or invalid one; invalid ids never survive as strings.
+  for (const key of ['steamAppId', 'gogId'] as const) {
+    const id = normalizeStoreId(primary[key]) ?? normalizeStoreId(other[key]);
+    if (id) merged[key] = id;
+    else if (merged[key] !== undefined) merged[key] = null;
+  }
   return merged;
 }
 

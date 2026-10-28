@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Settings } from '@dune/shared';
-import { HltbToggle, PrivacyToggles, PrivacyTogglesView, type ServerSwitchState } from './PrivacyToggles';
+import { HltbToggle, ManifestToggle, PrivacyToggles, PrivacyTogglesView, type ServerSwitchState } from './PrivacyToggles';
 import type { PrivacySettings } from './privacyToggleHelpers';
 import { I18nProvider } from '../../i18n/I18nProvider';
 import { en } from '../../i18n/en';
@@ -28,10 +28,10 @@ const byId = (list: ReactElement<Props>[], id: string) => {
 describe('PrivacyToggles', () => {
   it('renders every switch off by default', () => {
     const html = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} />);
-    expect(html.match(/role="switch"/g)).toHaveLength(4);
+    expect(html.match(/role="switch"/g)).toHaveLength(6);
     expect(html).not.toContain('checked=""');
     const list = inputs(PrivacyTogglesView({ settings: {}, onChange: () => {} }));
-    expect(list).toHaveLength(4);
+    expect(list).toHaveLength(6);
     for (const i of list) expect(i.props.checked).toBe(false);
   });
 
@@ -93,14 +93,38 @@ describe('PrivacyToggles', () => {
     const hltb = (over: Partial<ServerSwitchState> = {}) =>
       ({ checked: false, locked: false, onToggle: vi.fn(), ...over });
 
-    it('is hidden with no server (no local copy)', () => {
+    it('no server: shows the local switch, off by default with the local Off hint', () => {
       const html = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} />);
-      expect(html).not.toContain('privacy-hltb');
+      expect(html).toContain('for="privacy-hltb"');
+      expect(html).toContain(en['privacy.hltbLabel']);
+      expect(html).toContain(en['privacy.hltbLocalOff']);
+      expect(html).toContain('aria-describedby="privacy-hltb-hint"');
+      expect(html).not.toContain(en['privacy.hltbOff']);
+      expect(html).not.toContain(en['where.adminOnly']);
+      expect(byId(inputs(PrivacyTogglesView<PrivacySettings>({ settings: {}, onChange: () => {} })), 'privacy-hltb').props.checked).toBe(false);
+    });
+
+    it('no server: toggling saves settings.hltbEnabled through onChange, keeping other fields', () => {
+      const onChange = vi.fn();
+      const settings = { artworkEnabled: true, hltbEnabled: false } as Settings;
+      byId(inputs(PrivacyTogglesView({ settings, onChange })), 'privacy-hltb').props.onChange?.({ target: { checked: true } });
+      expect(onChange).toHaveBeenCalledWith({ artworkEnabled: true, hltbEnabled: true });
+      const on = renderToStaticMarkup(<PrivacyToggles settings={{ hltbEnabled: true } as Settings} onChange={() => {}} />);
+      expect(on).toMatch(/id="privacy-hltb"[^>]*checked=""|checked=""[^>]*id="privacy-hltb"/);
+      expect(on).toContain(en['privacy.hltbLocalOn']);
+    });
+
+    it('no server: Spanish local hints', () => {
+      const html = renderToStaticMarkup(
+        <I18nProvider initialLocale="es"><PrivacyToggles settings={{}} onChange={() => {}} /></I18nProvider>,
+      );
+      expect(html).toContain(es['privacy.hltbLocalOff'] as string);
+      expect(es['privacy.hltbLocalOn']).toBeTruthy();
     });
 
     it('is off by default with a labelled switch and the Off hint', () => {
       const html = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} hltb={hltb()} />);
-      expect(html.match(/role="switch"/g)).toHaveLength(5);
+      expect(html.match(/role="switch"/g)).toHaveLength(6);
       expect(html).toContain('for="privacy-hltb"');
       expect(html).toContain(en['privacy.hltbLabel']);
       expect(html).toContain(en['privacy.hltbOff']);
@@ -157,7 +181,7 @@ describe('PrivacyToggles', () => {
       const onChange = vi.fn();
       const artwork = server({ checked: true });
       const html = renderToStaticMarkup(<PrivacyToggles settings={{ artworkEnabled: false }} onChange={onChange} artwork={artwork} hltb={server()} />);
-      expect(html.match(/role="switch"/g)).toHaveLength(5);
+      expect(html.match(/role="switch"/g)).toHaveLength(6);
       expect(html.match(/checked=""/g)).toHaveLength(1);
       expect(html).toContain(en['privacy.artworkServerOn']);
       expect(html).toContain('aria-describedby="privacy-artwork-hint"');
@@ -192,11 +216,11 @@ describe('PrivacyToggles', () => {
       expect(html).not.toMatch(/id="privacy-tracker-steam"[^>]*disabled=""/);
     });
 
-    it('no server: artwork uses the local setting, HLTB is hidden, no admin note', () => {
+    it('no server: artwork uses the local setting, HLTB is local, no admin note', () => {
       const onChange = vi.fn();
       const html = renderToStaticMarkup(<PrivacyToggles settings={{ artworkEnabled: true }} onChange={onChange} />);
-      expect(html.match(/role="switch"/g)).toHaveLength(4);
-      expect(html).not.toContain('privacy-hltb');
+      expect(html.match(/role="switch"/g)).toHaveLength(6);
+      expect(html).toContain(en['privacy.hltbLocalOff']);
       expect(html).toContain(en['privacy.artworkOn']);
       expect(html).not.toContain(en['where.adminOnly']);
       const list = inputs(PrivacyTogglesView<PrivacySettings>({ settings: { artworkEnabled: true }, onChange }));
@@ -210,6 +234,164 @@ describe('PrivacyToggles', () => {
       );
       expect(html).toContain(es['privacy.artworkServerOff'] as string);
       expect(html).toContain(es['where.adminOnly'] as string);
+    });
+  });
+
+  describe('save-path manifest (PCGamingWiki / Ludusavi)', () => {
+    const server = (over: Partial<ServerSwitchState> = {}): ServerSwitchState =>
+      ({ checked: false, locked: false, onToggle: vi.fn(), ...over });
+    const attribution = en['privacy.manifestAttribution'];
+
+    it('no server: local switch, off by default, with the attribution in the hint', () => {
+      const html = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} />);
+      expect(html.match(/role="switch"/g)).toHaveLength(6);
+      expect(html).toContain('for="privacy-manifest"');
+      expect(html).toContain(en['privacy.manifestLabel']);
+      expect(en['privacy.manifestLabel']).toBe('Save-path manifest (PCGamingWiki / Ludusavi)');
+      expect(html).toContain(`<p id="privacy-manifest-hint" class="form-hint text-muted text-sm" style="margin-top:0;overflow-wrap:anywhere">${en['privacy.manifestLocalOff']} ${attribution}</p>`);
+      expect(attribution).toContain('Save locations from PCGamingWiki via the Ludusavi manifest (CC BY-NC-SA 3.0)');
+      expect(html).toContain('aria-describedby="privacy-manifest-hint"');
+      expect(html).not.toContain(en['where.adminOnly']);
+      expect(byId(inputs(PrivacyTogglesView<PrivacySettings>({ settings: {}, onChange: () => {} })), 'privacy-manifest').props.checked).toBe(false);
+    });
+
+    it('no server: toggling saves settings.manifestEnabled through onChange, keeping other fields', () => {
+      const onChange = vi.fn();
+      const settings = { artworkEnabled: true, hltbEnabled: true, manifestEnabled: false } as Settings;
+      byId(inputs(PrivacyTogglesView({ settings, onChange })), 'privacy-manifest').props.onChange?.({ target: { checked: true } });
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith({ artworkEnabled: true, hltbEnabled: true, manifestEnabled: true });
+      const on = renderToStaticMarkup(<PrivacyToggles settings={{ manifestEnabled: true } as Settings} onChange={() => {}} />);
+      expect(on).toMatch(/id="privacy-manifest"[^>]*checked=""|checked=""[^>]*id="privacy-manifest"/);
+      expect(on).toContain(en['privacy.manifestLocalOn']);
+      expect(on.match(/checked=""/g)).toHaveLength(1);
+    });
+
+    it('admin: shows the server flag (not the local setting) and toggles only via onToggle', () => {
+      const onChange = vi.fn();
+      const manifest = server({ checked: true });
+      const html = renderToStaticMarkup(
+        <PrivacyToggles settings={{ manifestEnabled: false } as Settings} onChange={onChange} artwork={server()} hltb={server()} manifest={manifest} />,
+      );
+      expect(html.match(/role="switch"/g)).toHaveLength(6);
+      expect(html.match(/checked=""/g)).toHaveLength(1);
+      expect(html).toContain(`${en['privacy.manifestOn']} ${attribution}`);
+      expect(html).not.toContain(en['privacy.manifestLocalOff']);
+      expect(html).not.toContain(en['where.adminOnly']);
+      const list = inputs(PrivacyTogglesView({ settings: { manifestEnabled: false } as Settings, onChange, manifest }));
+      expect(byId(list, 'privacy-manifest').props.checked).toBe(true);
+      byId(list, 'privacy-manifest').props.onChange?.({ target: { checked: false } });
+      expect(manifest.onToggle).toHaveBeenCalledWith(false);
+      expect(onChange).not.toHaveBeenCalled();
+      expect(renderToStaticMarkup(<ManifestToggle settings={{}} onChange={() => {}} manifest={server()} />)).toContain(en['privacy.manifestOff']);
+    });
+
+    it('member: disabled, described by the visible admin-only note, and never toggles', () => {
+      const manifest = server({ locked: true });
+      const html = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} manifest={manifest} />);
+      expect(html).toMatch(/id="privacy-manifest"[^>]*disabled=""|disabled=""[^>]*id="privacy-manifest"/);
+      expect(html).toContain('aria-describedby="privacy-manifest-hint privacy-manifest-admin-only"');
+      expect(html).toContain(`<p id="privacy-manifest-admin-only" class="form-hint text-sm" style="margin-top:0;overflow-wrap:anywhere">${en['where.adminOnly']}</p>`);
+      byId(inputs(PrivacyTogglesView({ settings: {}, onChange: () => {}, manifest })), 'privacy-manifest').props.onChange?.({ target: { checked: true } });
+      expect(manifest.onToggle).not.toHaveBeenCalled();
+    });
+
+    it('pending (loading or saving): disabled without the admin note', () => {
+      const manifest = server({ pending: true });
+      const html = renderToStaticMarkup(<ManifestToggle settings={{}} onChange={() => {}} manifest={manifest} />);
+      expect(html).toMatch(/id="privacy-manifest"[^>]*disabled=""|disabled=""[^>]*id="privacy-manifest"/);
+      expect(html).not.toContain(en['where.adminOnly']);
+    });
+
+    it('is covered by the load-failure note (alone or with the other server switches)', () => {
+      const load = { failed: true, onRetry: () => {} };
+      const alone = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} manifest={server({ pending: true })} serverLoad={load} />);
+      expect(alone).toContain('id="privacy-server-load-error"');
+      expect(alone).toContain('aria-describedby="privacy-manifest-hint privacy-server-load-error"');
+      const member = renderToStaticMarkup(
+        <PrivacyToggles settings={{}} onChange={() => {}} artwork={server({ locked: true })} hltb={server({ locked: true })} manifest={server({ locked: true })} serverLoad={load} />,
+      );
+      expect(member).toContain('aria-describedby="privacy-manifest-hint privacy-manifest-admin-only privacy-server-load-error"');
+      expect(member.match(/id="privacy-server-load-error"/g)).toHaveLength(1);
+    });
+
+    it('has Spanish label, hints, attribution and note', () => {
+      const html = renderToStaticMarkup(
+        <I18nProvider initialLocale="es"><PrivacyToggles settings={{}} onChange={() => {}} manifest={server({ locked: true })} /></I18nProvider>,
+      );
+      expect(html).toContain(es['privacy.manifestLabel'] as string);
+      expect(html).toContain(`${es['privacy.manifestOff']} ${es['privacy.manifestAttribution']}`);
+      expect(html).toContain(es['where.adminOnly'] as string);
+      const local = renderToStaticMarkup(<I18nProvider initialLocale="es"><PrivacyToggles settings={{}} onChange={() => {}} /></I18nProvider>);
+      expect(local).toContain(es['privacy.manifestLocalOff'] as string);
+      for (const k of ['privacy.manifestLabel', 'privacy.manifestOn', 'privacy.manifestOff', 'privacy.manifestLocalOn', 'privacy.manifestLocalOff', 'privacy.manifestAttribution'] as const) {
+        expect(es[k]).toBeTruthy();
+        expect(es[k]).not.toBe(en[k]);
+      }
+    });
+  });
+
+  describe('server flags failed to load', () => {
+    const server = (over: Partial<ServerSwitchState> = {}): ServerSwitchState =>
+      ({ checked: false, locked: false, pending: true, onToggle: vi.fn(), ...over });
+    type BtnProps = { onClick?: () => void; children?: ReactNode; 'aria-disabled'?: boolean };
+    /** Expands hook-free components and returns every <button>. */
+    function buttons(node: ReactNode, out: ReactElement<BtnProps>[] = []): ReactElement<BtnProps>[] {
+      if (Array.isArray(node)) { node.forEach(n => buttons(n, out)); return out; }
+      if (!isValidElement<BtnProps>(node)) return out;
+      if (typeof node.type === 'function') return buttons((node.type as (p: unknown) => ReactNode)(node.props), out);
+      if (node.type === 'button') out.push(node);
+      return buttons(node.props.children, out);
+    }
+
+    it('shows a status note with Try again, linked to both disabled server switches', () => {
+      const html = renderToStaticMarkup(
+        <PrivacyToggles settings={{}} onChange={() => {}} artwork={server()} hltb={server()} serverLoad={{ failed: true, onRetry: () => {} }} />,
+      );
+      expect(html).toContain(`<div id="privacy-server-load-error" class="inline-error" role="status">`);
+      expect(html).toContain(en['privacy.flagLoadFailed']);
+      expect(html).toContain(`<button type="button" class="btn btn-secondary btn-sm">${en['common.tryAgain']}</button>`);
+      expect(html).toContain('aria-describedby="privacy-artwork-hint privacy-server-load-error"');
+      expect(html).toContain('aria-describedby="privacy-hltb-hint privacy-server-load-error"');
+      expect(html).toMatch(/id="privacy-artwork"[^>]*disabled=""|disabled=""[^>]*id="privacy-artwork"/);
+      expect(html).toMatch(/id="privacy-hltb"[^>]*disabled=""|disabled=""[^>]*id="privacy-hltb"/);
+    });
+
+    it('Try again calls onRetry once; while reloading it is aria-disabled and does nothing', () => {
+      const onRetry = vi.fn();
+      const view = (reloading: boolean) => PrivacyTogglesView({ settings: {}, onChange: () => {}, artwork: server(), hltb: server(), serverLoad: { failed: true, reloading, onRetry } });
+      const [btn] = buttons(view(false));
+      expect(btn.props['aria-disabled']).toBeUndefined();
+      btn.props.onClick?.();
+      expect(onRetry).toHaveBeenCalledTimes(1);
+      const [busy] = buttons(view(true));
+      expect(busy.props['aria-disabled']).toBe(true);
+      busy.props.onClick?.();
+      expect(onRetry).toHaveBeenCalledTimes(1);
+      expect(renderToStaticMarkup(view(true))).toContain('aria-disabled="true"');
+    });
+
+    it('keeps the admin-only note too for a member', () => {
+      const html = renderToStaticMarkup(
+        <PrivacyToggles settings={{}} onChange={() => {}} artwork={server({ locked: true })} hltb={server({ locked: true })} serverLoad={{ failed: true, onRetry: () => {} }} />,
+      );
+      expect(html).toContain('aria-describedby="privacy-artwork-hint privacy-artwork-admin-only privacy-server-load-error"');
+    });
+
+    it('shows no note when the load succeeded or with no server', () => {
+      const ok = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} artwork={server({ pending: false })} hltb={server({ pending: false })} serverLoad={{ failed: false, onRetry: () => {} }} />);
+      expect(ok).not.toContain('privacy-server-load-error');
+      expect(ok).not.toContain(en['privacy.flagLoadFailed']);
+      const local = renderToStaticMarkup(<PrivacyToggles settings={{}} onChange={() => {}} serverLoad={{ failed: true, onRetry: () => {} }} />);
+      expect(local).not.toContain('privacy-server-load-error');
+    });
+
+    it('has Spanish note and button', () => {
+      const html = renderToStaticMarkup(
+        <I18nProvider initialLocale="es"><PrivacyToggles settings={{}} onChange={() => {}} artwork={server()} hltb={server()} serverLoad={{ failed: true, onRetry: () => {} }} /></I18nProvider>,
+      );
+      expect(html).toContain(es['privacy.flagLoadFailed'] as string);
+      expect(html).toContain(es['common.tryAgain'] as string);
     });
   });
 });

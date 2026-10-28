@@ -11,7 +11,7 @@ import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
 import { invalidateGame } from './manifest.js';
 import { logger } from '../middleware/logging.js';
-import type { Game } from '../types/index.js';
+import type { Game, GameStoreIds } from '../types/index.js';
 
 /** Files in a game root, excluding version history (per-game cap). */
 function countGameFiles(root: string): number {
@@ -37,6 +37,8 @@ export interface UploadOptions {
    * other can't ping-pong forever.
    */
   relay?: boolean;
+  /** FEAT-server-storeIds: validated store ids to store on the game row (absent key = keep). */
+  storeIds?: GameStoreIds;
 }
 
 /**
@@ -85,7 +87,7 @@ export async function handleUploadFile(
     // creates a phantom game row.
     const lexical = validateRelativeSavePath(filePath);
     if (!lexical.ok) throw new PathRuleError(lexical.code, lexical.message);
-    const game = await withDbLock(() => database.ensureGame(ownerId, title));
+    const game = await withDbLock(() => database.ensureGame(ownerId, title, opts.storeIds));
     const target = resolveGameFile(game.id, filePath, ownerId);
     const finalPath = target.abs;
     const finalDir = path.dirname(finalPath);

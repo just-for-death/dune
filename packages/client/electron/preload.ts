@@ -1,10 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AutoSyncEvent, BackupProfile, Game, NewGameInput, ScannerSourceId, UpdateStatus } from '@dune/shared';
+import type {
+  AutoSyncEvent,
+  BackupProfile,
+  DownloadCompletedEvent,
+  DownloadFailedEvent,
+  DownloadProgressEvent,
+  DownloadRequest,
+  DownloadStatusEvent,
+  Game,
+  NewGameInput,
+  ScannerSourceId,
+  UpdateStatus,
+} from '@dune/shared';
 
 /** Server-side provider opt-ins (settings:providerFlags:*); mirrors the ElectronAPI members. */
 interface ServerProviderFlags {
   hltbEnabled: boolean;
   artworkEnabled: boolean;
+  manifestEnabled: boolean;
 }
 
 interface Cloud {
@@ -16,7 +29,8 @@ interface Settings {
   autoSyncEnabled: boolean;
   autoSyncFreq: string;
   scanRoots: string[];
-  updateChecks?: boolean;
+  /** Gates only the automatic update check; the manual checkForUpdates always runs. */
+  updateCheckEnabled?: boolean;
   trackersEnabled?: { steam: boolean; retroAchievements: boolean; gog: boolean };
   artworkEnabled?: boolean;
   // Server settings
@@ -237,7 +251,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setServerKey: (key: string) =>
     ipcRenderer.invoke('server-key:set', key),
 
-  // App updates (DUN-028)
+  // App updates (DUN-028). Manual release check: always runs (the click is the opt-in).
+  checkForUpdates: (opts?: { force?: boolean }) =>
+    ipcRenderer.invoke('updates:checkRelease', opts),
   getUpdateStatus: () =>
     ipcRenderer.invoke('updates:status'),
   downloadUpdate: () =>
@@ -253,4 +269,39 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Disk space
   getDiskSpace: (paths?: string[]) =>
     ipcRenderer.invoke('system:diskSpace', paths),
+
+  // Downloads: every result is { ok: true, ... } | { ok: false, code, message, status? }
+  listDownloads: () => ipcRenderer.invoke('downloads:list'),
+  addDownload: (req: DownloadRequest) => ipcRenderer.invoke('downloads:add', req),
+  pauseDownload: (id: string) => ipcRenderer.invoke('downloads:pause', id),
+  resumeDownload: (id: string) => ipcRenderer.invoke('downloads:resume', id),
+  cancelDownload: (id: string) => ipcRenderer.invoke('downloads:cancel', id),
+  retryDownload: (id: string) => ipcRenderer.invoke('downloads:retry', id),
+  removeDownload: (id: string) => ipcRenderer.invoke('downloads:remove', id),
+  setDownloadConcurrency: (n: number) => ipcRenderer.invoke('downloads:setConcurrency', n),
+  setDownloadAutoResume: (enabled: boolean) => ipcRenderer.invoke('downloads:setAutoResume', enabled),
+  getDownloadSettings: () => ipcRenderer.invoke('downloads:getSettings'),
+  chooseDownloadBaseDir: () => ipcRenderer.invoke('downloads:chooseBaseDir'),
+  chooseDownloadFolder: () => ipcRenderer.invoke('downloads:chooseFolder'),
+  showDownloadInFolder: (id: string) => ipcRenderer.invoke('downloads:showInFolder', id),
+  onDownloadProgress: (cb: (event: DownloadProgressEvent) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: DownloadProgressEvent) => cb(event);
+    ipcRenderer.on('downloads:progress', handler);
+    return () => ipcRenderer.removeListener('downloads:progress', handler);
+  },
+  onDownloadStatus: (cb: (event: DownloadStatusEvent) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: DownloadStatusEvent) => cb(event);
+    ipcRenderer.on('downloads:status', handler);
+    return () => ipcRenderer.removeListener('downloads:status', handler);
+  },
+  onDownloadCompleted: (cb: (event: DownloadCompletedEvent) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: DownloadCompletedEvent) => cb(event);
+    ipcRenderer.on('downloads:completed', handler);
+    return () => ipcRenderer.removeListener('downloads:completed', handler);
+  },
+  onDownloadFailed: (cb: (event: DownloadFailedEvent) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: DownloadFailedEvent) => cb(event);
+    ipcRenderer.on('downloads:failed', handler);
+    return () => ipcRenderer.removeListener('downloads:failed', handler);
+  },
 });

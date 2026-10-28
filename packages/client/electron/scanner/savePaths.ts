@@ -14,6 +14,7 @@ import axios from 'axios';
 import YAML from 'yaml';
 import { app } from 'electron';
 import { isProtectedSaveRoot } from './protectedRoots';
+import { normalizeStoreId } from './storeIds.js';
 
 export const MANIFEST_URL = 'https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml';
 /** Cache TTL for the on-disk manifest copy (it is ~4MB). */
@@ -27,6 +28,7 @@ export interface ManifestFileRule {
 export interface ManifestEntry {
   files?: Record<string, ManifestFileRule | null | undefined>;
   steam?: { id?: number | string };
+  gog?: { id?: number | string };
   installDir?: Record<string, unknown>;
 }
 
@@ -292,7 +294,10 @@ export function normalizeGameName(name: string): string {
 
 export interface SaveLookup {
   name: string;
-  steamAppId?: string;
+  /** Shared Game.steamAppId (digit string or null). */
+  steamAppId?: string | null;
+  /** Shared Game.gogId (digit string or null). */
+  gogId?: string | null;
   /** Install folder; feeds `<base>`. Never returned as a save path. */
   installPath?: string;
   /** Wine/Proton prefix whose user dirs should be searched. */
@@ -308,8 +313,8 @@ export interface SaveResolverOptions extends Partial<PathContext> {
 }
 
 export interface SaveResolver {
-  /** Manifest entry for a game, matched by Steam app id first, then by name. */
-  findEntry(game: Pick<SaveLookup, 'name' | 'steamAppId'>): { name: string; entry: ManifestEntry } | null;
+  /** Manifest entry for a game, matched by Steam app id, then GOG id, then by name. */
+  findEntry(game: Pick<SaveLookup, 'name' | 'steamAppId' | 'gogId'>): { name: string; entry: ManifestEntry } | null;
   /** First existing save path for a game, or '' when none can be resolved. */
   resolve(game: SaveLookup): string;
   /** Resolve and place into the current platform's field. */
@@ -337,6 +342,7 @@ export function createSaveResolver(manifest: LudusaviManifest, options: SaveReso
   const ctx = defaultContext(options);
   const activeRoots = expandCustomRoots(options.customRoots ?? [], ctx);
   const bySteamId = new Map<string, string>();
+  const byGogId = new Map<string, string>();
   const byName = new Map<string, string>();
   const byNormalizedName = new Map<string, string>();
 
@@ -346,13 +352,18 @@ export function createSaveResolver(manifest: LudusaviManifest, options: SaveReso
     if (steamId !== undefined && steamId !== null && !bySteamId.has(String(steamId))) {
       bySteamId.set(String(steamId), name);
     }
+    const gogId = normalizeStoreId(entry.gog?.id);
+    if (gogId && !byGogId.has(gogId)) byGogId.set(gogId, name);
     byName.set(name, name);
     const norm = normalizeGameName(name);
     if (norm && !byNormalizedName.has(norm)) byNormalizedName.set(norm, name);
   }
 
-  function findEntry(game: Pick<SaveLookup, 'name' | 'steamAppId'>) {
-    const key = (game.steamAppId && bySteamId.get(String(game.steamAppId)))
+  function findEntry(game: Pick<SaveLookup, 'name' | 'steamAppId' | 'gogId'>) {
+    const steamAppId = normalizeStoreId(game.steamAppId);
+    const gogId = normalizeStoreId(game.gogId);
+    const key = (steamAppId && bySteamId.get(steamAppId))
+      || (gogId && byGogId.get(gogId))
       || byName.get(game.name)
       || byNormalizedName.get(normalizeGameName(game.name));
     const entry = key ? manifest[key] : undefined;
@@ -363,7 +374,7 @@ export function createSaveResolver(manifest: LudusaviManifest, options: SaveReso
     if (!entry.files) return '';
     const tokens: GameTokens = {
       base: lookup.installPath,
-      storeGameId: lookup.steamAppId,
+      storeGameId: normalizeStoreId(lookup.steamAppId) ?? normalizeStoreId(lookup.gogId) ?? undefined,
       ...(lookup.installPath ? { game: path.basename(lookup.installPath) } : {}),
       ...lookup.tokens,
     };

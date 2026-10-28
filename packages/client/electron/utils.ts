@@ -117,10 +117,12 @@ export function sanitizeSettings(input: unknown, fallback: unknown): {
   autoSyncEnabled: boolean;
   autoSyncFreq: string;
   scanRoots: string[];
-  updateChecks: boolean;
+  updateCheckEnabled: boolean;
   scannerSources: ScannerSourceToggles;
   trackersEnabled: TrackersEnabled;
   artworkEnabled: boolean;
+  hltbEnabled: boolean;
+  manifestEnabled: boolean;
 } {
   const s = (input ?? {}) as Record<string, unknown>;
   const f = (fallback ?? {}) as Record<string, unknown>;
@@ -137,13 +139,17 @@ export function sanitizeSettings(input: unknown, fallback: unknown): {
     autoSyncEnabled: s.autoSyncEnabled === true,
     autoSyncFreq: ['never', '1h', '6h', '24h'].includes(freq) ? freq : 'never',
     scanRoots,
-    // DUN-028: opt-in only.
-    updateChecks: s.updateChecks === true,
+    // DUN-028: gates only the automatic update check (manual always runs); opt-in only.
+    updateCheckEnabled: s.updateCheckEnabled === true,
     // DUN-077: main-owned (scanner:setSource); the renderer can't change it here.
     scannerSources: sanitizeScannerSources(f.scannerSources),
     // Trackers and artwork are opt-in: only a literal true turns one on.
     trackersEnabled: sanitizeTrackersEnabled(s.trackersEnabled),
     artworkEnabled: s.artworkEnabled === true,
+    // HowLongToBeat lookups are opt-in too (Settings.hltbEnabled, default false).
+    hltbEnabled: s.hltbEnabled === true,
+    // Ludusavi save-path manifest lookups are opt-in (Settings.manifestEnabled, default false).
+    manifestEnabled: s.manifestEnabled === true,
   };
   // DUN-092 / DUN-036: no SteamGridDB key is kept here; it lives only on the
   // Dune Server (write-only provider key).

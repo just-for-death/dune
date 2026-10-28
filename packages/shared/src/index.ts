@@ -1,5 +1,16 @@
 // Shared types for Dune Client ↔ Server communication
 
+import type {
+  DownloadCompletedEvent,
+  DownloadFailedEvent,
+  DownloadIpcResult,
+  DownloadProgressEvent,
+  DownloadRequest,
+  DownloadSettings,
+  DownloadSnapshot,
+  DownloadStatusEvent,
+} from './downloads.js';
+
 export * from './delta.js';
 export * from './id.js';
 
@@ -19,7 +30,10 @@ export interface Game {
   source?: 'steam' | 'heroic' | 'lutris' | 'manual' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft' | 'emulator';
   tags?: string[];
   // Optional launcher metadata supplied by source scanners.
-  steamAppId?: string;
+  /** Steam app id: positive integer as a digit string (1-12 digits, no leading zero). */
+  steamAppId?: string | null;
+  /** GOG product id: positive integer as a digit string (1-12 digits, no leading zero). */
+  gogId?: string | null;
   heroicId?: string;
   lutrisSlug?: string;
   winePrefix?: string;
@@ -87,8 +101,6 @@ export interface Settings {
   autoSyncEnabled?: boolean;
   autoSyncFreq?: string;
   scanRoots?: string[];
-  /** Client-only (DUN-028): opt-in app update checks. Default off. */
-  updateChecks?: boolean;
   /** Client-only (DUN-077): saved scanner source toggles; written by main via scanner:setSource only. */
   scannerSources?: ScannerSourceToggles;
   /** Remote achievement trackers, each off until the user turns it on. Backend reads the same flags. */
@@ -97,6 +109,10 @@ export interface Settings {
   artworkEnabled?: boolean;
   /** HowLongToBeat lookups; off until the user turns them on (server default false, enabled only when === true). */
   hltbEnabled: boolean;
+  /** Ludusavi save-path manifest (PCGamingWiki data) lookups; off until turned on (server default false, enabled only when === true). */
+  manifestEnabled: boolean;
+  /** Client-only: gates only the automatic update check (default false); the manual check (checkForUpdates) always works. */
+  updateCheckEnabled: boolean;
 }
 
 /** Per-tracker opt-in; every field defaults to false. (Epic remote achievements dropped by Lead decision, 2026-10-28.) */
@@ -299,6 +315,10 @@ export interface UploadHeaders {
   'x-game': string;
   'x-path': string;
   'x-sync-id'?: string;
+  /** Game.steamAppId (digit string); absent = keep the stored value. */
+  'x-steam-app-id'?: string;
+  /** Game.gogId (digit string); absent = keep the stored value. */
+  'x-gog-id'?: string;
 }
 
 // Electron IPC API
@@ -449,11 +469,25 @@ export type FetchArtResult = ServerResult<{ thumbnail: string }>;
 export type ProviderKeyStatusResult = ServerResult<{ set: boolean }>;
 
 /** DUN-073: the local Dune Server API key is write-only too. `unreadable`: stored but can't be decrypted. */
+/**
+ * One save/config location from the Ludusavi manifest (getManifestSuggestions). `path` is absolute plain
+ * text expanded on this machine, filtered to the home dir, the game's installPath or its prefix; `exists`
+ * says whether it is present on disk. A suggestion is applied only once the user confirms it.
+ */
+export interface ManifestSuggestion { path: string; kind: 'save' | 'config'; exists: boolean }
+
 export type ServerKeyStatus = { set: boolean; unreadable?: true };
 
 /** DUN-028: opt-in update checks; download and install only on a click. */
 export type UpdateState = 'disabled' | 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
 export interface UpdateStatus { state: UpdateState; version?: string; message?: string }
+
+/**
+ * Result of an update check (checkForUpdates). `notes` is plain text (Markdown
+ * source): render it as text, never as HTML. `releaseUrl` is an https:// release
+ * page only; nothing is downloaded from it.
+ */
+export interface UpdateInfo { version: string; current: string; releaseUrl: string; notes: string; isNewer: boolean; publishedAt?: string }
 
 /** DUN-077: scanner sources the user can switch on/off ('manual' is always on). */
 export type ScannerSourceId = 'steam' | 'heroic' | 'lutris' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft' | 'emulator';
@@ -591,8 +625,15 @@ export interface ElectronAPI {
   removeApiKey: (id: string) => Promise<ServerResult<{ success: boolean; message?: string }>>;
   /** DUN-115: the signed-in user; role gates admin-only UI. */
   getCurrentUser(): Promise<ServerResult<{ id: string; name: string; role: 'admin' | 'member' }>>;
-  getServerProviderFlags(): Promise<ServerResult<{hltbEnabled: boolean; artworkEnabled: boolean}>>;
-  setServerProviderFlags(patch: Partial<{hltbEnabled: boolean; artworkEnabled: boolean}>): Promise<ServerResult<{hltbEnabled: boolean; artworkEnabled: boolean}>>;
+  getServerProviderFlags(): Promise<ServerResult<{hltbEnabled: boolean; artworkEnabled: boolean; manifestEnabled: boolean}>>;
+  setServerProviderFlags(patch: Partial<{hltbEnabled: boolean; artworkEnabled: boolean; manifestEnabled: boolean}>): Promise<ServerResult<{hltbEnabled: boolean; artworkEnabled: boolean; manifestEnabled: boolean}>>;
+  checkForUpdates(opts?: {force?: boolean}): Promise<ServerResult<{update: UpdateInfo; stale?: true}>>;
+  /**
+   * Save/config path suggestions for a game from the Ludusavi manifest (PCGamingWiki data, CC BY-NC-SA 3.0).
+   * Implemented by Desktop: uses the server route (GET /api/manifest/:gameId) when connected and
+   * Settings.manifestEnabled is on, a local manifest fetch otherwise. Paths are expanded on this machine.
+   */
+  getManifestSuggestions(gameId: string): Promise<ServerResult<{ suggestions: ManifestSuggestion[]; attribution: string; pageUrl: string | null; stale?: true }>>;
   
   // Ollama
   /** DUN-095/057: the server uses its stored endpoint only (admin-only). */
@@ -605,7 +646,7 @@ export interface ElectronAPI {
   getServerKey: () => Promise<ServerKeyStatus>;
   setServerKey: (key: string) => Promise<ServerKeyStatus>;
 
-  // App updates (DUN-028): opt-in via settings.updateChecks; download/install only on a click
+  // App updates (DUN-028): automatic check opt-in via settings.updateCheckEnabled; manual check always allowed; download/install only on a click
   getUpdateStatus: () => Promise<UpdateStatus>;
   downloadUpdate: () => Promise<UpdateStatus>;
   installUpdate: () => Promise<UpdateStatus>;
@@ -613,6 +654,31 @@ export interface ElectronAPI {
 
   // Disk space (one entry per drive; never rejects)
   getDiskSpace(paths?: string[]): Promise<DriveSpace[]>;
+
+  // Downloads (content-agnostic engine; main owns every path and folder dialog)
+  listDownloads(): Promise<DownloadIpcResult<{ items: DownloadSnapshot[] }>>;
+  /** `req.destDir`, if set, should come from chooseDownloadFolder(); main re-validates it. */
+  addDownload(req: DownloadRequest): Promise<DownloadIpcResult<{ item: DownloadSnapshot }>>;
+  pauseDownload(id: string): Promise<DownloadIpcResult<{ item: DownloadSnapshot }>>;
+  resumeDownload(id: string): Promise<DownloadIpcResult<{ item: DownloadSnapshot }>>;
+  cancelDownload(id: string): Promise<DownloadIpcResult<{ item: DownloadSnapshot }>>;
+  retryDownload(id: string): Promise<DownloadIpcResult<{ item: DownloadSnapshot }>>;
+  /** Forgets the item (resolves with its last snapshot); never deletes a completed file. */
+  removeDownload(id: string): Promise<DownloadIpcResult<{ item: DownloadSnapshot }>>;
+  // Settings results are flat: { ok: true, baseDir, concurrency, maxConcurrency, autoResume }.
+  setDownloadConcurrency(n: number): Promise<DownloadIpcResult<DownloadSettings>>;
+  setDownloadAutoResume(enabled: boolean): Promise<DownloadIpcResult<DownloadSettings>>;
+  getDownloadSettings(): Promise<DownloadIpcResult<DownloadSettings>>;
+  /** Main shows a folder dialog and makes the chosen folder the base dir for new downloads. */
+  chooseDownloadBaseDir(): Promise<DownloadIpcResult<DownloadSettings>>;
+  /** Main shows a folder dialog for a per-download destDir override. */
+  chooseDownloadFolder(): Promise<DownloadIpcResult<{ path: string }>>;
+  /** Reveals the completed file, or opens the item's folder. Looked up by id only. */
+  showDownloadInFolder(id: string): Promise<DownloadIpcResult>;
+  onDownloadProgress(cb: (event: DownloadProgressEvent) => void): () => void;
+  onDownloadStatus(cb: (event: DownloadStatusEvent) => void): () => void;
+  onDownloadCompleted(cb: (event: DownloadCompletedEvent) => void): () => void;
+  onDownloadFailed(cb: (event: DownloadFailedEvent) => void): () => void;
 }
 
 // NOTE: no `declare global Window` here on purpose. This package is a pure
@@ -621,5 +687,6 @@ export interface ElectronAPI {
 // for every importer. Renderers declare their own Window binding instead.
 
 export * from './pathRules.js';
+export * from './downloads.js';
 export * from './backupGlob.js';
 export * from './serverUrl.js';

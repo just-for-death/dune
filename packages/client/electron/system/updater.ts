@@ -3,8 +3,9 @@ import type { UpdateStatus } from '@dune/shared';
 /**
  * DUN-028: app updates are opt-in and never install without a click.
  *
- * - Nothing is checked until the user turns on `settings.updateChecks`
- *   (default off). Then it checks at startup and every 24 h.
+ * - Nothing is checked automatically until the user turns on
+ *   `settings.updateCheckEnabled` (default off). Then it checks at startup and
+ *   every 24 h. (The manual release check, updates:checkRelease, always runs.)
  * - A check only reports; autoDownload and autoInstallOnAppQuit are always off.
  * - Download happens only on `download()` (a click) after a check found an
  *   update, install only on `install()` (a click) after the download finished.
@@ -23,7 +24,7 @@ export interface UpdaterLike {
 export interface UpdateControllerDeps {
   updater: UpdaterLike;
   isPackaged: boolean;
-  /** The saved opt-in (settings.updateChecks === true). */
+  /** The saved automatic-check opt-in (isUpdateCheckEnabled(settings): updateCheckEnabled === true). */
   enabled: () => boolean;
   /** The running app version. */
   currentVersion: string;

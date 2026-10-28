@@ -35,3 +35,32 @@ describe('uploadFileHeaders', () => {
     expect(() => uploadFileHeaders('G', 'a', '1'.repeat(20))).not.toThrow();
   });
 });
+
+describe('uploadFileHeaders: store ids (x-steam-app-id / x-gog-id)', () => {
+  const SYNC = '1760946000000';
+
+  it('sends a valid digit-string id as its header, unencoded', () => {
+    const h = uploadFileHeaders('Hollow Knight', 'a.sav', SYNC, { steamAppId: '367520', gogId: '1308320804' });
+    expect(h['x-steam-app-id']).toBe('367520');
+    expect(h['x-gog-id']).toBe('1308320804');
+    expect(uploadFileHeaders('G', 'a', SYNC, { steamAppId: '999999999999', gogId: '1' })).toMatchObject({ 'x-steam-app-id': '999999999999', 'x-gog-id': '1' });
+  });
+
+  it.each([
+    ['null', null], ['undefined', undefined], ['empty', ''], ['leading zero', '0367520'], ['zero', '0'],
+    ['13 digits', '1234567890123'], ['letters', 'abc'], ['spaces', ' 367520'], ['negative', '-5'], ['decimal', '1.5'],
+    ['number', 367520 as unknown as string],
+  ])('omits an invalid id (%s), so the server keeps its stored value', (_label, bad) => {
+    const h = uploadFileHeaders('G', 'a', SYNC, { steamAppId: bad, gogId: bad });
+    expect(h).not.toHaveProperty('x-steam-app-id');
+    expect(h).not.toHaveProperty('x-gog-id');
+  });
+
+  it('no ids (the default) adds no store-id headers; one valid id is sent alone', () => {
+    expect(Object.keys(uploadFileHeaders('G', 'a', SYNC)).sort()).toEqual(['Content-Type', 'x-game', 'x-path', 'x-sync-id']);
+    const h = uploadFileHeaders('G', 'a', SYNC, { steamAppId: null, gogId: '1955430409' });
+    expect(h).not.toHaveProperty('x-steam-app-id');
+    expect(h['x-gog-id']).toBe('1955430409');
+    for (const [name, value] of Object.entries(h)) expect(() => validateHeaderValue(name, value)).not.toThrow();
+  });
+});

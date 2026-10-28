@@ -52,10 +52,12 @@ import { isProviderDisabled } from './services/hltbStatus';
 import { flagSaveErrorKey, saveProviderFlags, useProviderFlags, type ProviderFlagPatch } from './services/providerFlags';
 import { NoServerNotice } from './components/NoServerNotice';
 import { PrivacyToggles } from './components/settings/PrivacyToggles';
+import { UpdateCheck } from './components/updates/UpdateCheck';
 import { artworkDisabledMessage, isArtworkDisabled } from './components/settings/privacyToggleHelpers';
 import { LaunchSettings } from './components/LaunchSettings';
 import { pickFailureMessage } from './services/launchSettings';
 import { DriveSpaceList } from './components/saves/DriveSpaceList';
+import { DownloadsView } from './components/downloads/DownloadsView';
 import { toDriveRows } from './services/driveSpace';
 import { cloudSyncFailureMessage, serverFailureMessage } from './services/serverError';
 import { formatMinutes } from './services/playtimeFormat';
@@ -73,7 +75,7 @@ declare global {
   }
 }
 
-type Tab = 'dashboard' | 'mapping' | 'prefixes' | 'sync' | 'saves' | 'bigpicture' | 'hltb' | 'playtime' | 'achievements' | 'settings';
+type Tab = 'dashboard' | 'mapping' | 'prefixes' | 'sync' | 'saves' | 'bigpicture' | 'hltb' | 'playtime' | 'achievements' | 'downloads' | 'settings';
 
 /** Plain wording for DUN-061 launch failures; the optional detail from main is appended, the code never is. */
 function launchFailureMessage(t: Translator, name: string, reason: string, detail?: string): string {
@@ -117,7 +119,7 @@ type SettingsField = 'serverUrl' | 'serverKey';
  * main's sanitizeSettings keeps only these, and the SteamGridDB key is
  * managed through its own write-only IPC (DUN-092).
  */
-type ClientSettings = Pick<Settings, 'runInBackground' | 'autoSyncEnabled' | 'autoSyncFreq' | 'scanRoots' | 'trackersEnabled' | 'artworkEnabled'>;
+type ClientSettings = Pick<Settings, 'runInBackground' | 'autoSyncEnabled' | 'autoSyncFreq' | 'scanRoots' | 'trackersEnabled' | 'artworkEnabled' | 'hltbEnabled' | 'manifestEnabled' | 'updateCheckEnabled'>;
 
 function clientSettingsFrom(source: Partial<ClientSettings>, prev: ClientSettings): ClientSettings {
   return {
@@ -128,6 +130,10 @@ function clientSettingsFrom(source: Partial<ClientSettings>, prev: ClientSetting
     // DUN-135: opt-in privacy switches (main sanitizes them; off unless literally true).
     trackersEnabled: { ...DEFAULT_TRACKERS_ENABLED, ...prev.trackersEnabled, ...source.trackersEnabled },
     artworkEnabled: source.artworkEnabled ?? prev.artworkEnabled ?? false,
+    hltbEnabled: source.hltbEnabled ?? prev.hltbEnabled ?? false,
+    manifestEnabled: source.manifestEnabled ?? prev.manifestEnabled ?? false,
+    // Gates only the automatic update check; the manual check always works.
+    updateCheckEnabled: source.updateCheckEnabled ?? prev.updateCheckEnabled ?? false,
   };
 }
 
@@ -155,6 +161,9 @@ const DEFAULT_SETTINGS: ClientSettings = {
   scanRoots: [],
   trackersEnabled: { ...DEFAULT_TRACKERS_ENABLED },
   artworkEnabled: false,
+  hltbEnabled: false,
+  manifestEnabled: false,
+  updateCheckEnabled: false,
 };
 
 
@@ -1054,9 +1063,9 @@ export default function App() {
   // member is locked out; 'unknown' keeps controls on and the server's 403 explains.
   const adminState = useIsAdmin(hasServer, `${cloud.url}#${serverConnectionVersion}`);
   const adminLocked = isLockedForRole(adminState);
-  // Server provider flags (hltbEnabled/artworkEnabled), loaded once per connection
+  // Server provider flags (hltbEnabled/artworkEnabled/manifestEnabled), loaded once per connection
   // like the role. With a server these switches show the server copy; members read-only.
-  const { flags: providerFlags, setFlags: setProviderFlags } = useProviderFlags(hasServer, `${cloud.url}#${serverConnectionVersion}`);
+  const { flags: providerFlags, setFlags: setProviderFlags, loadFailed: providerFlagsFailed, reloading: providerFlagsReloading, reload: reloadProviderFlags } = useProviderFlags(hasServer, `${cloud.url}#${serverConnectionVersion}`);
   const [providerFlagSaving, setProviderFlagSaving] = useState(false);
   const toggleProviderFlag = async (patch: ProviderFlagPatch) => {
     if (providerFlagSaving) return;
@@ -1214,6 +1223,10 @@ export default function App() {
         <button className={`nav-item ${activeTab === 'achievements' ? 'active' : ''}`} aria-current={activeTab === 'achievements' ? 'page' : undefined} onClick={() => { setActiveTab('achievements'); loadAchievements(); }}>
           <Icon name="achievements" />
           <span>{t('nav.achievements')}</span>
+        </button>
+        <button className={`nav-item ${activeTab === 'downloads' ? 'active' : ''}`} aria-current={activeTab === 'downloads' ? 'page' : undefined} onClick={() => setActiveTab('downloads')}>
+          <Icon name="export" />
+          <span>{t('nav.downloads')}</span>
         </button>
         <button className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`} aria-current={activeTab === 'settings' ? 'page' : undefined} onClick={() => setActiveTab('settings')}>
           <Icon name="settings" />
@@ -1953,6 +1966,7 @@ export default function App() {
           </div>
         )}
 
+        {activeTab === 'downloads' && <DownloadsView api={window.electronAPI} />}
         {activeTab === 'settings' && (
           <div>
             <h2 className="section-title"><Icon name="settings" size={20} />{t('settings.title')}</h2>
@@ -1971,10 +1985,14 @@ export default function App() {
 
               <PrivacyToggles
                 settings={settings}
-                onChange={next => saveSettings({ trackersEnabled: next.trackersEnabled, artworkEnabled: next.artworkEnabled })}
+                onChange={next => saveSettings({ trackersEnabled: next.trackersEnabled, artworkEnabled: next.artworkEnabled, hltbEnabled: next.hltbEnabled, manifestEnabled: next.manifestEnabled })}
                 artwork={serverSwitch('artworkEnabled')}
                 hltb={serverSwitch('hltbEnabled')}
+                manifest={serverSwitch('manifestEnabled')}
+                serverLoad={hasServer ? { failed: providerFlagsFailed, reloading: providerFlagsReloading, onRetry: reloadProviderFlags } : undefined}
               />
+
+              <UpdateCheck api={window.electronAPI} settings={settings} onToggle={updateCheckEnabled => saveSettings({ updateCheckEnabled })} />
 
               <h4 className="section-subtitle">{t('settings.steamGridTitle')}</h4>
               <p className="text-muted text-sm">

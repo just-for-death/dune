@@ -21,6 +21,7 @@ import { DEFAULT_EXCLUDE_GLOBS } from '@dune/shared';
 import {
   parseInput, playtimeSessionSchema, playtimeGraphQuery, playtimeExportQuery, playtimeComparisonQuery,
   globListSchema, backupProfileOptionsSchema, analyzeFilesSchema, saveVersionsListQuery, saveVersionCreateBody, restoreVersionBody,
+  manifestGameParams, storeIdHeaders, gameIdParams, gamePatchBody, gamePatchIds,
 } from './schemas.js';
 import { scanStorage, getDriveFreeBytes } from './services/storage.js';
 import { manifestForGame, removeGameFile } from './services/manifest.js';
@@ -41,6 +42,7 @@ import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalP
 import { getAchievementSummary, getRecentUnlocks, upsertAchievements } from './services/achievements.js';
 import { getAchievementDetails, getAchievementProgress } from './services/achievementDetail.js';
 import { getHLTBTimes } from './services/hltb.js';
+import { lookupManifest, manifestQueryForGame, requireManifestEnabled } from './services/manifestProvider.js';
 import { analyzeFilesAI, checkModelStatus, fetchModels, storedOllamaConfig } from './services/ollama.js';
 import { searchArt, autoMatchAll, requireArtworkEnabled } from './services/steamGridDB.js';
 import { withSteamGridKey, steamGridKeyStatus, setSteamGridKey, clearSteamGridKey } from './services/providerKeys.js';
@@ -110,6 +112,8 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimitMiddleware, async (r
     // an admin's explicit `owner`) namespace, never inferred from the title.
     const title = gameParam(game);
     const ownerId = targetOwnerId(req);
+    // FEAT-server-storeIds: optional x-steam-app-id / x-gog-id (400 INVALID_STORE_ID).
+    const storeIds = parseInput(storeIdHeaders, req.headers, 'INVALID_STORE_ID');
 
     // Upfront content-length guard (streaming guard in sync.ts is authoritative)
     const contentLength = parseInt(req.headers['content-length'] || '0', 10);
@@ -121,7 +125,7 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimitMiddleware, async (r
 
     // DUN-091: peers mark their pushes; a relayed upload is never re-pushed.
     const relay = req.headers['x-dune-relay'] === '1';
-    const result = await handleUploadFile(title, filePath, req, syncId, ownerId, { relay });
+    const result = await handleUploadFile(title, filePath, req, syncId, ownerId, { relay, storeIds });
     if (!result.success && result.error) throw result.error;
     if (!result.success) {
       return sendError(res, result.status ?? 500, result.status === 413 ? 'PAYLOAD_TOO_LARGE' : 'UPLOAD_FAILED', result.message);
@@ -416,6 +420,42 @@ app.get('/api/hltb/:game', authMiddleware, async (req, res) => {
   }
 });
 
+// FEAT-server-manifest: Ludusavi save-path manifest entry (PCGamingWiki data,
+// CC BY-NC-SA 3.0; attribution always returned) for one of the caller's games.
+// Order: 400 bad id, 403 PROVIDER_DISABLED (no network), 404 GAME_NOT_FOUND
+// (missing or another owner's game), 404 MANIFEST_NOT_FOUND. Entry paths are
+// returned as data only; the server never expands or touches them.
+app.get('/api/manifest/:gameId', authMiddleware, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { gameId } = parseInput(manifestGameParams, req.params, 'INVALID_GAME_ID');
+    requireManifestEnabled();
+    const game = requireGameById(req, gameId);
+    // FEAT-server-storeIds: Steam id, then GOG id, then title.
+    const hit = await lookupManifest(manifestQueryForGame(game));
+    res.json({ success: true, entry: hit.entry, pageUrl: hit.pageUrl, attribution: hit.attribution, ...(hit.stale ? { stale: true } : {}) });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
+// FEAT-server-gamePatch: set or clear a game's Steam/GOG ids (null clears).
+// Order: 401 no key, 400 INVALID_GAME_ID, 400 INVALID_GAME_UPDATE (not an
+// object, {} or unknown keys), 400 INVALID_STORE_ID, 404 GAME_NOT_FOUND
+// (missing or another owner's game; admins use ?owner=). Returns the game.
+app.patch('/api/games/:id', authMiddleware, (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = parseInput(gameIdParams, req.params, 'INVALID_GAME_ID');
+    const body = parseInput(gamePatchBody, req.body ?? {}, 'INVALID_GAME_UPDATE');
+    const ids = parseInput(gamePatchIds, body, 'INVALID_STORE_ID');
+    const game = requireGameById(req, id);
+    const updated = database.setGameStoreIds(game.id, game.ownerId, ids);
+    if (!updated) throw gameNotFound();
+    res.json({ success: true, game: updated });
+  } catch (e) {
+    restError(req, res, e, 'API internal error');
+  }
+});
+
 app.post('/api/analyze-files-ai', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     assertNoLaunchFields(req.body);
@@ -689,6 +729,7 @@ app.get('/api/settings', authMiddleware, (req, res) => {
         remoteServers: s.remoteServers,
         hltbEnabled: s.hltbEnabled === true,
         artworkEnabled: s.artworkEnabled === true,
+        manifestEnabled: s.manifestEnabled === true,
       },
     });
   } catch (e) {
@@ -723,7 +764,7 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
     }
     if (typeof input.ollamaModel === 'string') merged.ollamaModel = input.ollamaModel;
     // Provider opt-ins: strictly boolean, never coerced ("true"/1 are rejected).
-    for (const flag of ['hltbEnabled', 'artworkEnabled'] as const) {
+    for (const flag of ['hltbEnabled', 'artworkEnabled', 'manifestEnabled'] as const) {
       if (!(flag in input)) continue;
       if (typeof input[flag] !== 'boolean') return sendError(res, 400, 'INVALID_SETTINGS', `${flag} must be true or false`);
       merged[flag] = input[flag];

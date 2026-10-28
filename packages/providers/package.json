@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.5",
     "eslint": "^10.13.0",
@@ -37,5 +38,9 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.3.2",
+    "zod": "^4.6.7"
   }
 }

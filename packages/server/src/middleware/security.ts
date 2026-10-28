@@ -169,6 +169,6 @@ export const corsConfig = cors({
     callback(null, allowedOrigins.includes(origin));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'x-game', 'x-path', 'x-sync-id', 'x-dune-relay'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'x-game', 'x-path', 'x-sync-id', 'x-dune-relay', 'x-steam-app-id', 'x-gog-id'],
 });

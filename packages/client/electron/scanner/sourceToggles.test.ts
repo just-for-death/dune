@@ -41,12 +41,12 @@ describe('scanner source toggles (DUN-077)', () => {
   });
 
   it('config:save cannot change the toggles; it keeps the stored value (sanitizeSettings)', () => {
-    const stored = { scannerSources: { epic: true }, updateChecks: true };
-    const next = sanitizeSettings({ scannerSources: { epic: false, steam: false }, updateChecks: false }, stored);
+    const stored = { scannerSources: { epic: true }, updateCheckEnabled: true };
+    const next = sanitizeSettings({ scannerSources: { epic: false, steam: false }, updateCheckEnabled: false }, stored);
     expect(next.scannerSources).toEqual({ epic: true });
-    expect(next.updateChecks).toBe(false);
+    expect(next.updateCheckEnabled).toBe(false);
     expect(next).not.toHaveProperty('steamGridDbKey');
     expect(sanitizeSettings({ steamGridDbKey: 'leak' }, {})).not.toHaveProperty('steamGridDbKey');
-    expect(sanitizeSettings({}, {}).updateChecks).toBe(false);
+    expect(sanitizeSettings({}, {}).updateCheckEnabled).toBe(false);
   });
 });

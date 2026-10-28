@@ -141,6 +141,9 @@ const gameIdQuery = z.coerce.number().positive();
 /** GET /api/save-versions?gameId=<number>. */
 export const saveVersionsListQuery = z.object({ gameId: gameIdQuery });
 
+/** GET /api/manifest/:gameId (FEAT-server-manifest). */
+export const manifestGameParams = z.object({ gameId: gameIdQuery });
+
 /**
  * POST /api/save-versions body: `{ gameId: number, deviceId?, changeSummary? }`.
  * deviceId / changeSummary keep their lenient handling (non-strings fall back).
@@ -160,6 +163,47 @@ export const restoreVersionBody = z.object({
   gameId: z.number().positive(),
   versionId: z.unknown().optional(),
 });
+
+// ── Store ids (FEAT-server-storeIds) ────────────────────────────────────────
+
+/** Steam app id / GOG product id: a positive integer as a digit string, 1-12 digits, no leading zero. */
+export const STORE_ID_PATTERN = /^[1-9][0-9]{0,11}$/;
+
+const storeId = z.string().regex(STORE_ID_PATTERN, 'Expected a positive integer as a digit string (1-12 digits, no leading zero)');
+
+/**
+ * POST /api/upload-file optional headers `x-steam-app-id` / `x-gog-id`
+ * (400 INVALID_STORE_ID). Absent = keep the stored value. Other headers are
+ * ignored here. A repeated header arrives comma-joined and is rejected.
+ */
+export const storeIdHeaders = z.object({
+  'x-steam-app-id': storeId.optional(),
+  'x-gog-id': storeId.optional(),
+}).transform((h) => ({
+  ...(h['x-steam-app-id'] !== undefined ? { steamAppId: h['x-steam-app-id'] } : {}),
+  ...(h['x-gog-id'] !== undefined ? { gogId: h['x-gog-id'] } : {}),
+}));
+
+/**
+ * PATCH /api/games/:id body shape (FEAT-server-gamePatch): a strict object
+ * with only `steamAppId` / `gogId`, at least one present. Unknown keys, `{}`
+ * or a non-object -> 400 INVALID_GAME_UPDATE. Values are checked separately
+ * by gamePatchIds so a bad id is 400 INVALID_STORE_ID.
+ */
+export const gamePatchBody = z.strictObject({
+  steamAppId: z.unknown().optional(),
+  gogId: z.unknown().optional(),
+}).refine((b) => b.steamAppId !== undefined || b.gogId !== undefined, { message: 'Send steamAppId and/or gogId' });
+
+/** PATCH /api/games/:id values: a STORE_ID_PATTERN digit string, or null to clear; absent = keep. */
+export const gamePatchIds = z.object({
+  steamAppId: storeId.nullable().optional(),
+  gogId: storeId.nullable().optional(),
+});
+export type GamePatchIds = z.output<typeof gamePatchIds>;
+
+/** PATCH /api/games/:id path param (same rule as other game ids). */
+export const gameIdParams = z.object({ id: gameIdQuery });
 
 // ── AI analysis (DUN-104) ───────────────────────────────────────────────────
 

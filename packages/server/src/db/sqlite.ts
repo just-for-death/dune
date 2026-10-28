@@ -84,6 +84,8 @@ function openSchema(file: string): DatabaseSync {
         thumbnail TEXT NOT NULL DEFAULT '',
         analysis TEXT,
         ownerId TEXT REFERENCES users(id) ON DELETE SET NULL,
+        steamAppId TEXT,
+        gogId TEXT,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL,
         UNIQUE(ownerId, name)
@@ -103,6 +105,9 @@ function openSchema(file: string): DatabaseSync {
     // enforce it so two rows can never map to the same lookup. (SQLite NOCASE
     // folds ASCII letters only.) Saves live under the game id, not the title.
     handle.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_games_owner_name_nocase ON games(ownerId, name COLLATE NOCASE);');
+    // FEAT-server-storeIds: a DB created before these columns gets them here
+    // (fresh DBs already have them from CREATE TABLE above).
+    migrateGamesStoreIds(handle);
 
     // Save versioning (Dune)
     handle.exec(`
@@ -166,6 +171,30 @@ function openSchema(file: string): DatabaseSync {
     handle.close();
     throw err;
   }
+}
+
+/** Nullable columns added to `games` after its first schema (FEAT-server-storeIds). */
+export const GAMES_STORE_ID_COLUMNS = ['steamAppId', 'gogId'] as const;
+
+/**
+ * FEAT-server-storeIds: add the nullable Steam/GOG id columns to `games`.
+ * Every ALTER TABLE ... ADD COLUMN is guarded by PRAGMA table_info, so a
+ * fresh DB, an existing DB and a second run all end with the same schema and
+ * existing rows keep their data (new columns read NULL). Returns the columns
+ * it added (empty = nothing to do).
+ */
+export function migrateGamesStoreIds(handle: DatabaseSync): string[] {
+  const have = new Set(
+    (handle.prepare('PRAGMA table_info(games)').all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  const added: string[] = [];
+  for (const col of GAMES_STORE_ID_COLUMNS) {
+    if (have.has(col)) continue;
+    handle.exec(`ALTER TABLE games ADD COLUMN ${col} TEXT`);
+    added.push(col);
+  }
+  if (added.length > 0) logger.info({ columns: added }, 'Added store id columns to games');
+  return added;
 }
 
 /** One-way import from the pre-SQLite dune.json. Never deletes the original. */

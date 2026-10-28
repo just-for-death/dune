@@ -93,6 +93,10 @@ npx skills@latest add hueyexe/frontend-agent-skills --all --copy   # 9 frontend 
 
 Icons are inline SVG derived from [Lucide](https://lucide.dev) (ISC licence) — no icon runtime dependency is added to either bundle; the geometry lives in `packages/client/src/Icon.tsx` and the dashboard's inline sprite.
 
+## Third-party data
+
+The optional save-path manifest lookup (off until an admin sets `manifestEnabled`) uses the [Ludusavi Manifest](https://github.com/mtkennerly/ludusavi-manifest), compiled from [PCGamingWiki](https://www.pcgamingwiki.com/). That data, including Dune's cached copy, is licensed under [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) and is shown with its attribution; the manifest repository's code is MIT. Dune's own code licence is unchanged. Details: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Migration Notes
 
 This monorepo consolidates the former `dune` (client), `dune-server`, and `dune-shared` repositories. Git history for the client is preserved via `git mv`; server/shared were copied in (their histories remain in the archived repos).

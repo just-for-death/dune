@@ -9,6 +9,7 @@ import type { LutrisGame } from './lutris.js';
 import { getEpicGames, getGogGames, getUbisoftGames, getEaGames, getBattleNetGames, getXboxGames, getMinecraftGames } from './external.js';
 import { getEmulatorGames } from '../emulators/roms.js';
 import { dedupeGames } from './dedupe.js';
+import { normalizeStoreId } from './storeIds.js';
 
 export interface GameSource {
   id: string;
@@ -83,11 +84,22 @@ export const gameRegistry = new GameRegistryImpl();
  * Project a Lutris database row onto the shared Game shape. install_path goes
  * to installPath; linPath/winPath are manifest save paths or empty.
  */
+/** Steam / GOG ids for a Lutris game, from its service columns (Steam runner games carry the app id there too). */
+export function lutrisStoreIds(game: Pick<LutrisGame, 'service' | 'service_id' | 'runner'>): { steamAppId?: string; gogId?: string } {
+  const id = normalizeStoreId(game.service_id);
+  if (!id) return {};
+  const service = (game.service ?? '').toLowerCase();
+  if (service === 'steam' || (!service && game.runner === 'steam')) return { steamAppId: id };
+  if (service === 'gog') return { gogId: id };
+  return {};
+}
+
 export function fromLutris(game: LutrisGame, resolver: SaveResolver | null = null): Game {
   const now = new Date().toISOString();
   const installPath = game.install_path || '';
+  const ids = lutrisStoreIds(game);
   const savePath = resolver
-    ? resolver.resolve({ name: game.name, installPath: installPath || undefined, winePrefix: game.wine_prefix })
+    ? resolver.resolve({ name: game.name, ...ids, installPath: installPath || undefined, winePrefix: game.wine_prefix })
     : '';
   return {
     id: game.id,
@@ -100,6 +112,7 @@ export function fromLutris(game: LutrisGame, resolver: SaveResolver | null = nul
     sourceId: 'lutris',
     source: 'lutris',
     lutrisSlug: game.slug,
+    ...ids,
     winePrefix: game.wine_prefix,
     executable: game.executable,
     createdAt: now,

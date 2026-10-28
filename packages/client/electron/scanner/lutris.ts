@@ -25,6 +25,10 @@ export interface LutrisGame {
   system?: string;
   emulator?: string;
   runner?: string;
+  /** Lutris service the game came from ('steam', 'gog', ...); absent on older DBs. */
+  service?: string | null;
+  /** The game's id in that service (Steam app id, GOG product id). */
+  service_id?: string | number | null;
   version?: string;
   installed: boolean;
   installed_size?: number;
@@ -87,18 +91,19 @@ export function getLutrisDB(): DatabaseSync | null {
 /**
  * Get all installed games from Lutris database.
  */
-export function getLutrisGames(): LutrisGame[] {
-  const db = getLutrisDB();
+export function getLutrisGames(db: DatabaseSync | null = getLutrisDB()): LutrisGame[] {
   if (!db) return [];
 
   try {
+    const columns = new Set((db.prepare('PRAGMA table_info(games)').all() as Array<{ name?: unknown }>).map((c) => String(c.name)));
+    const serviceCols = columns.has('service') && columns.has('service_id') ? ', service, service_id' : '';
     const rows = db.prepare(`
       SELECT 
         id, slug, name, year, developer, publisher, genre, description,
         executable, wine_version, wine_arch, wine_prefix, executable_args,
         working_dir, env_vars, install_path, platform, system, emulator, runner,
         version, installed, installed_size, last_played, playtime,
-        cover_url, banner_url, logo_url, icon_url, created_at, updated_at
+        cover_url, banner_url, logo_url, icon_url, created_at, updated_at${serviceCols}
       FROM games
       WHERE installed = 1
       ORDER BY name ASC

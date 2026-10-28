@@ -37,7 +37,8 @@ export type LaunchableGame = {
   sourceId?: string;
   linPath?: string;
   winPath?: string;
-  steamAppId?: string;
+  /** Shared Game.steamAppId: digit string, or null when unknown. */
+  steamAppId?: string | null;
   heroicId?: string;
   lutrisSlug?: string;
   winePrefix?: string;

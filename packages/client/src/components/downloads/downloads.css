@@ -1,0 +1,36 @@
+/* Downloads queue + settings (DUN downloads). Reuses .admin-row/.progress-* tokens. */
+.downloads-row-main { flex: 1 1 280px; }
+.downloads-name {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+.downloads-meta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; }
+.downloads-progress { width: 100%; }
+.downloads-figures { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-variant-numeric: tabular-nums; }
+.downloads-status { text-transform: none; }
+.downloads-status-error { background: rgba(240, 85, 72, 0.15); color: var(--text); border: 1px solid var(--red); }
+.downloads-error-summary { flex-direction: column; align-items: flex-start; gap: 4px; }
+.downloads-error-list { margin: 0; padding-left: 18px; max-width: 100%; min-width: 0; }
+.downloads-error-list .downloads-name { display: list-item; }
+
+/* Unknown total: a static segment that slides only when motion is allowed. */
+.progress-fill.downloads-indeterminate { width: 30%; }
+.progress-fill.downloads-indeterminate::after { display: none; }
+.progress-fill.downloads-indeterminate.is-active { animation: downloads-slide 1.4s ease-in-out infinite; }
+@keyframes downloads-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill.downloads-indeterminate,
+  .progress-fill.downloads-indeterminate.is-active { animation: none; transform: none; width: 100%; opacity: 0.45; }
+}
+
+.downloads-settings-field { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; min-width: 0; }
+.downloads-settings-field code { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+.downloads-folder-badge { margin-left: 6px; }

@@ -61,7 +61,11 @@ function plainObject(v: unknown, name: string): Record<string, unknown> {
 }
 
 export interface ServerIpcOptions {
-  /** settings.artworkEnabled; art routes answer PROVIDER_DISABLED until it is on. */
+  /**
+   * settings.artworkEnabled. Only consulted when no server is configured;
+   * with a server, the server's own artwork flag decides and its
+   * 403 PROVIDER_DISABLED passes through unchanged.
+   */
   artworkEnabled: () => boolean;
 }
 
@@ -70,10 +74,10 @@ type CurrentUser = { id: string; name: string; role: (typeof USER_ROLES)[number]
 
 const PROVIDER_DISABLED = { ok: false as const, code: 'PROVIDER_DISABLED', message: 'Artwork lookups are turned off in Settings.' };
 
-const PROVIDER_FLAGS = ['hltbEnabled', 'artworkEnabled'] as const;
+const PROVIDER_FLAGS = ['hltbEnabled', 'artworkEnabled', 'manifestEnabled'] as const;
 type ProviderFlags = { [K in (typeof PROVIDER_FLAGS)[number]]: boolean };
 
-/** A provider-flag patch: a plain object with one or both flags, booleans only, nothing else. */
+/** A provider-flag patch: a plain object with one or more known flags, booleans only, nothing else. */
 function providerFlagPatch(v: unknown): Partial<ProviderFlags> {
   const p = plainObject(v, 'provider flags');
   const keys = Object.keys(p);
@@ -90,7 +94,10 @@ function providerFlagPatch(v: unknown): Partial<ProviderFlags> {
 
 export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOptions): Record<string, Handler> {
   // Build the request from the arguments (may throw INVALID_ARGUMENT), then call.
-  const art = (handler: Handler): Handler => async (event, ...args) => (opts.artworkEnabled() ? handler(event, ...args) : PROVIDER_DISABLED);
+  // Art routes: a configured server gates on its own flag (403 PROVIDER_DISABLED passes through);
+  // the local opt-in only applies when there is no server.
+  const art = (handler: Handler): Handler => async (event, ...args) =>
+    (client.baseUrl() !== null || opts.artworkEnabled() ? handler(event, ...args) : PROVIDER_DISABLED);
   const h = (build: (...args: unknown[]) => ServerRequest): Handler => async (_event, ...args) => {
     let req: ServerRequest;
     try {
@@ -131,17 +138,17 @@ export function createServerIpcHandlers(client: ServerClient, opts: ServerIpcOpt
 
   /**
    * Server provider flags: GET /api/settings answers `{ success, settings: {...} }`.
-   * Resolves to exactly `{ ok, hltbEnabled, artworkEnabled }`; no other settings
+   * Resolves to exactly `{ ok, hltbEnabled, artworkEnabled, manifestEnabled }`; no other settings
    * field is passed on. A missing or non-boolean flag is a failure.
    */
   const readProviderFlags = async (): Promise<ServerResult<ProviderFlags>> => {
     const res = await client.call<{ settings?: unknown }>({ method: 'GET', path: '/api/settings' });
     if (!res.ok) return res as ServerFailure;
     const s = res.settings && typeof res.settings === 'object' ? (res.settings as Record<string, unknown>) : null;
-    if (!s || typeof s.hltbEnabled !== 'boolean' || typeof s.artworkEnabled !== 'boolean') {
+    if (!s || PROVIDER_FLAGS.some((k) => typeof s[k] !== 'boolean')) {
       return { ok: false, code: UNKNOWN_SERVER_CODE, message: 'The Dune Server sent invalid settings.' };
     }
-    return { ok: true, hltbEnabled: s.hltbEnabled, artworkEnabled: s.artworkEnabled };
+    return { ok: true, hltbEnabled: s.hltbEnabled === true, artworkEnabled: s.artworkEnabled === true, manifestEnabled: s.manifestEnabled === true };
   };
 
   /**

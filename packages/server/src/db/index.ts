@@ -5,6 +5,7 @@ import { nextId } from '@dune/shared';
 import { dataDir, savesDir, ownerSavesRoot, assertStrictlyInside } from '../utils/path.js';
 import type {
   Game,
+  GameStoreIds,
   Settings,
   LocalSource,
   RemoteServer,
@@ -34,6 +35,7 @@ const defaultSettings: Settings = {
   // Outbound providers are opt-in (no request leaves the server until enabled).
   hltbEnabled: false,
   artworkEnabled: false,
+  manifestEnabled: false,
 };
 
 function readSettingsRow(): Settings {
@@ -52,7 +54,7 @@ function readGamesRows(ownerId?: string, id?: number): Game[] {
   const db = getDb();
   // rowid order = insertion order, matching the old JSON array semantics.
   // Explicit columns: no launch/exec fields exist or are ever returned (DUN-061).
-  const cols = 'id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt';
+  const cols = 'id, name, status, lastSync, thumbnail, analysis, ownerId, steamAppId, gogId, createdAt, updatedAt';
   const rows = (id !== undefined
     ? db.prepare(`SELECT ${cols} FROM games WHERE id = ?`).all(id)
     : ownerId
@@ -65,6 +67,8 @@ function readGamesRows(ownerId?: string, id?: number): Game[] {
     thumbnail: string;
     analysis: string | null;
     ownerId: string | null;
+    steamAppId: string | null;
+    gogId: string | null;
     createdAt: string;
     updatedAt: string;
   }>;
@@ -76,6 +80,8 @@ function readGamesRows(ownerId?: string, id?: number): Game[] {
     thumbnail: r.thumbnail,
     ...(r.analysis ? { analysis: JSON.parse(r.analysis) } : {}),
     ownerId: r.ownerId ?? '',
+    steamAppId: r.steamAppId ?? null,
+    gogId: r.gogId ?? null,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   }));
@@ -134,17 +140,28 @@ function getOwnedGame(id: number, ownerId: string): Game | undefined {
 /**
  * Find-or-create the caller's game row for `name` (an already validated
  * title). Upload creates the row first, then the id-named folder.
+ * FEAT-server-storeIds: `ids` (already validated) are stored on the new row,
+ * or overwrite the existing row's values key by key; an absent key keeps the
+ * stored value. Only the caller's own row is ever touched.
  */
-function ensureGame(ownerId: string, name: string): Game {
+function ensureGame(ownerId: string, name: string, ids: GameStoreIds = {}): Game {
   const existing = findGame(ownerId, name);
-  if (existing) return existing;
+  if (existing) {
+    const steamAppId = ids.steamAppId ?? existing.steamAppId ?? null;
+    const gogId = ids.gogId ?? existing.gogId ?? null;
+    if (steamAppId === (existing.steamAppId ?? null) && gogId === (existing.gogId ?? null)) return existing;
+    getDb()
+      .prepare('UPDATE games SET steamAppId = ?, gogId = ?, updatedAt = ? WHERE id = ? AND ownerId = ?')
+      .run(steamAppId, gogId, new Date().toISOString(), existing.id, ownerId);
+    return getGameById(existing.id) as Game;
+  }
   const now = new Date().toISOString();
   const id = nextId();
   getDb()
     .prepare(
-      'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, steamAppId, gogId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    .run(id, name, 'Pending Upload', 'Never', '', null, ownerId, now, now);
+    .run(id, name, 'Pending Upload', 'Never', '', null, ownerId, ids.steamAppId ?? null, ids.gogId ?? null, now, now);
   return getGameById(id) as Game;
 }
 
@@ -202,21 +219,44 @@ function upsertGame(
     thumbnail: game.thumbnail ?? '',
     ...(game.analysis ? { analysis: game.analysis } : {}),
     ownerId,
+    steamAppId: game.steamAppId ?? null,
+    gogId: game.gogId ?? null,
     id: nextId(),
     createdAt: now,
     updatedAt: now,
   };
   getDb()
     .prepare(
-      'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO games (id, name, status, lastSync, thumbnail, analysis, ownerId, steamAppId, gogId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .run(
       created.id, created.name, created.status, created.lastSync, created.thumbnail,
       created.analysis ? JSON.stringify(created.analysis) : null,
       ownerId,
+      created.steamAppId ?? null, created.gogId ?? null,
       created.createdAt, created.updatedAt,
     );
   return created;
+}
+
+/**
+ * FEAT-server-gamePatch: set/clear the store ids of the owner's game. A key
+ * that is undefined keeps its value; null clears it. Returns the updated row,
+ * or undefined when the game is missing or belongs to another owner.
+ */
+function setGameStoreIds(
+  id: number,
+  ownerId: string,
+  patch: { steamAppId?: string | null; gogId?: string | null },
+): Game | undefined {
+  const game = getOwnedGame(id, ownerId);
+  if (!game) return undefined;
+  const steamAppId = patch.steamAppId !== undefined ? patch.steamAppId : game.steamAppId ?? null;
+  const gogId = patch.gogId !== undefined ? patch.gogId : game.gogId ?? null;
+  getDb()
+    .prepare('UPDATE games SET steamAppId = ?, gogId = ?, updatedAt = ? WHERE id = ? AND ownerId = ?')
+    .run(steamAppId, gogId, new Date().toISOString(), id, ownerId);
+  return getGameById(id);
 }
 
 /** Delete the owner's game (DUN-087). Child rows cascade; files are the caller's job. */
@@ -590,6 +630,7 @@ export const database = {
   upsertGame,
   markGameSynced,
   renameGame,
+  setGameStoreIds,
   deleteGame,
   getLocalSyncGame,
   isGameBoundToOtherFolder,
