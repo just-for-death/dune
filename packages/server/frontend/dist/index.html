@@ -200,6 +200,8 @@
 
   /* ── Toasts ────────────────────────────────────────────────────────────── */
   .toaster { position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 200; display: flex; flex-direction: column; gap: var(--sp-2); max-width: min(420px, 90vw); }
+  .toast-stack { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .panel-err:empty { min-height: 0; }
   .toast {
     display: flex; align-items: flex-start; gap: var(--sp-2);
     padding: 11px 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md);
@@ -330,7 +332,7 @@
         </div>
         <button class="btn" id="save" type="button"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-circle-check"></use></svg>Save key</button>
       </div>
-      <div class="err" id="err" role="alert"></div>
+      <div class="err" id="err"></div>
     </div>
   </section>
 
@@ -342,6 +344,7 @@
         <p id="games-summary">Every game this account can see, with its file and version counts.</p>
       </div>
     </div>
+    <div class="err panel-err" id="err-games"></div>
     <div class="card">
       <h2 class="card-head">
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-gamepad-2"></use></svg>Tracked games
@@ -378,6 +381,7 @@
         <p>Each user owns their own games. New keys are shown once — copy them immediately.</p>
       </div>
     </div>
+    <div class="err panel-err" id="err-users"></div>
     <div class="card" id="users-card">
       <h2 class="card-head"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-users"></use></svg>Create a user</h2>
       <div class="row">
@@ -410,6 +414,7 @@
         <p>Issue a new key for your own account. Each key is shown once.</p>
       </div>
     </div>
+    <div class="err panel-err" id="err-keys"></div>
     <div class="card">
       <h2 class="card-head"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-key-round"></use></svg>Your keys</h2>
       <div class="row">
@@ -484,7 +489,10 @@
   </section>
 </main>
 
-<div class="toaster" id="toaster" role="status" aria-live="polite"></div>
+<div class="toaster">
+  <div class="toast-stack" id="toaster-alert" role="alert"></div>
+  <div class="toast-stack" id="toaster" role="status" aria-live="polite"></div>
+</div>
 
 <script>
 (function () {
@@ -496,6 +504,7 @@
   var loginKey = document.getElementById('login-key');
   var loginErr = document.getElementById('login-err');
   var toaster = document.getElementById('toaster');
+  var alertToaster = document.getElementById('toaster-alert');
   var refreshBtn = document.getElementById('refresh');
   var mainEl = document.getElementById('main');
   var tabsEl = document.querySelector('.tabs');
@@ -551,20 +560,34 @@
   function icon(name, cls) {
     return '<svg class="icon ' + (cls || '') + '" aria-hidden="true" focusable="false"><use href="#i-' + name + '"></use></svg>';
   }
+  // DUN-053: errors go to an assertive region and stay up longer than notices.
   function toast(kind, msg) {
-    if (!toaster) return;
+    var region = kind === 'bad' ? alertToaster : toaster;
+    if (!region) return;
     var glyph = kind === 'ok' ? 'circle-check' : kind === 'bad' ? 'circle-alert' : 'info';
     var el = document.createElement('div');
     el.className = 'toast toast-' + kind;
     el.innerHTML = icon(glyph) + '<span>' + esc(msg) + '</span>';
-    toaster.appendChild(el);
-    while (toaster.children.length > 4) toaster.removeChild(toaster.firstChild);
-    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 5000);
+    region.appendChild(el);
+    while (region.children.length > 4) region.removeChild(region.firstChild);
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, kind === 'bad' ? 12000 : 5000);
   }
-  /** Show an error (string or Error) in `box` (default: the Overview box) and as a toast. */
+  /** Error box of the panel on screen (Overview's #err only when Overview is shown). */
+  function activeErrBox() {
+    var shown = document.querySelector('section[role="tabpanel"]:not([hidden])');
+    var id = shown ? shown.id.replace('panel-', '') : 'overview';
+    // Members only see the SteamGridDB card on Settings.
+    if (id === 'settings') return document.getElementById('settings-card').hidden ? sgdbErr : settingsErr;
+    return document.getElementById('err-' + id) || errBox;
+  }
+  function clearErrors() {
+    errBox.textContent = '';
+    Array.prototype.forEach.call(document.querySelectorAll('.panel-err'), function (el) { el.textContent = ''; });
+  }
+  /** Show an error (string or Error) in `box` (default: the active panel's box) and as a toast. */
   function fail(e, box) {
     var msg = typeof e === 'string' ? e : (e && e.message) || MSG.generic;
-    (box || errBox).textContent = msg;
+    (box || activeErrBox()).textContent = msg;
     toast('bad', msg);
     // A 5xx may mean the database is gone (DUN-099): ask /ready once.
     if (e && typeof e === 'object' && e.status >= 500) probeReady();
@@ -861,7 +884,7 @@
   // ── Data loading ──────────────────────────────────────────────────────────
   async function refresh() {
     if (outageActive) return;
-    errBox.textContent = '';
+    clearErrors();
     busy(refreshBtn, true);
     try {
       // DUN-099: readiness first, so a dead database shows the outage banner
@@ -939,7 +962,7 @@
       document.getElementById('settings-card').hidden = !isAdmin;
       sgdb.admin = isAdmin;
       if (isAdmin) {
-        await loadUsers().catch(function () { setTabVisible('users', false); });
+        await loadUsers(me).catch(function () { setTabVisible('users', false); });
         await loadSettings().catch(function (e) { fail(e, settingsErr); });
       }
       await loadProviderKey();
@@ -985,7 +1008,7 @@
     var delId = t.getAttribute('data-delgameid');
     var delName = t.getAttribute('data-delgamename');
     if (!window.confirm('Delete game "' + (delName || delId) + '" and all its saves?')) return;
-    errBox.textContent = '';
+    clearErrors();
     try {
       await request('/api/saves?id=' + encodeURIComponent(delId), { method: 'DELETE' });
       toast('ok', 'Deleted ' + (delName || delId));
@@ -994,7 +1017,7 @@
   });
 
   async function runLocalSync(btn) {
-    errBox.textContent = '';
+    clearErrors();
     busy(btn, true);
     try {
       await request('/api/local-sync', { method: 'POST' });
@@ -1014,9 +1037,10 @@
   });
 
   // ── Users (admin only) ────────────────────────────────────────────────────
-  async function loadUsers() {
-    var me = await get('/api/users/me');
-    if (!me.user || me.user.role !== 'admin') { setTabVisible('users', false); return; }
+  /** `me` is the /api/users/me answer refresh() already has; fetched only when absent. */
+  async function loadUsers(me) {
+    if (!me) me = await get('/api/users/me');
+    if (!me || !me.user || me.user.role !== 'admin') { setTabVisible('users', false); return; }
     setTabVisible('users', true);
     var list = await get('/api/users');
     var rows = (list.users || []).map(function (u) {
@@ -1030,7 +1054,7 @@
   }
 
   document.getElementById('user-create').addEventListener('click', async function () {
-    errBox.textContent = '';
+    clearErrors();
     try {
       var name = document.getElementById('user-name').value.trim();
       if (!name) { fail('Enter a user name first.'); return; }
@@ -1048,7 +1072,7 @@
   document.getElementById('users').addEventListener('click', async function (ev) {
     var target = ev.target.closest ? ev.target.closest('[data-issue],[data-del]') : null;
     if (!target) return;
-    errBox.textContent = '';
+    clearErrors();
     try {
       var issue = target.getAttribute('data-issue');
       if (issue) {
@@ -1224,7 +1248,7 @@
       || '<tr><td colspan="4" class="table-empty">No keys yet — issue one above to connect a device.</td></tr>';
   }
   document.getElementById('key-issue').addEventListener('click', async function () {
-    errBox.textContent = '';
+    clearErrors();
     try {
       var desc = document.getElementById('key-desc').value.trim();
       var j = await request('/api/api-keys', { method: 'POST', body: { description: desc } });
@@ -1238,7 +1262,7 @@
     var t = ev.target.closest ? ev.target.closest('[data-revoke]') : null;
     if (!t) return;
     if (!window.confirm('Revoke this key?')) return;
-    errBox.textContent = '';
+    clearErrors();
     try {
       await request('/api/api-keys/' + encodeURIComponent(t.getAttribute('data-revoke')), { method: 'DELETE' });
       toast('ok', 'Key revoked');

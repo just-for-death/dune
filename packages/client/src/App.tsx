@@ -28,7 +28,7 @@ import { DEFAULT_TRACKERS_ENABLED, nextId, RARITY_TIERS } from '@dune/shared';
 import { Icon } from './Icon';
 import { PlaytimeCharts } from './components/PlaytimeCharts';
 import { applyTheme, loadThemes, getActiveThemeId, setActiveThemeId } from './theme/manager';
-import { availableLocales, DEFAULT_LOCALE, isLocale, LOCALE_NAMES, type Locale, type MessageKey, type Translator } from './i18n';
+import { availableLocales, DEFAULT_LOCALE, isLocale, LOCALE_NAMES, type MessageKey, type Translator } from './i18n';
 import { formatRich, useI18n } from './i18n/context';
 import { gameStatusLabel, rarityLabel } from './i18n/labels';
 import { SaveVersionTimeline } from './components/saves/SaveVersionTimeline';
@@ -675,6 +675,23 @@ export default function App() {
     }
   };
 
+  // DUN-018: runs only after the confirm dialog; one restore at a time.
+  const runVersionRestore = async () => {
+    const target = restoreTarget;
+    setRestoreTarget(null);
+    if (!target || restoringVersionId !== null) return;
+    setRestoringVersionId(target.version.id);
+    try {
+      const res = await window.electronAPI.restoreSaveVersion(target.gameId, target.version.id);
+      if (res.ok) showToast(res.message || t('saves.restoreRequested'), 'success');
+      else showToast(serverFailureMessage(res, t), 'error');
+    } catch {
+      showToast(t('restore.failed'), 'error');
+    } finally {
+      setRestoringVersionId(null);
+    }
+  };
+
   const handleRestoreCloud = async () => {
     if (isSyncing) return;
     if (!isValidUrl(cloud.url)) {
@@ -1234,7 +1251,7 @@ export default function App() {
               {filteredGames.map(game => (
                 <div key={game.id} className="game-card">
                   {game.thumbnail ? (
-                    <img src={game.thumbnail} className="game-cover" alt={game.name} loading="lazy" />
+                    <img src={game.thumbnail} className="game-cover" alt="" loading="lazy" />
                   ) : (
                     <div className="game-cover-placeholder">{t('game.noCover')}</div>
                   )}
@@ -1598,7 +1615,32 @@ export default function App() {
         {activeTab === 'saves' && savesServerState === 'ok' && (
           <div className="card">
             <h3 className="card-title">{t('saves.versions')}</h3>
-            <SaveVersionTimeline versions={visibleSaveVersions} onRestore={async (id) => { if (selectedSaveGameId === null) return; const res = await window.electronAPI.restoreSaveVersion(selectedSaveGameId, id); if (res.ok) showToast(res.message || t('saves.restoreRequested'), 'success'); else showToast(serverFailureMessage(res, t), 'error'); }} />
+            {selectedSaveGameId !== null && !savesMatch ? (
+              <p className="text-muted text-sm" role="status">{t('saves.loading')}</p>
+            ) : savesLoadError ? (
+              <div className="saves-load-error" role="alert">
+                <p className="text-sm">{t('saves.loadFailed', { reason: serverFailureMessage(savesLoadError, t) })}</p>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSavesReloadKey(k => k + 1)}>{t('common.tryAgain')}</button>
+              </div>
+            ) : (
+              <SaveVersionTimeline
+                versions={visibleSaveVersions}
+                restoringId={restoringVersionId}
+                onRestore={(version) => {
+                  if (selectedSaveGameId === null || restoringVersionId !== null) return;
+                  setRestoreTarget({ gameId: selectedSaveGameId, game: selectedSaveGameName, version });
+                }}
+              />
+            )}
+            <ConfirmDialog
+              open={restoreTarget !== null}
+              title={t('saves.restoreConfirmTitle', { game: restoreTarget?.game ?? '' })}
+              confirmLabel={t('saves.restoreConfirm')}
+              onConfirm={runVersionRestore}
+              onCancel={() => setRestoreTarget(null)}
+            >
+              <p>{t('saves.restoreConfirmBody', { date: restoreTarget ? formatDate(restoreTarget.version.createdAt, locale, t) : '' })}</p>
+            </ConfirmDialog>
           </div>
         )}
         {activeTab === 'saves' && (
@@ -1606,7 +1648,7 @@ export default function App() {
             <h3 className="card-title">{t('saves.storage')}</h3>
             <DriveSpaceList rows={driveRows} error={driveError} onRetry={loadDrives} />
             {storageEntries.length > 0 && (
-              <StorageManager drives={[]} entries={storageEntries} />
+              <StorageManager drives={[]} entries={storageEntries} gameName={(id) => games.find(g => g.id === id)?.name} />
             )}
           </div>
         )}
@@ -1709,8 +1751,8 @@ export default function App() {
                       <tr><th>{t('table.game')}</th><th>{t('table.platform')}</th><th>{t('table.total')}</th><th>{t('table.sessions')}</th><th>{t('table.lastPlayed')}</th></tr>
                     </thead>
                     <tbody>
-                      {playtimeSummary.map((p, i) => (
-                        <tr key={i}>
+                      {playtimeSummary.map((p) => (
+                        <tr key={p.gameId}>
                           <td>{p.game}</td>
                           <td>{p.platform}</td>
                           <td>{formatMinutes(p.totalMinutes)}</td>
@@ -1781,8 +1823,8 @@ export default function App() {
                       <tr><th>{t('table.game')}</th><th>{t('table.unlocked')}</th><th>{t('table.progress')}</th><th><span className="sr-only">{t('table.actions')}</span></th></tr>
                     </thead>
                     <tbody>
-                      {achievementSummary.map((a, i) => (
-                        <tr key={i} className={selectedAchGame === a.game ? 'row-active' : ''}>
+                      {achievementSummary.map((a) => (
+                        <tr key={a.game} className={selectedAchGame === a.game ? 'row-active' : ''}>
                           <td>{a.game}</td>
                           <td>{a.unlocked} / {a.total}</td>
                           <td>
@@ -1944,8 +1986,8 @@ export default function App() {
               </h3>
               {(settings.scanRoots ?? []).length > 0 ? (
                 <ul className="scan-list">
-                  {(settings.scanRoots ?? []).map((r, i) => (
-                    <li key={i} className="scan-row">{r} <button className="link-btn-danger" aria-label={t('settings.removeRootLabel', { path: r })} onClick={() => handleRemoveRoot(r)}>{t('settings.removeRoot')}</button></li>
+                  {(settings.scanRoots ?? []).map((r) => (
+                    <li key={r} className="scan-row">{r} <button className="link-btn-danger" aria-label={t('settings.removeRootLabel', { path: r })} onClick={() => handleRemoveRoot(r)}>{t('settings.removeRoot')}</button></li>
                   ))}
                 </ul>
               ) : (

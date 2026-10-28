@@ -1,5 +1,6 @@
 import type { StorageEntry } from '@dune/shared';
 import { useI18n } from '../../i18n/context';
+import { formatBytes } from '../../services/format';
 
 interface Drive {
   name: string;
@@ -10,11 +11,12 @@ interface Drive {
 interface Props {
   drives: Drive[];
   entries: StorageEntry[];
+  /** Library name for a game id; unknown ids fall back to "Game #id". */
+  gameName?: (gameId: number) => string | undefined;
 }
 
-export function StorageManager({ drives, entries }: Props) {
+export function StorageManager({ drives, entries, gameName }: Props) {
   const { locale, t } = useI18n();
-  const gb = (bytes: number, digits: number) => (bytes / 1024 / 1024 / 1024).toFixed(digits);
   return (
     <div className="storage-manager">
       <div className="storage-drives">
@@ -25,14 +27,14 @@ export function StorageManager({ drives, entries }: Props) {
             <div key={drive.name} className="storage-drive">
               <div className="storage-drive-head">
                 <strong>{drive.name}</strong>
-                <span className="muted">{t('storage.freeGb', { size: gb(drive.freeBytes, 1) })}</span>
+                <span className="muted">{t('storage.free', { size: formatBytes(drive.freeBytes) })}</span>
               </div>
               <div className="storage-bar">
                 <div className="storage-bar-fill" style={{ width: `${Math.min(100, percent)}%` }} />
               </div>
               <div className="storage-drive-meta">
-                <span>{t('storage.usedGb', { size: gb(used, 1) })}</span>
-                <span>{t('storage.totalGb', { size: gb(drive.totalBytes, 0) })}</span>
+                <span>{t('storage.used', { size: formatBytes(used) })}</span>
+                <span>{t('storage.total', { size: formatBytes(drive.totalBytes) })}</span>
               </div>
             </div>
           );
@@ -53,9 +55,9 @@ export function StorageManager({ drives, entries }: Props) {
         <tbody>
           {entries.map((entry) => (
             <tr key={entry.gameId}>
-              <td>{t('storage.gameId', { id: entry.gameId })}</td>
-              <td>{(entry.saveBytes / 1024 / 1024).toFixed(1)} MB</td>
-              <td>{(entry.cacheBytes / 1024 / 1024).toFixed(1)} MB</td>
+              <td>{gameName?.(entry.gameId) ?? t('storage.gameId', { id: entry.gameId })}</td>
+              <td>{formatBytes(entry.saveBytes)}</td>
+              <td>{formatBytes(entry.cacheBytes)}</td>
               <td>{entry.lastPlayed ? new Date(entry.lastPlayed).toLocaleDateString(locale) : t('common.never')}</td>
               <td>{entry.drive}</td>
             </tr>

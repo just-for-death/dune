@@ -138,6 +138,8 @@ input[type="radio"]:focus-visible {
 
 .main-content {
   flex: 1;
+  /* DUN-020: let wide tables scroll in .table-wrapper instead of clipping. */
+  min-width: 0;
   padding: 32px;
   overflow-y: auto;
   max-width: 1120px;
@@ -1164,6 +1166,8 @@ dialog.confirm-dialog { max-width: 480px; }
 
 /* ── Calm no-server notice (DUN-041) ── */
 .no-server-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.saves-load-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.saves-load-error p { margin: 0; color: var(--text); }
 .no-server-text { margin: 0; flex: 1 1 280px; color: var(--text); }
 
 /* ── Drive space (DUN-042) ── */

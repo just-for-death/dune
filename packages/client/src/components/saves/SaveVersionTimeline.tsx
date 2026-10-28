@@ -1,6 +1,7 @@
 import type { SaveVersion } from '@dune/shared';
 import { useI18n } from '../../i18n/context';
 import type { MessageKey } from '../../i18n';
+import { formatBytes, formatDate } from '../../services/format';
 
 const STATUS_KEYS: Record<SaveVersion['status'], MessageKey> = {
   complete: 'saves.status.complete',
@@ -10,11 +11,14 @@ const STATUS_KEYS: Record<SaveVersion['status'], MessageKey> = {
 
 interface Props {
   versions: SaveVersion[];
-  onRestore?: (versionId: string) => void;
+  onRestore?: (version: SaveVersion) => void;
+  /** DUN-018: version being restored; every Restore button is unavailable meanwhile. */
+  restoringId?: string | null;
 }
 
-export function SaveVersionTimeline({ versions, onRestore }: Props) {
+export function SaveVersionTimeline({ versions, onRestore, restoringId = null }: Props) {
   const { locale, t, tc } = useI18n();
+  const busy = restoringId !== null;
   if (versions.length === 0) {
     return (
       <div className="empty-state">
@@ -25,9 +29,10 @@ export function SaveVersionTimeline({ versions, onRestore }: Props) {
   }
 
   return (
-    <ol className="save-timeline">
+    <ol className="save-timeline" aria-busy={busy || undefined}>
       {versions.map((version, index) => {
-        const created = new Date(version.createdAt).toLocaleString(locale);
+        const created = formatDate(version.createdAt, locale, t);
+        const restoring = version.id === restoringId;
         return (
         <li key={version.id} className={`save-version ${index === 0 ? 'save-version-latest' : ''}`}>
           <div className="save-version-dot" />
@@ -41,13 +46,20 @@ export function SaveVersionTimeline({ versions, onRestore }: Props) {
             </div>
             <div className="save-version-meta">
               <span>{tc('saves.files', version.fileCount)}</span>
-              <span>{(version.sizeBytes / 1024 / 1024).toFixed(1)} MB</span>
+              <span>{formatBytes(version.sizeBytes)}</span>
               <span className={`status-pill status-${version.status}`}>{STATUS_KEYS[version.status] ? t(STATUS_KEYS[version.status]) : version.status}</span>
             </div>
             {version.changeSummary && <p className="save-version-summary">{version.changeSummary}</p>}
             <div className="save-version-actions">
-              <button className="btn btn-secondary btn-sm" aria-label={t('saves.restoreLabel', { date: created })} onClick={() => onRestore?.(version.id)}>
-                {t('saves.restore')}
+              {/* aria-disabled (not disabled) keeps focus here when the confirm dialog closes. */}
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                aria-label={t(restoring ? 'saves.restoringLabel' : 'saves.restoreLabel', { date: created })}
+                aria-disabled={busy || undefined}
+                onClick={() => { if (!busy) onRestore?.(version); }}
+              >
+                {restoring ? t('saves.restoring') : t('saves.restore')}
               </button>
             </div>
           </div>
