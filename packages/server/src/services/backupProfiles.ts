@@ -1,6 +1,11 @@
 import { getDb } from '../db/sqlite.js';
 import type { BackupProfile } from '@dune/shared';
 
+/**
+ * Cache/log/screenshot rules applied whenever a profile has
+ * `autoExcludeCache: true` (DUN-103), on top of the profile's own
+ * `excludeGlobs` (which hold only the user's extra rules).
+ */
 export const DEFAULT_EXCLUDE_GLOBS = [
   '**/*.log',
   '**/*.tmp',
@@ -56,7 +61,7 @@ export function getBackupProfile(gameId: number): BackupProfile {
     return {
       gameId,
       includeGlobs: ['**/*'],
-      excludeGlobs: [...DEFAULT_EXCLUDE_GLOBS],
+      excludeGlobs: [],
       autoExcludeCache: true,
       updatedAt: new Date().toISOString(),
     };
@@ -114,10 +119,12 @@ export function filterBackupFiles(files: BackupCandidate[], profile: BackupProfi
   const included: BackupCandidate[] = [];
   const excluded: BackupCandidate[] = [];
 
+  // DUN-103: autoExcludeCache adds the built-in cache rules.
+  const excludes = profile.autoExcludeCache ? [...DEFAULT_EXCLUDE_GLOBS, ...profile.excludeGlobs] : profile.excludeGlobs;
   for (const file of files) {
     const rel = toPosix(file.path);
     const includedByInclude = profile.includeGlobs.some((pattern) => matchesGlob(rel, pattern));
-    const excludedByExclude = profile.excludeGlobs.some((pattern) => matchesGlob(rel, pattern));
+    const excludedByExclude = excludes.some((pattern) => matchesGlob(rel, pattern));
     const tooLarge = profile.maxFileSizeMB != null && file.size > profile.maxFileSizeMB * 1024 * 1024;
 
     if (includedByInclude && !excludedByExclude && !tooLarge) {

@@ -5,6 +5,7 @@ import * as path from 'path';
 import {
   findAchievementFiles,
   getAchievementRoots,
+  prefixAchievementDirs,
   parseAchievementIni,
   parseAchievementJson,
   scanLocalAchievements,
@@ -67,7 +68,7 @@ describe('local achievement import', () => {
     expect(parsed.find(a => a.apiName === 'ACH_LOCKED')?.unlocked).toBe(false);
   });
 
-  it('discovers files without descending into skipped system directories', () => {
+  it('discovers files without descending into skipped system directories', async () => {
     const root = tempDir();
     fs.mkdirSync(path.join(root, 'steam_settings'), { recursive: true });
     fs.mkdirSync(path.join(root, 'Windows', 'System32'), { recursive: true });
@@ -75,38 +76,71 @@ describe('local achievement import', () => {
     fs.writeFileSync(settings, '[ACHIEVEMENTS]\nACH_ONE=1\n');
     fs.writeFileSync(path.join(root, 'Windows', 'System32', 'achievements.ini'), '[ACHIEVEMENTS]\nBAD=1\n');
 
-    expect(findAchievementFiles([root])).toEqual([settings]);
-    const parsed = scanLocalAchievements([root]);
+    expect(await findAchievementFiles([root])).toEqual([settings]);
+    const parsed = await scanLocalAchievements([root]);
     expect(parsed).toHaveLength(1);
     expect(parsed[0].apiName).toBe('ACH_ONE');
   });
 
-  it('merges duplicate achievements across files', () => {
+  it('merges duplicate achievements across files', async () => {
     const root = tempDir();
     fs.writeFileSync(path.join(root, 'achievements.ini'), '[ACHIEVEMENTS]\nACH_DUPE=0\n');
     fs.writeFileSync(path.join(root, 'user_stats.json'), JSON.stringify({
       achievements: { ACH_DUPE: { earned: true, earned_time: '2026-01-01T00:00:00Z' } },
     }));
 
-    const parsed = scanLocalAchievements([root]);
+    const parsed = await scanLocalAchievements([root]);
     expect(parsed).toHaveLength(1);
     expect(parsed[0].unlocked).toBe(true);
     expect(parsed[0].unlockTime).toBe('2026-01-01T00:00:00.000Z');
   });
 
-  it('builds roots for an executable and a Wine prefix', () => {
+  it('builds roots for an executable; a prefix adds only its per-appId folders (DUN-076)', async () => {
     const root = tempDir();
     const exe = path.join(root, 'Game', 'game.exe');
     fs.mkdirSync(path.dirname(exe), { recursive: true });
     fs.writeFileSync(exe, '');
     const prefix = path.join(root, 'prefix');
+    const goldberg = path.join(prefix, 'drive_c', 'users', 'steamuser', 'AppData', 'Roaming', 'Goldberg SteamEmu Saves', '620');
+    const codex = path.join(prefix, 'drive_c', 'users', 'Public', 'Documents', 'Steam', 'CODEX', '620');
+    const otherGame = path.join(prefix, 'drive_c', 'users', 'steamuser', 'AppData', 'Roaming', 'Goldberg SteamEmu Saves', '999');
+    for (const d of [goldberg, codex, otherGame]) fs.mkdirSync(d, { recursive: true });
 
-    const roots = getAchievementRoots({
-      executable: exe,
-      winePrefix: prefix,
-    });
+    const roots = await getAchievementRoots({ executable: exe, winePrefix: prefix, steamAppId: '620' });
 
     expect(roots).toContain(path.dirname(exe));
-    expect(roots).toContain(path.join(prefix, 'drive_c'));
+    expect(roots).toContain(goldberg);
+    expect(roots).toContain(codex);
+    expect(roots).not.toContain(otherGame);
+    expect(roots).not.toContain(path.join(prefix, 'drive_c'));
+  });
+
+  it('a shared prefix never leaks another game\'s achievements (DUN-076)', async () => {
+    const root = tempDir();
+    const prefix = path.join(root, 'wine');
+    const mine = path.join(prefix, 'drive_c', 'users', 'me', 'AppData', 'Roaming', 'GSE Saves', '100');
+    const other = path.join(prefix, 'drive_c', 'users', 'me', 'AppData', 'Roaming', 'GSE Saves', '200');
+    const loose = path.join(prefix, 'drive_c', 'Games', 'Other');
+    for (const d of [mine, other, loose]) fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(mine, 'achievements.json'), JSON.stringify({ MINE: { earned: true, earned_time: 1700000000 } }));
+    fs.writeFileSync(path.join(other, 'achievements.json'), JSON.stringify({ OTHER: { earned: true, earned_time: 1700000000 } }));
+    fs.writeFileSync(path.join(loose, 'achievements.ini'), '[ACHIEVEMENTS]\nLOOSE=1\n');
+
+    const parsed = await scanLocalAchievements(await getAchievementRoots({ winePrefix: prefix, steamAppId: '100' }));
+    expect(parsed.map((a) => a.apiName)).toEqual(['MINE']);
+  });
+
+  it('without a Steam app id a prefix is not scanned at all; bad app ids are refused', async () => {
+    const root = tempDir();
+    const prefix = path.join(root, 'wine');
+    fs.mkdirSync(path.join(prefix, 'drive_c', 'users', 'me', 'AppData', 'Roaming', 'GSE Saves', '100'), { recursive: true });
+    expect(await getAchievementRoots({ winePrefix: prefix })).toEqual([]);
+    expect(await prefixAchievementDirs(prefix, '../100')).toEqual([]);
+  });
+
+  it('scans asynchronously (returns a promise, never blocks on sync fs)', () => {
+    const p = scanLocalAchievements([tempDir()]);
+    expect(p).toBeInstanceOf(Promise);
+    return p;
   });
 });

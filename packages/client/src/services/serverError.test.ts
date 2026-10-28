@@ -51,14 +51,14 @@ describe('serverFailureMessage', () => {
 describe('cloudSyncFailureMessage', () => {
   it('summarises per-item failures as a count', () => {
     const item = { game: 'Celeste', code: 'SERVER_ERROR', message: 'disk full' };
-    expect(cloudSyncFailureMessage({ ...fail({ status: 500, code: 'SERVER_ERROR', message: 'disk full' }), failures: [item, item] }, 'Sync'))
+    expect(cloudSyncFailureMessage({ ...fail({ status: 500, code: 'SERVER_ERROR', message: 'disk full' }), failures: [item, item] }, 'sync'))
       .toBe('Sync finished with 2 problems');
-    expect(cloudSyncFailureMessage({ ...fail({ status: 500, code: 'SERVER_ERROR', message: 'disk full' }), failures: [item] }, 'Restore'))
+    expect(cloudSyncFailureMessage({ ...fail({ status: 500, code: 'SERVER_ERROR', message: 'disk full' }), failures: [item] }, 'restore'))
       .toBe('Restore finished with 1 problem');
   });
 
   it('uses the plain failure wording without items', () => {
-    expect(cloudSyncFailureMessage(fail({ code: 'NETWORK', message: 'x' }), 'Sync')).toBe(NETWORK_MESSAGE);
-    expect(cloudSyncFailureMessage({ ...fail({ code: 'NO_SERVER', message: 'x' }), failures: [] }, 'Restore')).toBe(NO_SERVER_MESSAGE);
+    expect(cloudSyncFailureMessage(fail({ code: 'NETWORK', message: 'x' }), 'sync')).toBe(NETWORK_MESSAGE);
+    expect(cloudSyncFailureMessage({ ...fail({ code: 'NO_SERVER', message: 'x' }), failures: [] }, 'restore')).toBe(NO_SERVER_MESSAGE);
   });
 });

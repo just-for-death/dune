@@ -1,14 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
 import { database, withDbLock } from '../db/index.js';
-import { getGameRoot, resolveGameFile, requireGameTitle, PathRuleError } from '../utils/path.js';
-import { isApiError, type ApiError } from '../utils/apiError.js';
+import { getGameRoot, resolveGameFile, requireGameTitle, PathRuleError, ownerSavesRoot } from '../utils/path.js';
+import { ApiError, isApiError } from '../utils/apiError.js';
+import { pruneVersions, maxVersionsSetting } from './saveVersions.js';
 import { applySavesArchive, archiveLimits } from './archive.js';
 import { validateRelativeSavePath } from '@dune/shared/pathRules';
 import { syncLocalFolder, findSaveFolders } from './localScanner.js';
 import { triggerRemoteSync } from './remoteSync.js';
 import { invalidateGame } from './manifest.js';
 import { logger } from '../middleware/logging.js';
+import type { Game } from '../types/index.js';
 
 /** Files in a game root, excluding version history (per-game cap). */
 function countGameFiles(root: string): number {
@@ -27,18 +30,6 @@ function countGameFiles(root: string): number {
   return count;
 }
 
-/** Keep the newest `maxVersions` numeric upload snapshots. */
-function pruneUploadVersions(root: string, maxVersions: number): void {
-  const versionsRoot = path.join(root, '.versions');
-  if (!fs.existsSync(versionsRoot)) return;
-  const versions = fs.readdirSync(versionsRoot)
-    .filter(v => /^\d+$/.test(v))
-    .sort((a, b) => Number(b) - Number(a));
-  for (const v of versions.slice(maxVersions)) {
-    fs.rmSync(path.join(versionsRoot, v), { recursive: true, force: true });
-  }
-}
-
 export interface UploadOptions {
   /**
    * DUN-091: true for a server-to-server push (x-dune-relay header). The
@@ -49,13 +40,18 @@ export interface UploadOptions {
 }
 
 /**
- * Version snapshots live at `.versions/<versionId>`, so the id becomes a
- * directory name. It arrives from the `x-sync-id` header (attacker-controlled),
- * so accept digits only: anything else would let `../../x` escape the game
- * root via path.join normalization. Non-numeric ids fall back to "now".
+ * DUN-097: the sync id names this sync's snapshot dir `.versions/<syncId>`,
+ * shared by every file of one client sync session (the client sends one id
+ * per session). It becomes a directory name and arrives from the
+ * `x-sync-id` header, so only digits (epoch ms) are accepted; anything else
+ * is 400 INVALID_SYNC_ID instead of a fresh per-file id that would split one
+ * session into many snapshots and let it prune its own backups.
  */
-function safeVersionId(syncId: string): string {
-  return /^\d{1,20}$/.test(syncId) ? syncId : Date.now().toString();
+export const SYNC_ID = /^\d{1,20}$/;
+
+export function requireSyncId(syncId: string): string {
+  if (!SYNC_ID.test(syncId)) throw new ApiError(400, 'INVALID_SYNC_ID', 'x-sync-id must be a decimal timestamp');
+  return syncId;
 }
 
 export interface SyncProgress {
@@ -98,7 +94,7 @@ export async function handleUploadFile(
 ): Promise<{ success: boolean; message: string; status?: number; error?: ApiError; gameId?: number }> {
   // DUN-111: validation runs inside the try so a rejected name/path is a 400
   // (PathRuleError), not an unhandled throw that the route turns into a 500.
-  let finalPath = '';
+  let stagingDir = '';
 
   const maxUploadBytes =
     Math.max(1, parseInt(process.env.MAX_UPLOAD_MB || '500', 10)) * 1024 * 1024;
@@ -109,13 +105,14 @@ export async function handleUploadFile(
     // DUN-086/093: shared lexical rules + symlink-safe strict containment.
     // Only the validated pieces are used below, never the raw filePath.
     const title = requireGameTitle(gameName);
+    const versionId = requireSyncId(syncId);
     // Lexical path check before any DB write, so a rejected path never
     // creates a phantom game row.
     const lexical = validateRelativeSavePath(filePath);
     if (!lexical.ok) throw new PathRuleError(lexical.code, lexical.message);
     const game = await withDbLock(() => database.ensureGame(ownerId, title));
     const target = resolveGameFile(game.id, filePath, ownerId);
-    finalPath = target.abs;
+    const finalPath = target.abs;
     const finalDir = path.dirname(finalPath);
 
     // DUN-089: saves.zip (only at the game root) is an archive to apply,
@@ -125,24 +122,30 @@ export async function handleUploadFile(
     if (!isArchive && !fs.existsSync(finalPath) && existingFiles >= maxFilesPerGame) {
       return { success: false, message: `Game already has ${maxFilesPerGame} files`, status: 413 };
     }
-    const maxVersions = database.getSettings().maxVersions || 10;
+    const maxVersions = maxVersionsSetting();
 
     if (!fs.existsSync(finalDir)) {
       fs.mkdirSync(finalDir, { recursive: true });
     }
 
     if (!isArchive && fs.existsSync(finalPath)) {
-      // Snapshot the file about to be overwritten (validated path).
-      const archivePath = resolveGameFile(game.id, `.versions/${safeVersionId(syncId)}/${target.rel}`, ownerId).abs;
-      fs.mkdirSync(path.dirname(archivePath), { recursive: true });
-      fs.copyFileSync(finalPath, archivePath);
+      // Snapshot the file about to be overwritten (validated path). The
+      // first copy within one sync session wins: it is the pre-sync state.
+      const archivePath = resolveGameFile(game.id, `.versions/${versionId}/${target.rel}`, ownerId).abs;
+      if (!fs.existsSync(archivePath)) {
+        fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+        fs.copyFileSync(finalPath, archivePath);
+      }
     }
 
     // Stream to a temp file first, then atomically rename onto the target.
     // Writing directly to `finalPath` (truncating) would destroy a previously
-    // valid save if the upload fails partway through.
-    const tmpPath = finalPath + '.uploading';
-    try { fs.unlinkSync(tmpPath); } catch { /* no prior temp */ }
+    // valid save if the upload fails partway through. DUN-101: the temp file
+    // is private to this upload (random name in its own mkdtemp dir on the
+    // same filesystem), so concurrent uploads of one path never share it;
+    // the dir is always removed in `finally`.
+    stagingDir = fs.mkdtempSync(path.join(ownerSavesRoot(ownerId), '.upload-'));
+    const tmpPath = path.join(stagingDir, `${randomUUID()}.part`);
 
     await new Promise<void>((resolve, reject) => {
       const destroyStream = (s: unknown) => {
@@ -161,7 +164,6 @@ export async function handleUploadFile(
           fileStream.unpipe(writer);
           destroyStream(fileStream);
           writer.destroy();
-          try { fs.unlinkSync(tmpPath); } catch { /* partial temp cleanup */ }
           reject(new Error(`File exceeds ${Math.round(maxUploadBytes / 1024 / 1024)} MB limit`));
         }
       });
@@ -174,24 +176,21 @@ export async function handleUploadFile(
     if (isArchive) {
       // DUN-089: inspect, extract privately, snapshot overwrites, apply.
       // Failures throw ArchiveError (400/413); the archive is never kept.
-      try {
-        await applySavesArchive({
-          archive: tmpPath,
-          gameId: game.id,
-          ownerId,
-          versionId: safeVersionId(syncId),
-          limits: archiveLimits(maxFilesPerGame),
-          existingFileCount: existingFiles,
-          maxFilesPerGame,
-        });
-      } finally {
-        try { fs.unlinkSync(tmpPath); } catch { /* already gone */ }
-      }
+      await applySavesArchive({
+        archive: tmpPath,
+        gameId: game.id,
+        ownerId,
+        versionId,
+        limits: archiveLimits(maxFilesPerGame),
+        existingFileCount: existingFiles,
+        maxFilesPerGame,
+      });
     } else {
       // Atomic publish: only replace the live file once the full upload succeeded.
       fs.renameSync(tmpPath, finalPath);
     }
-    pruneUploadVersions(target.root, maxVersions);
+    // DUN-097: one history per game (rows + snapshot dirs), never this sync's.
+    pruneVersions(game.id, ownerId, maxVersions, [versionId]);
 
     // Fingerprints for this game are now stale (new/overwritten files).
     invalidateGame(game.id, ownerId);
@@ -213,25 +212,56 @@ export async function handleUploadFile(
 
     return { success: true, message: `Uploaded ${game.name} saves`, gameId: game.id };
   } catch (error: unknown) {
-    if (finalPath) {
-      try { fs.unlinkSync(finalPath + '.uploading'); } catch { /* no temp */ }
-    }
     if (isApiError(error)) {
       return { success: false, message: error.message, status: error.status, error };
-    }
-    if (finalPath) {
-      try { fs.unlinkSync(finalPath + '.uploading'); } catch { /* no temp */ }
     }
     const message = error instanceof Error ? error.message : String(error);
     const status = message.includes('exceeds') || message.includes('already has') ? 413 : undefined;
     return status ? { success: false, message, status } : { success: false, message };
+  } finally {
+    if (stagingDir) fs.rmSync(stagingDir, { recursive: true, force: true });
   }
+}
+
+/** Stable identity of a local-sync folder (DUN-100): its full normalized path. */
+export function localSourceKey(gamePath: string): string {
+  const resolved = path.resolve(gamePath);
+  return resolved.length > 1 ? resolved.replace(/[\\/]+$/, '') : resolved;
+}
+
+/**
+ * DUN-100: the owner's game for one local-sync folder, keyed by the folder's
+ * full normalized path (never its basename, so two `.../Saves` folders stay
+ * two games). First sight of a folder binds it: to the owner's game with the
+ * folder's name if no other folder is bound to that game, else to a new game
+ * whose title is disambiguated with the parent folder name (then a counter).
+ */
+function gameForLocalFolder(ownerId: string, gamePath: string): { game: Game; created: boolean } {
+  const key = localSourceKey(gamePath);
+  const bound = database.getLocalSyncGame(ownerId, key);
+  if (bound) return { game: bound, created: false };
+
+  const base = requireGameTitle(path.basename(key));
+  const parent = path.basename(path.dirname(key));
+  const candidates = [base];
+  if (parent) candidates.push(`${base} (${parent})`);
+  for (let n = 2; n <= 100; n += 1) candidates.push(`${base} (${parent ? `${parent} ` : ''}${n})`);
+
+  for (const candidate of candidates) {
+    const title = requireGameTitle(candidate.slice(0, 200));
+    const existing = database.findGame(ownerId, title);
+    if (existing && database.isGameBoundToOtherFolder(ownerId, existing.id, key)) continue;
+    const game = existing ?? database.ensureGame(ownerId, title);
+    database.bindLocalSyncGame(ownerId, key, game.id);
+    return { game, created: !existing };
+  }
+  throw new ApiError(409, 'GAME_TITLE_CONFLICT', `No free title for local folder ${base}`);
 }
 
 export async function handleLocalSync(ownerId?: string): Promise<{ success: boolean; count: number; games: string[]; errors: string[] }> {
   const settings = database.getSettings();
   const sources = settings.localSources || [];
-  const maxVersions = settings.maxVersions || 10;
+  const maxVersions = maxVersionsSetting();
   const ownerIdResolved = ownerId ?? database.listUsers().find(u => u.role === 'admin')?.id;
   if (!ownerIdResolved) return { success: false, count: 0, games: [], errors: ['No owner for local sync'] };
   let totalFilesSynced = 0;
@@ -241,6 +271,8 @@ export async function handleLocalSync(ownerId?: string): Promise<{ success: bool
   // Use a single lock for the entire local sync operation to prevent
   // race conditions between concurrent syncs (from auto-sync + manual trigger)
   return withDbLock(async () => {
+    // DUN-097: one sync id for the whole local-sync session.
+    const syncId = Date.now().toString();
     for (const source of sources) {
       if (!fs.existsSync(source.path)) continue;
 
@@ -254,22 +286,18 @@ export async function handleLocalSync(ownerId?: string): Promise<{ success: bool
         continue;
       }
       for (const gamePath of gamesInSource) {
-        const gameName = path.basename(gamePath);
+        const folderName = path.basename(gamePath);
         let result;
-        let game;
+        let game: Game | undefined;
         let created = false;
         try {
-          // Folder basename is the title; the row (and so the id folder)
-          // exists before any file is copied (DUN-086/093).
-          const title = requireGameTitle(gameName);
-          const existing = database.findGame(ownerIdResolved, title);
-          game = existing ?? database.ensureGame(ownerIdResolved, title);
-          created = !existing;
-          result = syncLocalFolder(gamePath, getGameRoot(game.id, ownerIdResolved), maxVersions);
+          // The row (and so the id folder) exists before any file is copied (DUN-086/093).
+          ({ game, created } = gameForLocalFolder(ownerIdResolved, gamePath));
+          result = syncLocalFolder(gamePath, getGameRoot(game.id, ownerIdResolved), syncId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          logger.error({ err: error, game: gameName }, 'Local sync folder failed');
-          errors.push(`${gameName}: ${message}`);
+          logger.error({ err: error, game: folderName }, 'Local sync folder failed');
+          errors.push(`${folderName}: ${message}`);
           if (game && created) {
             database.deleteGame(game.id, ownerIdResolved);
             try { fs.rmSync(getGameRoot(game.id, ownerIdResolved), { recursive: true, force: true }); } catch { /* none */ }
@@ -280,6 +308,7 @@ export async function handleLocalSync(ownerId?: string): Promise<{ success: bool
         if (result.filesSynced > 0) {
           totalFilesSynced += result.filesSynced;
           syncedGames.push({ id: game.id, name: game.name });
+          pruneVersions(game.id, ownerIdResolved, maxVersions, [syncId]);
           invalidateGame(game.id, ownerIdResolved);
           // Status only: thumbnail/analysis are preserved.
           database.markGameSynced(game.id);

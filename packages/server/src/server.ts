@@ -3,7 +3,9 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 import { authMiddleware, optionalAuthMiddleware, requireAdmin, AuthenticatedRequest } from './middleware/auth.js';
-import { helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter } from './middleware/security.js';
+import {
+  helmetConfig, corsConfig, apiRateLimiter, uploadRateLimiter, authFailureLimiter, rejectQueryApiKey, trustProxySetting,
+} from './middleware/security.js';
 import {
   dataDir, getGameRoot, listFilesInDir, validateServerUrl, resolveGameFile, requireGameTitle,
   PathRuleError, ownerSavesRoot, assertStrictlyInside,
@@ -14,7 +16,11 @@ import type { Game } from './types/index.js';
 import { handleUploadFile, handleLocalSync } from './services/sync.js';
 import { listSaveVersions, getSaveVersion, getVersionDiff, createVersionFromDirectory, restoreVersion, VERSION_DIR_ID } from './services/saveVersions.js';
 import { listConflicts, detectConflict, resolveConflict, hasUnresolvedConflict } from './services/conflicts.js';
-import { getBackupProfile, upsertBackupProfile } from './services/backupProfiles.js';
+import { getBackupProfile, upsertBackupProfile, DEFAULT_EXCLUDE_GLOBS } from './services/backupProfiles.js';
+import {
+  parseInput, playtimeSessionSchema, playtimeGraphQuery, playtimeExportQuery, playtimeComparisonQuery,
+  globListSchema, backupProfileOptionsSchema, analyzeFilesSchema,
+} from './schemas.js';
 import { scanStorage, getDriveFreeBytes } from './services/storage.js';
 import { manifestForGame, removeGameFile } from './services/manifest.js';
 import { handler as trpcHandler } from './trpc/http.js';
@@ -35,7 +41,7 @@ import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalP
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks, upsertAchievements } from './services/achievements.js';
 import { getAchievementDetails, getAchievementProgress } from './services/achievementDetail.js';
 import { getHLTBTimes } from './services/hltb.js';
-import { analyzeFilesAI, checkModelStatus, fetchModels } from './services/ollama.js';
+import { analyzeFilesAI, checkModelStatus, fetchModels, storedOllamaConfig } from './services/ollama.js';
 import { searchArt, autoMatchAll } from './services/steamGridDB.js';
 import { withSteamGridKey, steamGridKeyStatus, setSteamGridKey, clearSteamGridKey } from './services/providerKeys.js';
 
@@ -43,10 +49,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+// DUN-102: honor X-Forwarded-* only when TRUST_PROXY says so (default off).
+app.set('trust proxy', trustProxySetting());
 app.use(helmetConfig);
 app.use(corsConfig);
 app.use(express.json({ limit: '10mb' }));
 app.use(requestLogger);
+// DUN-102: API keys travel in the x-api-key header only.
+app.use(rejectQueryApiKey);
 
 // Liveness: always 200, no dependencies, no auth, no rate limit.
 // Readiness: verifies this instance can serve traffic (data dir + DB).
@@ -61,10 +71,14 @@ app.get('/ready', (_req, res) => {
   res.status(result.ready ? 200 : 503).json(result);
 });
 
-// Skip rate limiting in test environment to avoid flaky 429s
+// DUN-102: rate limits cover the API only (/api, /trpc), never the static
+// dashboard assets. The general limiter is skipped under Vitest (flaky 429s);
+// the auth-failure guard always runs (an IP that keeps presenting bad keys
+// is 429 RATE_LIMITED until its window ends).
 if (!process.env.VITEST) {
-  app.use(apiRateLimiter);
+  app.use(['/api', '/trpc'], apiRateLimiter);
 }
+app.use(['/api', '/trpc'], authFailureLimiter.guard);
 app.use(optionalAuthMiddleware);
 
 const FRONTEND_DIR = path.join(__dirname, '..', 'frontend', 'dist');
@@ -87,7 +101,10 @@ app.post('/api/upload-file', authMiddleware, uploadRateLimitMiddleware, async (r
     // DUN-064/127: x-game / x-path arrive encodeURIComponent'd; decoded once here.
     const game = decodeHeader(req, 'x-game');
     const filePath = decodeHeader(req, 'x-path');
-    const syncId = (req.headers['x-sync-id'] as string) || Date.now().toString();
+    // DUN-097: one id per client sync session (digits; else 400
+    // INVALID_SYNC_ID in handleUploadFile). Absent = this upload is its own session.
+    const rawSyncId = req.headers['x-sync-id'];
+    const syncId = (Array.isArray(rawSyncId) ? rawSyncId[0] : rawSyncId) || Date.now().toString();
 
     if (!game || !filePath) {
       return sendError(res, 400, 'BAD_REQUEST', 'Game and path headers required');
@@ -320,11 +337,11 @@ app.delete('/api/file', authMiddleware, (req: AuthenticatedRequest, res) => {
 
 app.post('/api/playtime', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    const { game, platform, sessionStart, sessionEnd } = req.body ?? {};
-    if (!game || !platform || !sessionStart || !sessionEnd) {
-      return sendError(res, 400, 'BAD_REQUEST', 'game, platform, sessionStart, sessionEnd required');
-    }
-    res.json(recordPlaytimeSession(game, platform, sessionStart, sessionEnd, req.user?.id ?? ''));
+    // DUN-096: typed, bounded session (lengths, ISO instants, 1 min..24 h).
+    const s = parseInput(playtimeSessionSchema, req.body ?? {}, 'INVALID_PLAYTIME');
+    const result = recordPlaytimeSession(s.game, s.platform, s.sessionStart, s.sessionEnd, req.user?.id ?? '');
+    if (!result.success) return sendError(res, 400, 'INVALID_PLAYTIME', result.message ?? 'Invalid playtime session');
+    res.json(result);
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -423,7 +440,7 @@ app.get('/api/achievements', authMiddleware, (req: AuthenticatedRequest, res) =>
 
 app.get('/api/hltb/:game', authMiddleware, async (req, res) => {
   try {
-    res.json(await getHLTBTimes(req.params.game.toString()));
+    res.json(await getHLTBTimes(gameParam(req.params.game.toString())));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -431,19 +448,16 @@ app.get('/api/hltb/:game', authMiddleware, async (req, res) => {
 
 app.post('/api/analyze-files-ai', authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
-    const { gameName, files } = req.body ?? {};
     assertNoLaunchFields(req.body);
-    if (!gameName || !Array.isArray(files)) {
-      return sendError(res, 400, 'BAD_REQUEST', 'gameName and files array required');
-    }
-    const settings = database.getSettings();
-    const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
-    const model = settings.ollamaModel || 'phi4-mini:latest';
-    const check = validateServerUrl(endpoint);
-    if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
-    const result = await analyzeFilesAI(check.url, model, gameName, files);
+    // DUN-104: typed input (400 INVALID_AI_INPUT), stored endpoint only
+    // (DUN-095), and only validated/clamped model output is ever stored.
+    const input = parseInput(analyzeFilesSchema, req.body ?? {}, 'INVALID_AI_INPUT');
+    const title = gameParam(input.gameName);
+    const ownerId = targetOwnerId(req);
+    const { endpoint, model } = storedOllamaConfig();
+    const result = await analyzeFilesAI(endpoint, model, { ...input, gameName: title });
     if (result.success && result.analysis) {
-      const row = database.findGame(targetOwnerId(req), gameParam(gameName));
+      const row = database.findGame(ownerId, title);
       if (row) database.upsertGame({ ...row, analysis: result.analysis });
     }
     res.json(result);
@@ -660,18 +674,15 @@ app.delete('/api/users/:id', authMiddleware, requireAdmin, (req, res) => {
   }
 });
 
-app.get('/api/ollama-models', authMiddleware, async (req, res) => {
+// DUN-095: admin-only and bound to the STORED endpoint; a caller-supplied
+// URL is refused (no SSRF), upstream errors are never echoed.
+app.get('/api/ollama-models', authMiddleware, requireAdmin, async (req, res) => {
   try {
-    const { endpoint } = req.query;
-    if (!endpoint) return sendError(res, 400, 'BAD_REQUEST', 'endpoint required');
-    const check = validateServerUrl(endpoint.toString());
-    if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
-    try {
-      new URL(check.url);
-    } catch {
-      return sendError(res, 400, 'BAD_REQUEST', 'Invalid endpoint');
+    if (req.query.endpoint !== undefined) {
+      return sendError(res, 400, 'ENDPOINT_NOT_ALLOWED', 'The Ollama endpoint comes from settings only');
     }
-    res.json(await fetchModels(check.url));
+    const { endpoint } = storedOllamaConfig();
+    res.json(await fetchModels(endpoint));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -679,14 +690,8 @@ app.get('/api/ollama-models', authMiddleware, async (req, res) => {
 
 app.get('/api/ollama-health', authMiddleware, async (_req, res) => {
   try {
-    const settings = database.getSettings();
-    const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
-    const check = validateServerUrl(endpoint);
-    if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
-    res.json(await checkModelStatus(
-      check.url,
-      settings.ollamaModel || 'phi4-mini:latest',
-    ));
+    const { endpoint, model } = storedOllamaConfig();
+    res.json(await checkModelStatus(endpoint, model));
   } catch (e) {
     restError(_req, res, e, 'API internal error');
   }
@@ -721,15 +726,25 @@ app.post('/api/settings', authMiddleware, requireAdmin, (req: AuthenticatedReque
     const current = database.getSettings();
     const input = req.body ?? {};
     const merged = { ...current };
-    if (typeof input.maxVersions === 'number' && input.maxVersions > 0) merged.maxVersions = input.maxVersions;
+    if ('maxVersions' in input) {
+      if (!Number.isInteger(input.maxVersions) || input.maxVersions < 1 || input.maxVersions > 100) {
+        return sendError(res, 400, 'INVALID_SETTINGS', 'maxVersions must be an integer from 1 to 100');
+      }
+      merged.maxVersions = input.maxVersions;
+    }
     if ('steamGridApiKey' in input) {
       // DUN-092: write-only secret with its own routes; never stored in settings.
       return sendError(res, 400, 'WRITE_ONLY_FIELD', 'steamGridApiKey is set via PUT /api/provider-keys/steamgriddb');
     }
     if (typeof input.ollamaEndpoint === 'string') {
-      const check = validateServerUrl(input.ollamaEndpoint);
-      if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
-      merged.ollamaEndpoint = check.url;
+      // DUN-057: '' turns Ollama off; anything else must be a valid URL.
+      if (input.ollamaEndpoint.trim() === '') {
+        merged.ollamaEndpoint = '';
+      } else {
+        const check = validateServerUrl(input.ollamaEndpoint);
+        if (!check.valid) return sendError(res, 400, 'INVALID_URL', check.error ?? 'Invalid URL');
+        merged.ollamaEndpoint = check.url;
+      }
     }
     if (typeof input.ollamaModel === 'string') merged.ollamaModel = input.ollamaModel;
     database.saveSettings(merged);
@@ -926,7 +941,8 @@ app.get('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) 
     const game = req.query.game?.toString();
     if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
     const row = requireGame(req, game);
-    res.json({ success: true, profile: getBackupProfile(row.id) });
+    // cacheExcludeGlobs: what autoExcludeCache adds on top of excludeGlobs (DUN-103).
+    res.json({ success: true, profile: getBackupProfile(row.id), cacheExcludeGlobs: DEFAULT_EXCLUDE_GLOBS });
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -935,15 +951,22 @@ app.get('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) 
 app.post('/api/backup-profile', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
     assertNoLaunchFields(req.body); // DUN-061
-    const { game, includeGlobs, excludeGlobs, autoExcludeCache, maxFileSizeMB } = req.body ?? {};
-    if (!game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
-    const row = requireGame(req, game.toString());
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (!body.game) return sendError(res, 400, 'BAD_REQUEST', 'game required');
+    // DUN-103: typed, bounded globs; absent fields keep the stored value.
+    // Rules affect future snapshots/uploads only; stored versions are never
+    // hidden, trashed or deleted because of an exclude rule (DUN-067).
+    const excludeGlobs = body.excludeGlobs === undefined ? undefined : parseInput(globListSchema, body.excludeGlobs, 'INVALID_EXCLUDE_GLOBS');
+    const includeGlobs = body.includeGlobs === undefined ? undefined : parseInput(globListSchema, body.includeGlobs, 'INVALID_INCLUDE_GLOBS');
+    const options = parseInput(backupProfileOptionsSchema, body, 'INVALID_BACKUP_PROFILE');
+    const row = requireGame(req, String(body.game));
+    const current = getBackupProfile(row.id);
     const profile = upsertBackupProfile({
       gameId: row.id,
-      includeGlobs: Array.isArray(includeGlobs) ? includeGlobs : ['**/*'],
-      excludeGlobs: Array.isArray(excludeGlobs) ? excludeGlobs : [],
-      autoExcludeCache: autoExcludeCache !== false,
-      maxFileSizeMB: typeof maxFileSizeMB === 'number' ? maxFileSizeMB : undefined,
+      includeGlobs: includeGlobs ?? current.includeGlobs,
+      excludeGlobs: excludeGlobs ?? current.excludeGlobs,
+      autoExcludeCache: options.autoExcludeCache ?? current.autoExcludeCache,
+      maxFileSizeMB: options.maxFileSizeMB === null ? undefined : options.maxFileSizeMB ?? current.maxFileSizeMB,
       updatedAt: new Date().toISOString(),
     });
     res.json({ success: true, profile });
@@ -971,9 +994,10 @@ app.get('/api/storage', authMiddleware, (req: AuthenticatedRequest, res) => {
 
 app.get('/api/playtime/graph', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    const range = (req.query.range?.toString() || 'all') as 'all' | 'year' | 'month' | 'week' | 'custom';
-    const customRange = req.query.start && req.query.end ? { start: req.query.start.toString(), end: req.query.end.toString() } : undefined;
-    res.json(getPlaytimeGraphData(range, customRange, ownerScope(req)));
+    // DUN-096: validated range; custom spans capped (400 INVALID_RANGE).
+    const q = parseInput(playtimeGraphQuery, req.query, 'INVALID_RANGE');
+    const customRange = q.start !== undefined && q.end !== undefined ? { start: q.start, end: q.end } : undefined;
+    res.json(getPlaytimeGraphData(q.range, customRange, ownerScope(req)));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -981,8 +1005,8 @@ app.get('/api/playtime/graph', authMiddleware, (req: AuthenticatedRequest, res) 
 
 app.get('/api/playtime/comparison', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    const range = (req.query.range?.toString() || 'week') as 'week' | 'month' | 'year';
-    res.json(getPlaytimeComparison(range, ownerScope(req)));
+    const q = parseInput(playtimeComparisonQuery, req.query, 'INVALID_RANGE');
+    res.json(getPlaytimeComparison(q.range, ownerScope(req)));
   } catch (e) {
     restError(req, res, e, 'API internal error');
   }
@@ -990,10 +1014,9 @@ app.get('/api/playtime/comparison', authMiddleware, (req: AuthenticatedRequest, 
 
 app.get('/api/playtime/export', authMiddleware, (req: AuthenticatedRequest, res) => {
   try {
-    const format = (req.query.format?.toString() || 'json') as 'csv' | 'json';
-    const range = (req.query.range?.toString() || 'all') as 'all' | 'year' | 'month' | 'week' | 'custom';
-    const customRange = req.query.start && req.query.end ? { start: req.query.start.toString(), end: req.query.end.toString() } : undefined;
-    const result = exportPlaytimeData(format, range, customRange, ownerScope(req));
+    const q = parseInput(playtimeExportQuery, req.query, 'INVALID_RANGE');
+    const customRange = q.start !== undefined && q.end !== undefined ? { start: q.start, end: q.end } : undefined;
+    const result = exportPlaytimeData(q.format, q.range, customRange, ownerScope(req));
     if (!result.success) return sendError(res, 400, 'BAD_REQUEST', result.message ?? 'Export failed');
     res.json(result);
   } catch (e) {

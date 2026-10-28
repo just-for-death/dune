@@ -1,5 +1,7 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
 import axios from 'axios';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -8,6 +10,14 @@ import { logger, redactText, redactUrl } from '../middleware/logging.js';
 import { getGameRoot } from '../utils/path.js';
 
 const execFileAsync = promisify(execFile);
+
+function closeStream(stream: fs.ReadStream): Promise<void> {
+  if (stream.closed) return Promise.resolve();
+  return new Promise((resolve) => {
+    stream.once('close', () => resolve());
+    stream.destroy();
+  });
+}
 
 /** Push each game's save tree (saves/<ownerId>/<gameId>) to configured peers. */
 export async function triggerRemoteSync(syncedGames: Array<{ id: number; name: string }>, ownerId: string): Promise<void> {
@@ -32,8 +42,11 @@ export async function triggerRemoteSync(syncedGames: Array<{ id: number; name: s
     }
     if (!fs.existsSync(gameDir)) continue;
 
-    const zipPath = path.join(path.dirname(gameDir), `${path.basename(gameDir)}_sync.zip`);
-    
+    // DUN-101: a fresh private dir + random name per push. `zip` appends to
+    // an existing archive, so a shared name would mix two pushes' files.
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-remote-sync-'));
+    const zipPath = path.join(workDir, `${randomUUID()}.zip`);
+
     try {
       // -y: store symlinks as links (never follow them out of the root); the
       // receiving server rejects such an archive.
@@ -55,10 +68,10 @@ export async function triggerRemoteSync(syncedGames: Array<{ id: number; name: s
           continue;
         }
 
+        const stream = fs.createReadStream(zipPath);
+        // Read errors surface through axios; never as an unhandled 'error'.
+        stream.on('error', () => undefined);
         try {
-          const stream = fs.createReadStream(zipPath);
-          // Destroy the stream on failure so a rejected post never leaves
-          // an open fd behind (vitest tmp cleanup noise + fd leak).
           await axios.post(new URL('/api/upload-file', serverUrl).href, stream, {
             headers: {
               'Content-Type': 'application/octet-stream',
@@ -73,9 +86,6 @@ export async function triggerRemoteSync(syncedGames: Array<{ id: number; name: s
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
             timeout: 300000
-          }).catch((err) => {
-            stream.destroy();
-            throw err;
           });
           logger.info({ game: gameName, server: redactUrl(serverUrl) }, 'Remote sync pushed game');
         } catch (err) {
@@ -93,12 +103,15 @@ export async function triggerRemoteSync(syncedGames: Array<{ id: number; name: s
             },
             'Remote sync push failed',
           );
+        } finally {
+          // Close the fd before the temp dir is removed (no fd leak, no late ENOENT).
+          await closeStream(stream);
         }
       }
     } catch (err) {
       logger.error({ err, game: gameName }, 'Remote sync zip failed');
     } finally {
-      if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+      fs.rmSync(workDir, { recursive: true, force: true });
     }
   }
 }

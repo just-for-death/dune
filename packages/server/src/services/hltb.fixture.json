@@ -1,0 +1,18 @@
+{
+  "_source": "https://howlongtobeat.com/game/26286 (public game page, embedded __NEXT_DATA__ game record), fetched 2026-10-20 13:58 IST. POST https://howlongtobeat.com/api/search (the service's request) answered 403 IFW-U01 from both the box and the server host, so the raw record comes from the game page, which carries the same comp_* fields.",
+  "websiteHours": {
+    "Main Story": "27 Hours",
+    "Main + Sides": "41½ Hours",
+    "Completionist": "65½ Hours"
+  },
+  "data": [
+    {
+      "game_id": 26286,
+      "game_name": "Hollow Knight",
+      "comp_main": 97100,
+      "comp_plus": 149852,
+      "comp_100": 236390,
+      "comp_all": 150652
+    }
+  ]
+}

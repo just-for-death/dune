@@ -1,4 +1,5 @@
 import type { Game, HLTBTimes } from '@dune/shared';
+import { useI18n } from '../i18n/context';
 
 interface Props {
   games: Game[];
@@ -8,21 +9,24 @@ interface Props {
 }
 
 export function HLTBView({ games, cache, loading, onLoad }: Props) {
+  const { t } = useI18n();
+  const hours = (minutes: number) => t('hltb.hours', { hours: Math.round(minutes / 60) });
   return (
     <div>
       <div className="section-header">
-        <h2>HowLongToBeat</h2>
-        <p className="text-muted">Estimated completion times for tracked games.</p>
+        <h2>{t('hltb.title')}</h2>
+        <p className="text-muted">{t('hltb.subtitle')}</p>
       </div>
       <div className="card">
+        <div className="table-wrapper">
         <table className="data-table">
           <thead>
             <tr>
-              <th>Game</th>
-              <th>Main Story</th>
-              <th>Main + Extra</th>
-              <th>Completionist</th>
-              <th>Status</th>
+              <th>{t('table.game')}</th>
+              <th>{t('hltb.mainStory')}</th>
+              <th>{t('hltb.mainExtra')}</th>
+              <th>{t('hltb.completionist')}</th>
+              <th>{t('table.status')}</th>
             </tr>
           </thead>
           <tbody>
@@ -31,13 +35,13 @@ export function HLTBView({ games, cache, loading, onLoad }: Props) {
               return (
                 <tr key={game.id}>
                   <td>{game.name}</td>
-                  <td>{times ? `${Math.round(times.mainStory / 60)}h` : '—'}</td>
-                  <td>{times ? `${Math.round(times.mainExtra / 60)}h` : '—'}</td>
-                  <td>{times ? `${Math.round(times.completionist / 60)}h` : '—'}</td>
+                  <td>{times ? hours(times.mainStory) : <><span aria-hidden="true">—</span><span className="sr-only">{t('common.none')}</span></>}</td>
+                  <td>{times ? hours(times.mainExtra) : <><span aria-hidden="true">—</span><span className="sr-only">{t('common.none')}</span></>}</td>
+                  <td>{times ? hours(times.completionist) : <><span aria-hidden="true">—</span><span className="sr-only">{t('common.none')}</span></>}</td>
                   <td>
-                    {times ? (times.fetchedAt ? 'Cached' : 'Loaded') : (
-                      <button className="btn btn-secondary btn-sm" onClick={() => onLoad(game.name)} disabled={loading[game.name]}>
-                        {loading[game.name] ? 'Loading...' : 'Load'}
+                    {times ? (times.fetchedAt ? t('hltb.cached') : t('hltb.loaded')) : (
+                      <button className="btn btn-secondary btn-sm" aria-label={t('hltb.loadLabel', { game: game.name })} onClick={() => onLoad(game.name)} disabled={loading[game.name]}>
+                        {loading[game.name] ? t('common.loadingDots') : t('hltb.load')}
                       </button>
                     )}
                   </td>
@@ -46,6 +50,7 @@ export function HLTBView({ games, cache, loading, onLoad }: Props) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

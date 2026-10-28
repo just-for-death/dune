@@ -142,25 +142,53 @@ test.describe('DUN-050 sync progress', () => {
 });
 
 test.describe('DUN-047 Smart exclusions rollback', () => {
-  // Production builds have no file breakdown (DEMO_EXCLUSION_FILES is DEV-only
-  // and no IPC provides one yet), so the editor has no toggles to click under
-  // `vite preview`. The rollback is unit-tested in
-  // src/services/backupProfileSave.test.ts. Enable this once a real
-  // file-breakdown source exists.
-  // DUN-131: enable once Desktop's listSaveFiles(gameId) IPC lands and replaces the DEV-only exclusion demo files.
-  test.fixme('a failed save rolls the editor back and shows an error toast', async ({ page }) => {
+  // DUN-131: the breakdown comes from listSaveFiles(gameId) (stub saveFiles option).
+  test('a failed save rolls the editor back and shows an error toast', async ({ page }) => {
     await installElectronStub(page, {
       games: sampleGames.slice(0, 1),
       cloudUrl: 'http://localhost:3030',
       backupProfile: { gameId: 1, includeGlobs: ['**/*'], excludeGlobs: [], autoExcludeCache: false, updatedAt: '2026-10-20T00:00:00.000Z' },
       backupProfileFail: { ok: false, status: 403, code: 'FORBIDDEN', message: 'Admin privileges required' },
+      saveFiles: {
+        files: [
+          { path: 'saves/slot1.sav', size: 6.6 * 1024 * 1024, mtimeMs: 0 },
+          { path: 'cache/shaders.bin', size: 412 * 1024 * 1024, mtimeMs: 0 },
+        ],
+      },
     });
     await page.goto('/');
     await openTab(page, 'Saves');
     const cache = page.locator('.exclusion-editor').getByRole('checkbox', { name: /Cache/ });
     await expect(cache).not.toBeChecked();
-    await cache.check();
+    // click(), not check(): check() retries until checked, but a failed save rolls it back.
+    await cache.click();
     await expect(page.locator('.toast-error')).toContainText('This needs an admin key.');
     await expect(cache).not.toBeChecked();
+  });
+
+  test('shows the truncated notice and each listSaveFiles error as readable text', async ({ page }) => {
+    await installElectronStub(page, {
+      games: sampleGames.slice(0, 1),
+      cloudUrl: 'http://localhost:3030',
+      backupProfile: { gameId: 1, includeGlobs: ['**/*'], excludeGlobs: [], autoExcludeCache: false, updatedAt: '2026-10-20T00:00:00.000Z' },
+      saveFiles: { files: [{ path: 'saves/slot1.sav', size: 1024, mtimeMs: 0 }], truncated: true },
+    });
+    await page.goto('/');
+    await openTab(page, 'Saves');
+    await expect(page.locator('.exclusion-files-truncated')).toContainText('Showing the first 1 files only.');
+    await expect(page.locator('.exclusion-editor')).toBeVisible();
+  });
+
+  test('a protected save folder shows its message instead of the editor', async ({ page }) => {
+    await installElectronStub(page, {
+      games: sampleGames.slice(0, 1),
+      cloudUrl: 'http://localhost:3030',
+      backupProfile: { gameId: 1, includeGlobs: ['**/*'], excludeGlobs: [], autoExcludeCache: false, updatedAt: '2026-10-20T00:00:00.000Z' },
+      saveFiles: { failCode: 'PROTECTED_SAVE_PATH' },
+    });
+    await page.goto('/');
+    await openTab(page, 'Saves');
+    await expect(page.locator('.exclusion-files-error')).toContainText('protected system location');
+    await expect(page.locator('.exclusion-editor')).toHaveCount(0);
   });
 });

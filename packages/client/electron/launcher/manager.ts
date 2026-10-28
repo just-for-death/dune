@@ -6,7 +6,7 @@ import { heroicStrategy } from './strategies/heroic.js';
 import { lutrisStrategy } from './strategies/lutris.js';
 import { wineStrategy } from './strategies/wine.js';
 import { emulatorStrategy } from './strategies/emulator.js';
-import type { LaunchCommand, LaunchOptions } from './strategies/types.js';
+import { isUrlLaunch, type LaunchOptions, type LaunchPlan } from './strategies/types.js';
 import { filterLaunchEnv } from '../launch/envAllowlist.js';
 
 const strategies = [
@@ -22,12 +22,30 @@ export function selectLaunchStrategy(game: Game, options: LaunchOptions = {}) {
   return strategies.find((strategy) => strategy.canLaunch(game, options) && strategy.getCommand(game, options) !== null) ?? null;
 }
 
-export function getLaunchCommand(game: Game, options: LaunchOptions = {}): LaunchCommand | null {
+function safeOptionsOf(options: LaunchOptions): LaunchOptions {
   // DUN-061: per-game env only passes the allow-list; strategies then add the
   // main-owned WINEPREFIX / PROTONPATH on top.
-  const safeOptions: LaunchOptions = options.env === undefined ? options : { ...options, env: filterLaunchEnv(options.env) };
+  return options.env === undefined ? options : { ...options, env: filterLaunchEnv(options.env) };
+}
+
+export function getLaunchCommand(game: Game, options: LaunchOptions = {}): LaunchPlan | null {
+  const safeOptions = safeOptionsOf(options);
   const strategy = selectLaunchStrategy(game, safeOptions);
   return strategy ? strategy.getCommand(game, safeOptions) : null;
+}
+
+/**
+ * A user-facing reason why a game that a strategy would handle can't be
+ * launched (DUN-075: no RetroArch core), or null.
+ */
+export function getLaunchRefusal(game: Game, options: LaunchOptions = {}): string | null {
+  const safeOptions = safeOptionsOf(options);
+  for (const strategy of strategies) {
+    if (!strategy.canLaunch(game, safeOptions)) continue;
+    const reason = strategy.refusal?.(game, safeOptions) ?? null;
+    if (reason) return reason;
+  }
+  return null;
 }
 
 /** The subset of `child_process.spawn` the launcher uses; injectable for tests. */
@@ -42,6 +60,8 @@ export interface LaunchTrackingHooks {
   onExit?: (info: { pid?: number; startedAt: number; endedAt: number }) => void;
   /** Test seam: replaces `child_process.spawn`. Always called with an args array and `shell: false`. */
   spawn?: SpawnFn;
+  /** DUN-074: opens a launch URL (steam://...) via the OS; main passes `shell.openExternal`. */
+  openExternal?: (url: string) => Promise<void>;
 }
 
 export async function launchGame(
@@ -49,8 +69,19 @@ export async function launchGame(
   options: LaunchOptions = {},
   hooks: LaunchTrackingHooks = {},
 ): Promise<{ success: boolean; message: string; pid?: number }> {
-  const command = getLaunchCommand(game, options);
-  if (!command) return { success: false, message: 'No launch strategy available' };
+  const plan = getLaunchCommand(game, options);
+  if (!plan) return { success: false, message: getLaunchRefusal(game, options) ?? 'No launch strategy available' };
+  if (isUrlLaunch(plan)) {
+    // Launcher URLs hand off to the launcher; its lifetime is not playtime.
+    if (!hooks.openExternal) return { success: false, message: 'Cannot open launcher URLs here' };
+    try {
+      await hooks.openExternal(plan.url);
+      return { success: true, message: 'Launched' };
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : 'Launch failed' };
+    }
+  }
+  const command = plan;
 
   const startedAt = Date.now();
   let child: ChildProcess;

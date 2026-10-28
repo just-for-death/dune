@@ -159,17 +159,20 @@ export async function applySavesArchive(input: ApplyArchiveInput): Promise<Apply
     let snapshotted = 0;
     for (const t of targets) {
       if (fs.existsSync(t.abs)) {
+        // First copy within one sync session wins (the pre-sync state).
         const snap = resolveGameFile(input.gameId, `.versions/${input.versionId}/${t.rel}`, input.ownerId).abs;
-        fs.mkdirSync(path.dirname(snap), { recursive: true });
-        fs.copyFileSync(t.abs, snap);
+        if (!fs.existsSync(snap)) {
+          fs.mkdirSync(path.dirname(snap), { recursive: true });
+          fs.copyFileSync(t.abs, snap);
+        }
         snapshotted += 1;
       }
     }
+    // DUN-101: publish straight from this upload's private extraction dir
+    // (same filesystem: saves/<owner>/.extract-*), so no shared temp name.
     for (const t of targets) {
       fs.mkdirSync(path.dirname(t.abs), { recursive: true });
-      const staged = `${t.abs}.restoring`;
-      fs.copyFileSync(path.join(tmp, ...t.rel.split('/')), staged);
-      fs.renameSync(staged, t.abs);
+      fs.renameSync(path.join(tmp, ...t.rel.split('/')), t.abs);
     }
     return { written: targets.length, snapshotted };
   } finally {

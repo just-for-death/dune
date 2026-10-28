@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { Game } from '@dune/shared';
+import { useI18n } from '../i18n/context';
+import { gameStatusLabel } from '../i18n/labels';
 
 interface Props {
   games: Game[];
@@ -35,6 +37,7 @@ function readPadDirection(pad: Gamepad): Direction | null {
 }
 
 export function BigPicture({ games, onLaunch }: Props) {
+  const { t } = useI18n();
   const gridRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef(0);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -156,11 +159,11 @@ export function BigPicture({ games, onLaunch }: Props) {
   return (
     <div className="big-picture">
       <div className="big-picture-header">
-        <h2>Dune Big Picture</h2>
-        <p className="muted">Controller-friendly library view. Use arrow keys or a gamepad to move, Enter or A to launch.</p>
+        <h2>{t('bigPicture.title')}</h2>
+        <p className="muted">{t('bigPicture.desc')}</p>
       </div>
       {hasGames ? (
-        <div ref={gridRef} className="big-picture-grid" role="group" aria-label="Game library" onKeyDown={handleKeyDown}>
+        <div ref={gridRef} className="big-picture-grid" role="group" aria-label={t('bigPicture.library')} onKeyDown={handleKeyDown}>
           {games.map((game, index) => (
             <button
               key={game.id}
@@ -179,14 +182,14 @@ export function BigPicture({ games, onLaunch }: Props) {
                 <span className="big-picture-cover" aria-hidden="true" />
               )}
               <span className="big-picture-title" title={game.name}>{game.name}</span>
-              <span className="big-picture-meta">{game.status}</span>
+              <span className="big-picture-meta">{gameStatusLabel(game.status, t)}</span>
             </button>
           ))}
         </div>
       ) : (
         <div className="empty-state">
-          <p>No games in your library yet.</p>
-          <p className="muted">Add games in Game Paths and they will show up here.</p>
+          <p>{t('bigPicture.empty')}</p>
+          <p className="muted">{t('bigPicture.emptyHint')}</p>
         </div>
       )}
     </div>

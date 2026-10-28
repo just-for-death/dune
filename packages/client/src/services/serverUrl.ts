@@ -8,6 +8,8 @@
  * serverUrl.test.ts. Keep both in sync when Desktop changes the rules.
  */
 
+import { defaultTranslator, type Translator } from '../i18n';
+
 export type ServerUrlCheck = { ok: true; url: string } | { ok: false; error: string };
 
 const ABSOLUTE_HTTP = /^(https?):\/\//i;
@@ -16,57 +18,55 @@ const ANY_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const BLOCKED_HOSTS = ['169.254.169.254', 'metadata.google.internal', '100.100.100.200', '169.254.169.253', 'instance-data'];
 const BLOCKED_PORTS = [21, 22, 23, 25, 53, 69, 110, 119, 123, 143, 161, 194, 445];
 
-const EXAMPLE = 'e.g. http://192.168.1.100:3030';
-
 /** Validate and normalise; the error text is user-facing. */
-export function checkServerUrl(input: unknown): ServerUrlCheck {
+export function checkServerUrl(input: unknown, t: Translator = defaultTranslator): ServerUrlCheck {
   const fail = (error: string): ServerUrlCheck => ({ ok: false, error });
-  if (typeof input !== 'string') return fail('Enter the server address.');
+  if (typeof input !== 'string') return fail(t('serverUrl.empty'));
   const trimmed = input.trim();
-  if (!trimmed) return fail('Enter the server address.');
+  if (!trimmed) return fail(t('serverUrl.empty'));
 
   const scheme = ABSOLUTE_HTTP.exec(trimmed);
   if (!scheme) {
     return ANY_SCHEME.test(trimmed) && !/^https?:?\/?$/i.test(trimmed) && !/^[^:]+:\d/.test(trimmed)
-      ? fail('Only http:// and https:// addresses are allowed.')
-      : fail(`Start the address with http:// or https:// (${EXAMPLE}).`);
+      ? fail(t('serverUrl.scheme'))
+      : fail(t('serverUrl.needScheme', { example: t('serverUrl.example') }));
   }
 
   const rest = trimmed.slice(scheme[0].length);
   const authority = rest.split(/[/?#]/, 1)[0];
-  if (!authority) return fail(`Add the server host (${EXAMPLE}).`);
-  if (authority.includes('@')) return fail('Remove the user name or password from the address.');
-  if (/[?#]/.test(rest)) return fail('Remove the ?query or #fragment from the address.');
+  if (!authority) return fail(t('serverUrl.needHost', { example: t('serverUrl.example') }));
+  if (authority.includes('@')) return fail(t('serverUrl.credentials'));
+  if (/[?#]/.test(rest)) return fail(t('serverUrl.query'));
 
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
   } catch {
-    return fail(`Enter a valid server address (${EXAMPLE}).`);
+    return fail(t('serverUrl.invalid', { example: t('serverUrl.example') }));
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return fail('Only http:// and https:// addresses are allowed.');
-  if (parsed.username || parsed.password) return fail('Remove the user name or password from the address.');
-  if (!parsed.hostname) return fail(`Add the server host (${EXAMPLE}).`);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return fail(t('serverUrl.scheme'));
+  if (parsed.username || parsed.password) return fail(t('serverUrl.credentials'));
+  if (!parsed.hostname) return fail(t('serverUrl.needHost', { example: t('serverUrl.example') }));
 
   let rawHost: string;
   let rawPort: string | undefined;
   if (authority.startsWith('[')) {
     const end = authority.indexOf(']');
-    if (end < 0) return fail(`Enter a valid server address (${EXAMPLE}).`);
+    if (end < 0) return fail(t('serverUrl.invalid', { example: t('serverUrl.example') }));
     rawHost = authority.slice(0, end + 1);
     const after = authority.slice(end + 1);
-    if (after && !after.startsWith(':')) return fail(`Enter a valid server address (${EXAMPLE}).`);
+    if (after && !after.startsWith(':')) return fail(t('serverUrl.invalid', { example: t('serverUrl.example') }));
     rawPort = after ? after.slice(1) : undefined;
   } else {
     const colon = authority.indexOf(':');
     rawHost = colon < 0 ? authority : authority.slice(0, colon);
     rawPort = colon < 0 ? undefined : authority.slice(colon + 1);
   }
-  if (rawPort !== undefined && !/^\d{1,5}$/.test(rawPort)) return fail('The port must be a number, e.g. :3030.');
+  if (rawPort !== undefined && !/^\d{1,5}$/.test(rawPort)) return fail(t('serverUrl.port'));
   if (!rawHost.startsWith('[')) {
-    if (rawHost.endsWith('.') || rawHost.includes('..')) return fail(`Enter a complete host name (${EXAMPLE}).`);
+    if (rawHost.endsWith('.') || rawHost.includes('..')) return fail(t('serverUrl.incompleteHost', { example: t('serverUrl.example') }));
     if (/^(0x[0-9a-f]*|[0-9.]+)$/i.test(rawHost) && parsed.hostname !== rawHost) {
-      return fail('Enter the full IP address (four numbers, e.g. 192.168.1.100).');
+      return fail(t('serverUrl.fullIp'));
     }
   }
 
@@ -76,12 +76,12 @@ export function checkServerUrl(input: unknown): ServerUrlCheck {
   // Mirror of electron/utils.ts validateServerUrl (SSRF + port policy).
   const host = parsed.hostname.toLowerCase();
   if (BLOCKED_HOSTS.includes(host) || host.endsWith('.metadata.google.internal') || /^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) {
-    return fail('This address is not allowed.');
+    return fail(t('serverUrl.blocked'));
   }
   if (host.startsWith('fe80:') || host.startsWith('fd00:') || host.startsWith('[fe80:') || host.startsWith('[fd00:')) {
-    return fail('This address is not allowed.');
+    return fail(t('serverUrl.blocked'));
   }
-  if (parsed.port && BLOCKED_PORTS.includes(parseInt(parsed.port, 10))) return fail(`Port ${parsed.port} is not allowed.`);
+  if (parsed.port && BLOCKED_PORTS.includes(parseInt(parsed.port, 10))) return fail(t('serverUrl.portBlocked', { port: parsed.port }));
 
   return { ok: true, url: normalized };
 }

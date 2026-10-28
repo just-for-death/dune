@@ -5,9 +5,10 @@
  */
 import type { BackupProfile, ServerResult } from '@dune/shared';
 import { serverFailureMessage } from './serverError';
+import { defaultTranslator, type Translator } from '../i18n';
 
-export const PROFILE_SAVE_FAILED = "Couldn't save the exclusions. Your previous choices are back.";
-export const PROFILE_SAVED = 'Backup profile updated';
+export const PROFILE_SAVE_FAILED = defaultTranslator('saves.profileSaveFailed');
+export const PROFILE_SAVED = defaultTranslator('saves.profileSaved');
 
 type SaveReply = ServerResult<{ profile?: BackupProfile; message?: string }>;
 
@@ -15,15 +16,18 @@ export type ProfileSaveOutcome =
   | { ok: true; profile?: BackupProfile; message: string }
   | { ok: false; message: string };
 
-export async function saveBackupProfile(save: () => Promise<SaveReply>): Promise<ProfileSaveOutcome> {
+export async function saveBackupProfile(
+  save: () => Promise<SaveReply>,
+  t: Translator = defaultTranslator,
+): Promise<ProfileSaveOutcome> {
   let res: SaveReply;
   try {
     res = await save();
   } catch {
-    return { ok: false, message: PROFILE_SAVE_FAILED };
+    return { ok: false, message: t('saves.profileSaveFailed') };
   }
   if (!res || typeof res !== 'object' || res.ok !== true) {
-    return { ok: false, message: res && typeof res === 'object' && res.ok === false ? serverFailureMessage(res) : PROFILE_SAVE_FAILED };
+    return { ok: false, message: res && typeof res === 'object' && res.ok === false ? serverFailureMessage(res, t) : t('saves.profileSaveFailed') };
   }
-  return { ok: true, ...(res.profile ? { profile: res.profile } : {}), message: res.message || PROFILE_SAVED };
+  return { ok: true, ...(res.profile ? { profile: res.profile } : {}), message: res.message || t('saves.profileSaved') };
 }

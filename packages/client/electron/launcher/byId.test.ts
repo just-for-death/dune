@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { ChildProcess } from 'child_process';
 import type { Game } from '@dune/shared';
-import { createLaunchIpcHandlers, launchGameById, parseGameId, type LaunchByIdDeps } from './byId.js';
+import { createLaunchIpcHandlers, getLaunchCommandById, launchGameById, parseGameId, type LaunchByIdDeps } from './byId.js';
 import type { SpawnFn } from './manager.js';
 
 // DUN-061: every test uses a dune061-* mkdtemp folder and a fake spawn. No
@@ -160,11 +160,13 @@ describe('DUN-061 launch by game id', () => {
     expect(env.PATH).toBe(process.env.PATH);
   });
 
-  it('opens Steam only with a numeric app id', async () => {
+  it('opens Steam only with a numeric app id, via openExternal (DUN-074)', async () => {
     const spawn = fakeSpawn();
-    expect(await launchGameById(103, deps({ spawn: spawn.fn }))).toEqual({ ok: true, pid: 4242 });
-    expect(spawn.calls[0].command).toBe('xdg-open');
-    expect(spawn.calls[0].args).toEqual(['steam://run/620']);
+    const opened: string[] = [];
+    expect(await launchGameById(103, deps({ spawn: spawn.fn, openExternal: async (url) => { opened.push(url); } }))).toEqual({ ok: true });
+    expect(opened).toEqual(['steam://rungameid/620']);
+    expect(spawn.fn).not.toHaveBeenCalled();
+    expect(await getLaunchCommandById(103, deps())).toEqual({ ok: true, command: { url: 'steam://rungameid/620' } });
   });
 
   it('returns not-launchable for stored games without a valid target', async () => {
@@ -193,8 +195,9 @@ describe('DUN-061 launch by game id', () => {
 
   it('never uses a shell: argv array and shell:false on every spawn', async () => {
     const spawn = fakeSpawn();
-    for (const id of [101, 102, 103]) await launchGameById(id, deps({ spawn: spawn.fn }));
-    expect(spawn.calls).toHaveLength(3);
+    // 103 (Steam) opens a URL via openExternal (DUN-074) and spawns nothing.
+    for (const id of [101, 102, 103]) await launchGameById(id, deps({ spawn: spawn.fn, openExternal: async () => {} }));
+    expect(spawn.calls).toHaveLength(2);
     for (const call of spawn.calls) {
       expect(Array.isArray(call.args)).toBe(true);
       expect(call.options.shell).toBe(false);

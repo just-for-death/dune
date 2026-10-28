@@ -1,17 +1,20 @@
+import { useI18n } from '../i18n/context';
+
 interface Props {
-  /** What needs the server, e.g. "see playtime". */
-  what: string;
+  /** Full translated sentence, e.g. t('noServer.playtime'). */
+  message: string;
   onOpenSettings: () => void;
 }
 
 /** DUN-041: calm, non-error notice for views that need a Dune server. */
-export function NoServerNotice({ what, onOpenSettings }: Props) {
+export function NoServerNotice({ message, onOpenSettings }: Props) {
+  const { t } = useI18n();
   return (
     <div className="card no-server-card">
       <p className="no-server-text">
-        Connect a Dune server to {what}. Everything else keeps working on this PC.
+        {message}
       </p>
-      <button type="button" className="btn btn-secondary btn-sm" onClick={onOpenSettings}>Set up a server</button>
+      <button type="button" className="btn btn-secondary btn-sm" onClick={onOpenSettings}>{t('noServer.setUp')}</button>
     </div>
   );
 }

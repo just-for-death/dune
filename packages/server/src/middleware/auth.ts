@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { database } from '../db/index.js';
 import type { User } from '../types/index.js';
 import { extractApiKey } from '../utils/authKey.js';
+import { authFailureLimiter } from './security.js';
 
 export interface AuthenticatedRequest extends Request {
   apiKey?: string;
@@ -19,8 +20,8 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
     return next();
   }
 
-  const apiKey = extractApiKey(req.headers as Record<string, string | string[] | undefined>, req.url);
-  
+  const apiKey = extractApiKey(req.headers as Record<string, string | string[] | undefined>);
+
   if (!apiKey) {
     res.status(401).json({ error: 'API key required', code: 'UNAUTHORIZED' });
     return;
@@ -37,14 +38,21 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
   next();
 }
 
+/**
+ * Resolves the presented key once per request (REST and tRPC). A key that
+ * doesn't resolve is recorded as an auth failure for the client IP
+ * (DUN-102, authFailureLimiter).
+ */
 export function optionalAuthMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  const apiKey = extractApiKey(req.headers as Record<string, string | string[] | undefined>, req.url);
+  const apiKey = extractApiKey(req.headers as Record<string, string | string[] | undefined>);
 
   if (apiKey) {
     const user = database.resolveUserByKey(apiKey);
     if (user) {
       req.apiKey = apiKey;
       req.user = user;
+    } else {
+      authFailureLimiter.recordFailure(req);
     }
   }
   next();

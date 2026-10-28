@@ -2,6 +2,8 @@ import * as path from 'path';
 import { dataDir } from '../utils/path.js';
 import { readJsonFile, writeJsonFileAtomic } from '../db/jsonStore.js';
 import { nextId } from '@dune/shared';
+import { ApiError, isApiError } from '../utils/apiError.js';
+import { PLAYTIME_LIMITS, rangeInstant, type GraphRange } from '../schemas.js';
 
 function playtimeDbPath(): string {
   return path.join(dataDir(), 'playtime.json');
@@ -63,6 +65,9 @@ export function recordPlaytimeSession(
     const durationMinutes = Math.round((end.getTime() - start.getTime()) / 60000);
     if (durationMinutes < 1) {
       return { success: false, message: 'Session too short' };
+    }
+    if (durationMinutes > PLAYTIME_LIMITS.maxSessionMinutes) {
+      return { success: false, message: 'Session too long' };
     }
 
     const sessions = readPlaytimeDB();
@@ -146,65 +151,79 @@ export function getTotalPlaytime(ownerId?: string): number {
   }
 }
 
-function dayKey(value: string): string {
-  return value.slice(0, 10);
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+type Range = GraphRange;
+
+/** UTC midnight of the instant. */
+function utcDay(ms: number): number {
+  return Math.floor(ms / DAY_MS) * DAY_MS;
 }
 
-function dateOnly(value: string): Date {
-  const date = new Date(value);
-  if (value.length === 10) date.setHours(0, 0, 0, 0);
-  return date;
+function invalidRange(message: string): ApiError {
+  return new ApiError(400, 'INVALID_RANGE', message);
 }
 
-function rangeBounds(range: 'all' | 'year' | 'month' | 'week' | 'custom', customRange: { start: string; end: string } | undefined, sessions: PlaytimeSession[]): { start: Date; end: Date } {
-  const now = new Date();
-  if (range === 'custom' && customRange) {
-    return { start: dateOnly(customRange.start), end: dateOnly(customRange.end) };
+/**
+ * DUN-096: the window a graph/export covers. A custom range must be a real
+ * start <= end no wider than PLAYTIME_LIMITS.maxCustomRangeDays (400
+ * INVALID_RANGE otherwise; the route validates first with the same rule).
+ */
+function rangeBounds(range: Range, customRange: { start: string; end: string } | undefined, sessions: PlaytimeSession[]): { start: number; end: number } {
+  const now = Date.now();
+  if (range === 'custom') {
+    if (!customRange) throw invalidRange('A custom range needs start and end');
+    const start = rangeInstant(customRange.start);
+    const end = rangeInstant(customRange.end);
+    if (Number.isNaN(start) || Number.isNaN(end) || end < start) throw invalidRange('Invalid custom range');
+    if ((end - start) / DAY_MS > PLAYTIME_LIMITS.maxCustomRangeDays) {
+      throw invalidRange(`Custom range is longer than ${PLAYTIME_LIMITS.maxCustomRangeDays} days`);
+    }
+    // A date-only end covers that whole day.
+    return { start, end: /^\d{4}-\d{2}-\d{2}$/.test(customRange.end) ? end + DAY_MS - 1 : end };
   }
-  if (range === 'week') {
-    const start = new Date(now);
-    start.setDate(start.getDate() - 7);
-    return { start, end: now };
-  }
-  if (range === 'month') {
-    const start = new Date(now);
-    start.setDate(start.getDate() - 30);
-    return { start, end: now };
-  }
+  if (range === 'week') return { start: now - 7 * DAY_MS, end: now };
+  if (range === 'month') return { start: now - 30 * DAY_MS, end: now };
   if (range === 'year') {
     const start = new Date(now);
-    start.setFullYear(start.getFullYear() - 1);
-    return { start, end: now };
+    start.setUTCFullYear(start.getUTCFullYear() - 1);
+    return { start: start.getTime(), end: now };
   }
-  if (sessions.length === 0) {
-    const start = new Date(now);
-    start.setDate(start.getDate() - 30);
-    return { start, end: now };
-  }
-  const timestamps = sessions.map((session) => new Date(session.sessionStart).getTime());
-  return { start: new Date(Math.min(...timestamps)), end: now };
+  const timestamps = sessions.map((session) => Date.parse(session.sessionStart)).filter((t) => !Number.isNaN(t));
+  if (timestamps.length === 0) return { start: now - 30 * DAY_MS, end: now };
+  return { start: Math.min(...timestamps), end: now };
 }
 
-function inRange(session: PlaytimeSession, start: Date, end: Date): boolean {
-  const value = new Date(session.sessionStart).getTime();
-  return value >= start.getTime() && value <= end.getTime();
+function inRange(session: PlaytimeSession, start: number, end: number): boolean {
+  const value = Date.parse(session.sessionStart);
+  return value >= start && value <= end;
 }
 
-function allDays(start: Date, end: Date): string[] {
-  const days: string[] = [];
-  const current = new Date(start);
-  current.setHours(0, 0, 0, 0);
-  const last = new Date(end);
-  last.setHours(0, 0, 0, 0);
-  while (current.getTime() <= last.getTime()) {
-    days.push(current.toISOString().slice(0, 10));
-    current.setDate(current.getDate() + 1);
+/**
+ * Bucket keys from start to end: one per UTC day while the span fits the
+ * daily cap, else one per UTC month ('YYYY-MM-01'), so the series stays
+ * bounded (<= 366 daily points; a few hundred monthly ones) whatever the data.
+ */
+function buckets(start: number, end: number): { bucket: 'day' | 'month'; keys: string[]; keyOf: (iso: string) => string } {
+  const first = utcDay(start);
+  const last = utcDay(end);
+  if ((last - first) / DAY_MS < PLAYTIME_LIMITS.maxCustomRangeDays + 1) {
+    const keys: string[] = [];
+    for (let t = first; t <= last; t += DAY_MS) keys.push(new Date(t).toISOString().slice(0, 10));
+    return { bucket: 'day', keys, keyOf: (iso) => new Date(Date.parse(iso)).toISOString().slice(0, 10) };
   }
-  return days;
+  const keys: string[] = [];
+  const cur = new Date(first);
+  cur.setUTCDate(1);
+  while (cur.getTime() <= last) {
+    keys.push(cur.toISOString().slice(0, 10));
+    cur.setUTCMonth(cur.getUTCMonth() + 1);
+  }
+  return { bucket: 'month', keys, keyOf: (iso) => `${new Date(Date.parse(iso)).toISOString().slice(0, 7)}-01` };
 }
 
 export function getPlaytimeGraphData(
-  range: 'all' | 'year' | 'month' | 'week' | 'custom' = 'all',
+  range: Range = 'all',
   customRange?: { start: string; end: string },
   ownerId?: string,
 ): { success: boolean; data: import('@dune/shared').PlaytimeGraphData; message?: string } {
@@ -213,19 +232,19 @@ export function getPlaytimeGraphData(
     const { start, end } = rangeBounds(range, customRange, sessions);
     const ranged = sessions.filter((session) => inRange(session, start, end));
 
-    const dailyMinutes = new Map<string, number>();
+    const { bucket, keys, keyOf } = buckets(start, end);
+    const perBucket = new Map<string, number>();
     for (const session of ranged) {
-      const key = dayKey(session.sessionStart);
-      dailyMinutes.set(key, (dailyMinutes.get(key) || 0) + session.durationMinutes);
+      const key = keyOf(session.sessionStart);
+      perBucket.set(key, (perBucket.get(key) || 0) + session.durationMinutes);
     }
 
-    const days = allDays(start, end);
     const line: { date: string; minutes: number }[] = [];
     const heatmap: { date: string; minutes: number }[] = [];
     const area: { date: string; cumulativeMinutes: number }[] = [];
     let cumulative = 0;
-    for (const day of days) {
-      const minutes = dailyMinutes.get(day) || 0;
+    for (const day of keys) {
+      const minutes = perBucket.get(day) || 0;
       cumulative += minutes;
       line.push({ date: day, minutes: cumulative });
       heatmap.push({ date: day, minutes });
@@ -248,11 +267,12 @@ export function getPlaytimeGraphData(
 
     return {
       success: true,
-      data: { line, bar, pie, heatmap, area },
+      data: { line, bar, pie, heatmap, area, bucket },
     };
   } catch (error: unknown) {
+    if (isApiError(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    return { success: false, data: { line: [], bar: [], pie: [], heatmap: [], area: [] }, message };
+    return { success: false, data: { line: [], bar: [], pie: [], heatmap: [], area: [], bucket: 'day' }, message };
   }
 }
 
@@ -305,7 +325,7 @@ export function getPlaytimeComparison(
 
 export function exportPlaytimeData(
   format: 'csv' | 'json',
-  range: 'all' | 'year' | 'month' | 'week' | 'custom' = 'all',
+  range: Range = 'all',
   customRange?: { start: string; end: string },
   ownerId?: string,
 ): { success: boolean; data: string; message?: string } {
@@ -324,6 +344,7 @@ export function exportPlaytimeData(
     }
     return { success: true, data: lines.join('\n') };
   } catch (error: unknown) {
+    if (isApiError(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, data: '', message };
   }

@@ -114,9 +114,12 @@ describe('DUN-061 launch fields are main-only', () => {
     expect(merged.find((g) => g.id === 11)).toEqual(before[0]);
 
     const fake = fakeSpawn();
-    expect(await launchGameById(999, { getGames: () => merged, spawn: fake.spawn })).toEqual({ ok: false, reason: 'not-found' });
-    expect(await launchGameById(12, { getGames: () => merged, spawn: fake.spawn })).toEqual({ ok: true, pid: 1 });
-    expect(fake.calls).toEqual([expect.objectContaining({ command: 'xdg-open', args: ['steam://run/367520'] })]);
+    const opened: string[] = [];
+    const openExternal = async (url: string) => { opened.push(url); };
+    expect(await launchGameById(999, { getGames: () => merged, spawn: fake.spawn, openExternal })).toEqual({ ok: false, reason: 'not-found' });
+    expect(await launchGameById(12, { getGames: () => merged, spawn: fake.spawn, openExternal })).toEqual({ ok: true });
+    expect(opened).toEqual(['steam://rungameid/367520']);
+    expect(fake.calls).toEqual([]);
   });
 
   it('drops unknown ids from a renderer save and never removes stored games', () => {

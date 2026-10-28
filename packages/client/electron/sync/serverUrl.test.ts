@@ -194,3 +194,40 @@ describe('createPlaytimeFlushGate', () => {
     expect(flush).not.toHaveBeenCalled();
   });
 });
+
+describe('createPlaytimeFlushGate.commit (DUN-071/121)', () => {
+  it('a valid URL is saved at once (no settle wait) and flushes when it changed', () => {
+    const flush = vi.fn();
+    const gate = createPlaytimeFlushGate({ initialUrl: 'http://old:3030', flush, settleMs: 10_000 });
+    expect(gate.commit(' http://nas:3030/ ')).toBe('http://nas:3030');
+    expect(gate.savedUrl()).toBe('http://nas:3030');
+    expect(flush).toHaveBeenCalledWith('http://nas:3030');
+    expect(gate.commit('http://nas:3030')).toBe('http://nas:3030');
+    expect(flush).toHaveBeenCalledTimes(1);
+    gate.dispose();
+  });
+
+  it('a half-typed or scheme-less URL changes nothing', () => {
+    const flush = vi.fn();
+    const gate = createPlaytimeFlushGate({ initialUrl: 'http://nas:3030', flush });
+    for (const bad of ['localhost:3030', 'h', 'http://192.168.', '', undefined, { url: 'x' }]) expect(gate.commit(bad)).toBeNull();
+    expect(gate.savedUrl()).toBe('http://nas:3030');
+    expect(flush).not.toHaveBeenCalled();
+    gate.dispose();
+  });
+
+  it('cancels a pending draft settle', () => {
+    vi.useFakeTimers();
+    try {
+      const flush = vi.fn();
+      const gate = createPlaytimeFlushGate({ initialUrl: '', flush, settleMs: 100 });
+      gate.onUrlSaved('http://draft:1');
+      expect(gate.commit('http://real:3030')).toBe('http://real:3030');
+      vi.advanceTimersByTime(500);
+      expect(gate.savedUrl()).toBe('http://real:3030');
+      expect(flush.mock.calls).toEqual([['http://real:3030']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

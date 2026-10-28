@@ -149,6 +149,13 @@ function openSchema(file: string): DatabaseSync {
         platform TEXT NOT NULL,
         lastSeen TEXT NOT NULL
       );
+      -- DUN-100: local-sync folder (full normalized path) -> game, per owner.
+      CREATE TABLE IF NOT EXISTS local_sync_games (
+        ownerId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        sourcePath TEXT NOT NULL,
+        gameId REAL NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        PRIMARY KEY (ownerId, sourcePath)
+      );
       CREATE INDEX IF NOT EXISTS idx_save_versions_game ON save_versions(gameId);
       CREATE INDEX IF NOT EXISTS idx_save_snapshots_version ON save_file_snapshots(versionId);
       CREATE INDEX IF NOT EXISTS idx_conflicts_game ON conflict_records(gameId);
@@ -236,6 +243,24 @@ function migrateLegacyJson(): void {
     } catch (copyErr) {
       logger.error({ err: copyErr, file: legacy }, 'dune.json: corrupt legacy DB could not be preserved');
     }
+  }
+}
+
+/**
+ * Run `fn` inside one IMMEDIATE transaction on the shared handle: commit on
+ * return, roll back on throw (DUN-098). Not re-entrant; callers keep their
+ * transactional work synchronous.
+ */
+export function inTransaction<T>(fn: (handle: DatabaseSync) => T): T {
+  const handle = getDb();
+  handle.exec('BEGIN IMMEDIATE');
+  try {
+    const out = fn(handle);
+    handle.exec('COMMIT');
+    return out;
+  } catch (err) {
+    handle.exec('ROLLBACK');
+    throw err;
   }
 }
 

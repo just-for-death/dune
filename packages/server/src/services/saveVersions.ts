@@ -1,5 +1,5 @@
 import * as crypto from 'node:crypto';
-import { getDb } from '../db/sqlite.js';
+import { getDb, inTransaction } from '../db/sqlite.js';
 import { logger } from '../middleware/logging.js';
 import type { SaveVersion, SaveFileSnapshot } from '@dune/shared';
 
@@ -12,36 +12,43 @@ export interface CreateVersionInput {
   parentVersionId?: string;
 }
 
-export function createSaveVersion(input: CreateVersionInput): SaveVersion {
-  const db = getDb();
-  const id = crypto.randomUUID();
+/**
+ * Insert one version row and its file rows in ONE transaction (DUN-098):
+ * either the whole record exists or none of it does.
+ */
+export function createSaveVersion(input: CreateVersionInput, opts: { id?: string; afterInsert?: () => void } = {}): SaveVersion {
+  const id = opts.id ?? crypto.randomUUID();
   const createdAt = new Date().toISOString();
   const sizeBytes = input.files.reduce((sum, file) => sum + (file.size || 0), 0);
   const fileCount = input.files.length;
 
-  db.prepare(`
-    INSERT INTO save_versions
-      (id, gameId, ownerId, deviceId, createdAt, sizeBytes, fileCount, parentVersionId, changeSummary, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete')
-  `).run(
-    id,
-    input.gameId,
-    input.ownerId ?? null,
-    input.deviceId ?? null,
-    createdAt,
-    sizeBytes,
-    fileCount,
-    input.parentVersionId ?? null,
-    input.changeSummary ?? '',
-  );
-
-  const insertSnapshot = db.prepare(`
-    INSERT INTO save_file_snapshots (id, versionId, path, size, hash, mtime)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  for (const file of input.files) {
-    insertSnapshot.run(crypto.randomUUID(), id, file.path, file.size, file.hash, file.mtime);
-  }
+  inTransaction((db) => {
+    db.prepare(`
+      INSERT INTO save_versions
+        (id, gameId, ownerId, deviceId, createdAt, sizeBytes, fileCount, parentVersionId, changeSummary, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete')
+    `).run(
+      id,
+      input.gameId,
+      input.ownerId ?? null,
+      input.deviceId ?? null,
+      createdAt,
+      sizeBytes,
+      fileCount,
+      input.parentVersionId ?? null,
+      input.changeSummary ?? '',
+    );
+    const insertSnapshot = db.prepare(`
+      INSERT INTO save_file_snapshots (id, versionId, path, size, hash, mtime)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const file of input.files) {
+      insertSnapshot.run(crypto.randomUUID(), id, file.path, file.size, file.hash, file.mtime);
+    }
+    // Runs before COMMIT: if it throws (e.g. the snapshot dir can't be
+    // published) the rows are rolled back.
+    opts.afterInsert?.();
+  });
 
   logger.info({ gameId: input.gameId, versionId: id, fileCount }, 'Created save version');
   return {
@@ -170,8 +177,11 @@ function hashFile(filePath: string): string {
   return hash.digest('hex');
 }
 
-function walkFiles(root: string): Array<{ path: string; size: number; hash: string; mtime: string }> {
-  const files: Array<{ path: string; size: number; hash: string; mtime: string }> = [];
+interface WalkedFile { path: string; size: number; mtime: string }
+
+/** Real files under `root` (relative, '/'-separated), skipping `.versions/` and symlinks. */
+function listTreeFiles(root: string): WalkedFile[] {
+  const files: WalkedFile[] = [];
   if (!fs.existsSync(root)) return files;
 
   const stack: string[] = [root];
@@ -190,15 +200,10 @@ function walkFiles(root: string): Array<{ path: string; size: number; hash: stri
       if (rel === '.versions' || rel.startsWith(`.versions${path.sep}`)) continue;
       if (entry.isDirectory()) {
         stack.push(full);
-      } else {
+      } else if (entry.isFile()) {
         try {
           const stat = fs.statSync(full);
-          files.push({
-            path: rel.replace(/\\/g, '/'),
-            size: stat.size,
-            hash: hashFile(full),
-            mtime: stat.mtime.toISOString(),
-          });
+          files.push({ path: rel.replace(/\\/g, '/'), size: stat.size, mtime: stat.mtime.toISOString() });
         } catch {
           // Ignore unreadable files.
         }
@@ -208,6 +213,19 @@ function walkFiles(root: string): Array<{ path: string; size: number; hash: stri
   return files;
 }
 
+/** Leftover staging dirs older than this are crash debris (DUN-098). */
+const STALE_STAGING_MS = 60 * 60 * 1000;
+const STAGING_PREFIX = '.staging-';
+
+/**
+ * DUN-098: snapshot the game tree as one atomic version.
+ * (1) copy the tracked files into a private staging dir under `.versions/`,
+ * hashing the copies (the record describes exactly the stored bytes);
+ * (2) in ONE transaction insert the version + file rows and rename the
+ * staging dir to `.versions/<id>`. Any failure removes the staging dir and
+ * leaves no row; a version row is never visible before its files are.
+ * (3) prune the game's history to `maxVersions`, never the new version (DUN-097).
+ */
 export function createVersionFromDirectory(input: {
   gameId: number;
   ownerId: string;
@@ -215,37 +233,134 @@ export function createVersionFromDirectory(input: {
   changeSummary?: string;
   parentVersionId?: string;
   profileGameId?: number;
+  /** Extra versions the post-create prune must keep (e.g. the one being restored). */
+  keepVersionIds?: string[];
 }): SaveVersion {
   const gameRoot = getGameRoot(input.gameId, input.ownerId);
   const profile = getBackupProfile(input.profileGameId ?? input.gameId);
-  const allFiles = walkFiles(gameRoot);
+  const allFiles = listTreeFiles(gameRoot);
   const { included } = filterBackupFiles(allFiles.map((file) => ({ path: file.path, size: file.size })), profile);
   const includedSet = new Set(included.map((file) => file.path));
-  const files = allFiles.filter((file) => includedSet.has(file.path));
+  const tracked = allFiles.filter((file) => includedSet.has(file.path));
 
   const latest = listSaveVersions(input.gameId, 1)[0];
   const parentVersionId = input.parentVersionId ?? latest?.id;
 
-  // Store a restorable snapshot directory, matching the DB version id.
-  const version = createSaveVersion({
-    gameId: input.gameId,
-    ownerId: input.ownerId,
-    deviceId: input.deviceId,
-    files,
-    changeSummary: input.changeSummary ?? 'directory snapshot',
-    parentVersionId,
-  });
-
-  const snapshotDir = path.join(gameRoot, '.versions', version.id);
-  fs.mkdirSync(snapshotDir, { recursive: true });
-  for (const file of files) {
-    const src = path.join(gameRoot, file.path);
-    const dest = path.join(snapshotDir, file.path);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
+  const versionsRoot = path.join(gameRoot, '.versions');
+  fs.mkdirSync(versionsRoot, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(versionsRoot, STAGING_PREFIX));
+  const id = crypto.randomUUID();
+  const finalDir = path.join(versionsRoot, id);
+  let version: SaveVersion;
+  try {
+    const files = tracked.map((file) => {
+      const dest = path.join(staging, ...file.path.split('/'));
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(path.join(gameRoot, ...file.path.split('/')), dest);
+      return { path: file.path, size: fs.statSync(dest).size, hash: hashFile(dest), mtime: file.mtime };
+    });
+    version = createSaveVersion({
+      gameId: input.gameId,
+      ownerId: input.ownerId,
+      deviceId: input.deviceId,
+      files,
+      changeSummary: input.changeSummary ?? 'directory snapshot',
+      parentVersionId,
+    }, { id, afterInsert: () => fs.renameSync(staging, finalDir) });
+  } catch (err) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    // The rename may have happened before a failed COMMIT: no row -> no dir.
+    if (!getSaveVersion(id)) fs.rmSync(finalDir, { recursive: true, force: true });
+    throw err;
   }
 
+  pruneVersions(input.gameId, input.ownerId, maxVersionsSetting(), [version.id, ...(input.keepVersionIds ?? [])]);
   return version;
+}
+
+/** settings.maxVersions as a sane integer (1..1000), default 10. */
+export function maxVersionsSetting(): number {
+  const n = Number(database.getSettings().maxVersions);
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, 1000) : 10;
+}
+
+export interface VersionRecord {
+  id: string;
+  /** Epoch ms used for ordering. */
+  time: number;
+  kind: 'row' | 'upload' | 'orphan';
+}
+
+/**
+ * Every stored version of a game (DUN-097): DB rows (directory snapshots,
+ * `.versions/<uuid>`), upload/local-sync snapshot dirs (`.versions/<digits>`,
+ * the digits are the sync id = epoch ms), and UUID dirs left without a row.
+ */
+export function listVersionRecords(gameId: number, ownerId: string): VersionRecord[] {
+  const records = new Map<string, VersionRecord>();
+  const rows = getDb().prepare('SELECT id, createdAt FROM save_versions WHERE gameId = ?').all(gameId) as Array<{ id: string; createdAt: string }>;
+  for (const r of rows) records.set(r.id, { id: String(r.id), time: Date.parse(String(r.createdAt)) || 0, kind: 'row' });
+
+  const versionsRoot = path.join(getGameRoot(gameId, ownerId), '.versions');
+  let names: fs.Dirent[];
+  try {
+    names = fs.readdirSync(versionsRoot, { withFileTypes: true });
+  } catch {
+    names = [];
+  }
+  for (const d of names) {
+    if (!d.isDirectory() || records.has(d.name)) continue;
+    if (/^\d{1,20}$/.test(d.name)) {
+      records.set(d.name, { id: d.name, time: Number(d.name), kind: 'upload' });
+    } else if (SAVE_VERSION_ID.test(d.name)) {
+      const st = fs.statSync(path.join(versionsRoot, d.name), { throwIfNoEntry: false });
+      records.set(d.name, { id: d.name, time: st ? st.mtimeMs : 0, kind: 'orphan' });
+    } else if (d.name.startsWith(STAGING_PREFIX)) {
+      const st = fs.statSync(path.join(versionsRoot, d.name), { throwIfNoEntry: false });
+      if (st && Date.now() - st.mtimeMs > STALE_STAGING_MS) {
+        fs.rmSync(path.join(versionsRoot, d.name), { recursive: true, force: true });
+      }
+    }
+  }
+  return [...records.values()].sort((a, b) => b.time - a.time || (a.id < b.id ? 1 : -1));
+}
+
+/**
+ * DUN-097: keep the newest `maxVersions` versions of a game, counting DB
+ * rows and snapshot dirs together. Never removed: ids in `keep` (the version
+ * just created / this sync's snapshot) and versions an unresolved conflict
+ * points at. Rows are deleted in one transaction first, then their dirs.
+ * Exclude rules play no part here (DUN-067): pruning is by count only.
+ */
+export function pruneVersions(gameId: number, ownerId: string, maxVersions: number, keep: string[] = []): string[] {
+  const records = listVersionRecords(gameId, ownerId);
+  const protectedIds = new Set(keep);
+  const open = getDb().prepare(
+    "SELECT localVersionId, remoteVersionId FROM conflict_records WHERE gameId = ? AND (resolution IS NULL OR resolution = 'later')",
+  ).all(gameId) as Array<{ localVersionId: string; remoteVersionId: string }>;
+  for (const c of open) {
+    protectedIds.add(String(c.localVersionId));
+    protectedIds.add(String(c.remoteVersionId));
+  }
+
+  const limit = Math.max(1, Math.floor(maxVersions));
+  const doomed = records.slice(limit).filter((r) => !protectedIds.has(r.id));
+  if (doomed.length === 0) return [];
+
+  const rowIds = doomed.filter((r) => r.kind === 'row').map((r) => r.id);
+  if (rowIds.length > 0) {
+    inTransaction((db) => {
+      const del = db.prepare('DELETE FROM save_versions WHERE id = ? AND gameId = ?');
+      for (const id of rowIds) del.run(id, gameId);
+    });
+  }
+  for (const r of doomed) {
+    // Validated, strictly inside saves/<owner>/<gameId>/.versions.
+    const dir = resolveGameSubdir(gameId, `.versions/${r.id}`, ownerId);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  logger.info({ gameId, pruned: doomed.length, maxVersions: limit }, 'Pruned save versions');
+  return doomed.map((r) => r.id);
 }
 
 /** Save-version ids are minted by createSaveVersion with crypto.randomUUID(). */
@@ -306,6 +421,7 @@ export async function restoreVersion(gameId: number, versionId: string, ownerId:
     // (2) Undo point.
     const pre = createVersionFromDirectory({
       gameId, ownerId, changeSummary: `pre-restore (before restoring ${versionId})`,
+      keepVersionIds: [versionId],
     });
 
     // (3) Write the version's files.
@@ -321,7 +437,7 @@ export async function restoreVersion(gameId: number, versionId: string, ownerId:
     // (4) Mirror deletions within the tracked set only.
     const keep = new Set(wanted);
     const profile = getBackupProfile(gameId);
-    const current = walkFiles(gameRoot).map((f) => ({ path: f.path, size: f.size }));
+    const current = listTreeFiles(gameRoot).map((f) => ({ path: f.path, size: f.size }));
     const { included } = filterBackupFiles(current, profile);
     let removedFiles = 0;
     for (const f of included) {

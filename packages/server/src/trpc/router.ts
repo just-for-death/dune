@@ -4,14 +4,16 @@ import { router, publicProcedure, authedProcedure, adminProcedure } from './trpc
 import { database } from '../db/index.js';
 import { handleLocalSync } from '../services/sync.js';
 import { manifestForGame, removeGameFile } from '../services/manifest.js';
-import { analyzeFilesAI, checkModelStatus, fetchModels } from '../services/ollama.js';
+import { analyzeFilesAI, checkModelStatus, fetchModels, storedOllamaConfig } from '../services/ollama.js';
+import { parseInput, playtimeSessionSchema, analyzeFilesSchema } from '../schemas.js';
+import { ApiError } from '../utils/apiError.js';
 import { getHLTBTimes, bulkFetchHLTB } from '../services/hltb.js';
 import { searchArt, autoMatchAll } from '../services/steamGridDB.js';
 import { withSteamGridKey, steamGridKeyStatus, setSteamGridKey, clearSteamGridKey } from '../services/providerKeys.js';
 import { recordPlaytimeSession, getPlaytimeSummary, getRecentSessions, getTotalPlaytime } from '../services/playtime.js';
 import { getGameAchievements, getAchievementSummary, getRecentUnlocks, handleSentinelWebhook } from '../services/achievements.js';
 import {
-  normalizeUrl, getGameRoot, listFilesInDir, resolveGameSubdir, requireGameTitle, PathRuleError,
+  normalizeUrl, getGameRoot, listFilesInDir, resolveGameSubdir, requireGameTitle, PathRuleError, validateServerUrl,
 } from '../utils/path.js';
 
 /** Upload snapshot folder ids: digits only (see sync.ts safeVersionId). */
@@ -130,16 +132,21 @@ export const appRouter = router({
   },
 
   sync: {
-    test: authedProcedure
-      .input(z.object({ url: z.string().url() }))
+    // DUN-095: admin-only probe of a STORED remote server (by id); no
+    // caller-supplied URL, and the upstream error text is never echoed.
+    test: adminProcedure
+      .input(z.object({ serverId: z.number() }).strict())
       .mutation(async ({ input }) => {
+        const server = database.getRemoteServers().find((r) => r.id === input.serverId);
+        if (!server) throw new TRPCError({ code: 'NOT_FOUND', message: 'Server not found', cause: new ApiError(404, 'SERVER_NOT_FOUND', 'Server not found') });
+        const check = validateServerUrl(server.url);
+        if (!check.valid) return { success: false, message: 'Stored server URL is invalid' };
         try {
-          const cleanUrl = normalizeUrl(input.url);
-          const res = await axios.get(`${cleanUrl}/api/saves`, { timeout: 8000 });
-          if (res.data.success) return { success: true, message: 'Connection successful' };
+          const res = await axios.get(`${normalizeUrl(check.url)}/health`, { timeout: 8000 });
+          if (res.data?.status === 'ok') return { success: true, message: 'Connection successful' };
           return { success: false, message: 'Server returned error' };
-        } catch (err: unknown) {
-          return { success: false, message: err instanceof Error ? err.message : String(err) };
+        } catch {
+          return { success: false, message: 'Connection failed' };
         }
       }),
 
@@ -248,34 +255,35 @@ export const appRouter = router({
   },
 
   ai: {
+    // DUN-104: validated input (INVALID_AI_INPUT) and validated model output.
     analyze: authedProcedure
-      .input(z.object({
-        gameName: z.string(),
-        files: z.array(z.object({ path: z.string(), size: z.number(), category: z.string() }))
-      }))
+      .input(z.unknown())
       .mutation(async ({ ctx, input }) => {
-        const settings = database.getSettings();
-        const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
-        const model = settings.ollamaModel || 'phi4-mini:latest';
-        const result = await analyzeFilesAI(endpoint, model, input.gameName, input.files);
+        const parsed = parseInput(analyzeFilesSchema, input, 'INVALID_AI_INPUT');
+        const title = requireGameTitle(parsed.gameName);
+        const { endpoint, model } = storedOllamaConfig();
+        const result = await analyzeFilesAI(endpoint, model, { ...parsed, gameName: title });
         if (result.success && result.analysis) {
-          const game = database.findGame(ctx.user.id, requireGameTitle(input.gameName));
+          const game = database.findGame(ctx.user.id, title);
           if (game) database.upsertGame({ ...game, analysis: result.analysis });
         }
         return result;
       }),
 
     health: authedProcedure.query(async () => {
-      const settings = database.getSettings();
-      const endpoint = settings.ollamaEndpoint || 'http://ollama:11434';
-      const model = settings.ollamaModel || 'phi4-mini:latest';
+      const { endpoint, model } = storedOllamaConfig();
       return await checkModelStatus(endpoint, model);
     }),
 
-    models: authedProcedure
-      .input(z.object({ endpoint: z.string().url() }))
+    // DUN-095: admin-only, stored endpoint only.
+    models: adminProcedure
+      .input(z.record(z.string(), z.unknown()).optional())
       .query(async ({ input }) => {
-        return await fetchModels(input.endpoint);
+        if (input && Object.keys(input).length > 0) {
+          throw new ApiError(400, 'ENDPOINT_NOT_ALLOWED', 'The Ollama endpoint comes from settings only');
+        }
+        const { endpoint } = storedOllamaConfig();
+        return await fetchModels(endpoint);
       }),
   },
 
@@ -283,7 +291,7 @@ export const appRouter = router({
     get: authedProcedure
       .input(z.object({ gameName: z.string() }))
       .query(async ({ input }) => {
-        return await getHLTBTimes(input.gameName);
+        return await getHLTBTimes(requireGameTitle(input.gameName));
       }),
 
     bulk: authedProcedure
@@ -295,15 +303,14 @@ export const appRouter = router({
   },
 
   playtime: {
+    // DUN-096: same schema and code as POST /api/playtime.
     record: authedProcedure
-      .input(z.object({
-        game: z.string(),
-        platform: z.string(),
-        sessionStart: z.string().datetime(),
-        sessionEnd: z.string().datetime(),
-      }))
+      .input(z.unknown())
       .mutation(async ({ ctx, input }) => {
-        return recordPlaytimeSession(input.game, input.platform, input.sessionStart, input.sessionEnd, ctx.user.id);
+        const s = parseInput(playtimeSessionSchema, input, 'INVALID_PLAYTIME');
+        const result = recordPlaytimeSession(s.game, s.platform, s.sessionStart, s.sessionEnd, ctx.user.id);
+        if (!result.success) throw new ApiError(400, 'INVALID_PLAYTIME', result.message ?? 'Invalid playtime session');
+        return result;
       }),
 
     summary: authedProcedure
@@ -531,7 +538,8 @@ export const appRouter = router({
     update: adminProcedure
       .input(z.object({
         maxVersions: z.number().int().positive().max(100).optional(),
-        ollamaEndpoint: z.string().url().optional(),
+        // DUN-057: '' turns Ollama off; otherwise the same URL rules as REST.
+        ollamaEndpoint: z.string().max(2048).optional(),
         ollamaModel: z.string().optional(),
         autoSyncEnabled: z.boolean().optional(),
         autoSyncFreq: z.enum(['never', '1h', '6h', '24h']).optional(),
@@ -539,6 +547,15 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const current = database.getSettings();
         const merged = { ...current, ...input };
+        if (input.ollamaEndpoint !== undefined) {
+          if (input.ollamaEndpoint.trim() === '') {
+            merged.ollamaEndpoint = '';
+          } else {
+            const check = validateServerUrl(input.ollamaEndpoint);
+            if (!check.valid) throw new ApiError(400, 'INVALID_URL', check.error ?? 'Invalid URL');
+            merged.ollamaEndpoint = check.url;
+          }
+        }
         database.saveSettings(merged);
         return { success: true };
       }),

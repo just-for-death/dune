@@ -5,17 +5,20 @@
  */
 import { MAX_GAME_TITLE_LENGTH, validateGameTitle, type PathRuleCode } from '@dune/shared';
 
+import { defaultTranslator, type MessageKey, type Translator } from '../i18n';
+
 export type TitleCheck = { ok: true; value: string } | { ok: false; error: string };
 
-const MESSAGES: Partial<Record<PathRuleCode, string>> = {
-  EMPTY: 'Enter the game title.',
-  NUL: 'The title contains a hidden character. Retype it.',
-  CONTROL: 'The title contains hidden characters such as tabs or line breaks. Retype it.',
-  TOO_LONG: `Use at most ${MAX_GAME_TITLE_LENGTH} characters.`,
+const MESSAGES: Partial<Record<PathRuleCode, MessageKey>> = {
+  EMPTY: 'gameTitle.empty',
+  NUL: 'gameTitle.nul',
+  CONTROL: 'gameTitle.control',
+  TOO_LONG: 'gameTitle.tooLong',
 };
 
-export function checkGameTitle(input: string): TitleCheck {
+export function checkGameTitle(input: string, t: Translator = defaultTranslator): TitleCheck {
   const result = validateGameTitle(input);
   if (result.ok) return { ok: true, value: result.value };
-  return { ok: false, error: MESSAGES[result.code] ?? 'This title cannot be used.' };
+  const key = MESSAGES[result.code];
+  return { ok: false, error: key ? t(key, { max: MAX_GAME_TITLE_LENGTH }) : t('gameTitle.invalid') };
 }

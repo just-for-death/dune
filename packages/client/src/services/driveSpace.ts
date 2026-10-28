@@ -3,18 +3,28 @@
  * turned into plain sentences; raw codes are never shown.
  */
 import type { DriveSpace, DriveSpaceUnavailableReason } from '@dune/shared';
+import { defaultTranslator, type MessageKey, type Translator } from '../i18n';
 
-export const DRIVE_REASON_TEXT: Record<DriveSpaceUnavailableReason, string> = {
-  'not-found': 'Folder not found. It may be on a drive that is not connected.',
-  permission: 'Dune is not allowed to read this drive.',
-  unsupported: 'Free space can’t be read on this kind of drive.',
-  error: 'Free space could not be read.',
+/** DUN-044: catalog keys for each reason, so the sentence follows the UI language. */
+const DRIVE_REASON_KEYS: Record<DriveSpaceUnavailableReason, MessageKey> = {
+  'not-found': 'drives.reason.notFound',
+  permission: 'drives.reason.permission',
+  unsupported: 'drives.reason.unsupported',
+  error: 'drives.reason.error',
 };
 
-export function driveReasonText(reason: string): string {
-  return Object.prototype.hasOwnProperty.call(DRIVE_REASON_TEXT, reason)
-    ? DRIVE_REASON_TEXT[reason as DriveSpaceUnavailableReason]
-    : DRIVE_REASON_TEXT.error;
+/** English wording per reason (reference for tests and logs). */
+export const DRIVE_REASON_TEXT: Record<DriveSpaceUnavailableReason, string> = {
+  'not-found': defaultTranslator(DRIVE_REASON_KEYS['not-found']),
+  permission: defaultTranslator(DRIVE_REASON_KEYS.permission),
+  unsupported: defaultTranslator(DRIVE_REASON_KEYS.unsupported),
+  error: defaultTranslator(DRIVE_REASON_KEYS.error),
+};
+
+export function driveReasonText(reason: string, t: Translator = defaultTranslator): string {
+  return t(Object.prototype.hasOwnProperty.call(DRIVE_REASON_KEYS, reason)
+    ? DRIVE_REASON_KEYS[reason as DriveSpaceUnavailableReason]
+    : DRIVE_REASON_KEYS.error);
 }
 
 export function formatGB(bytes: number): string {
@@ -37,7 +47,7 @@ export interface DriveRow {
   reasonText: string;
 }
 
-export function toDriveRows(drives: readonly DriveSpace[]): DriveRow[] {
+export function toDriveRows(drives: readonly DriveSpace[], t: Translator = defaultTranslator): DriveRow[] {
   return drives.map((drive, index) => {
     if (drive.status === 'ok') {
       const total = Math.max(0, drive.totalBytes);
@@ -49,20 +59,20 @@ export function toDriveRows(drives: readonly DriveSpace[]): DriveRow[] {
         paths: drive.paths,
         available: true,
         usedPercent,
-        freeText: `${formatGB(free)} free`,
-        totalText: `${formatGB(total)} total`,
+        freeText: t('drives.free', { size: formatGB(free) }),
+        totalText: t('drives.total', { size: formatGB(total) }),
         reasonText: '',
       };
     }
     return {
       key: `na:${drive.reason}:${index}`,
-      title: drive.paths.length === 1 ? drive.paths[0] : `${drive.paths.length} folders`,
+      title: drive.paths.length === 1 ? drive.paths[0] : t('drives.folders', { count: drive.paths.length }),
       paths: drive.paths,
       available: false,
       usedPercent: 0,
       freeText: '',
       totalText: '',
-      reasonText: driveReasonText(drive.reason),
+      reasonText: driveReasonText(drive.reason, t),
     };
   });
 }

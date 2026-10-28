@@ -72,29 +72,50 @@ export function resolveSaveTarget(expanded: string, deps: SaveTargetDeps = {}, a
   return { ok: true, target: { kind: 'dir', dir: expanded } };
 }
 
-/** Every regular file of the target as {local, rel}. Symlinks are skipped. */
-export function listSaveFiles(target: SaveTarget): { local: string; rel: string }[] {
+export interface ListSaveFilesOptions {
+  /**
+   * DUN-070: folders (relative to the target, '' = the root) that could not
+   * be read are pushed here. A caller must not treat files under them as
+   * deleted (sync skips remote deletes for that game and reports it).
+   */
+  unreadable?: string[];
+  /** Stop after this many files (saves:listFiles cap). */
+  max?: number;
+}
+
+/**
+ * Every regular file of the target as {local, rel}. Symlinks (files and
+ * folders) are skipped, so the walk never leaves the target folder.
+ */
+export function listSaveFiles(target: SaveTarget, opts: ListSaveFilesOptions = {}): { local: string; rel: string }[] {
   const out: { local: string; rel: string }[] = [];
+  const max = opts.max ?? Number.POSITIVE_INFINITY;
+  const unreadable = (rel: string, error: unknown) => {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+    opts.unreadable?.push(rel);
+  };
   if (target.kind === 'file') {
     const local = nodePath.join(target.dir, target.file);
     try {
       if (fs.lstatSync(local).isFile()) out.push({ local, rel: target.file });
-    } catch { /* gone */ }
+    } catch (e) { unreadable(target.file, e); }
     return out;
   }
   if (target.kind === 'glob') {
     const re = globSegmentToRegExp(target.pattern);
     let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(target.dir, { withFileTypes: true }); } catch { return out; }
+    try { entries = fs.readdirSync(target.dir, { withFileTypes: true }); } catch (e) { unreadable('', e); return out; }
     for (const e of entries) {
+      if (out.length >= max) break;
       if (e.isFile() && re.test(e.name)) out.push({ local: nodePath.join(target.dir, e.name), rel: e.name });
     }
     return out;
   }
   const walk = (dir: string) => {
     let items: fs.Dirent[];
-    try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { unreadable(nodePath.relative(target.dir, dir), e); return; }
     for (const item of items) {
+      if (out.length >= max) return;
       if (item.isSymbolicLink()) continue;
       const full = nodePath.join(dir, item.name);
       if (item.isDirectory()) walk(full);

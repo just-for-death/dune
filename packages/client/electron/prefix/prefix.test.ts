@@ -7,7 +7,6 @@ import { listWinePrefixes, createWinePrefix, deleteWinePrefix, backupWinePrefix,
 import { listProtonVersions } from './proton.js';
 import { listHeroicPrefixes } from './heroic.js';
 import { listLutrisPrefixes } from './lutris.js';
-import { listPrefixes } from './manager.js';
 import { PrefixRegistry, defaultPrefixRegistryPaths } from './registry.js';
 
 describe('prefix manager', () => {
@@ -85,10 +84,5 @@ describe('prefix manager', () => {
     fs.mkdirSync(path.join(lutrisRoot, 'game-prefix'));
     process.env.LUTRIS_PREFIX_ROOTS = lutrisRoot;
     expect(listLutrisPrefixes()).toHaveLength(1);
-
-    const summary = listPrefixes();
-    expect(summary.proton).toHaveLength(1);
-    expect(summary.heroic).toHaveLength(1);
-    expect(summary.lutris).toHaveLength(1);
   });
 });

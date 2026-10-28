@@ -64,12 +64,15 @@ describe('POST /api/settings', () => {
     expect(forbidden.status).toBe(403);
   });
 
-  it('ignores invalid values and persists valid ones', async () => {
-    const res = await api(request(app).post('/api/settings')).send({ maxVersions: -5, ollamaModel: 'llama3:8b' });
+  it('rejects an invalid maxVersions with 400 INVALID_SETTINGS and persists valid values', async () => {
+    const bad = await api(request(app).post('/api/settings')).send({ maxVersions: -5, ollamaModel: 'bad-model' });
+    expect(bad.status).toBe(400);
+    expect(bad.body).toEqual({ error: expect.any(String), code: 'INVALID_SETTINGS' });
+    const res = await api(request(app).post('/api/settings')).send({ maxVersions: 7, ollamaModel: 'llama3:8b' });
     expect(res.body.success).toBe(true);
     const settings = (await api(request(app).get('/api/settings'))).body.settings;
     expect(settings.ollamaModel).toBe('llama3:8b');
-    expect(settings.maxVersions).toBeGreaterThan(0); // negative ignored
+    expect(settings.maxVersions).toBe(7);
   });
 
   it('rejects steamGridApiKey (write-only, own route) with 400 WRITE_ONLY_FIELD and stores nothing', async () => {

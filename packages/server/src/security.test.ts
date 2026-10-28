@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import request from 'supertest';
 import { validateServerUrl, resolveGameFile, normalizeUrl } from './utils/path.js';
-import { extractApiKey } from './utils/authKey.js';
+import { extractApiKey, hasQueryApiKey } from './utils/authKey.js';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dune-security-test-'));
 const SETUP_DATA_DIR = process.env.DATA_DIR as string; // temp dir from src/test/setup.ts (DUN-005)
@@ -118,10 +118,11 @@ describe('Security: version-id (x-sync-id) path traversal', () => {
       .set('x-sync-id', syncId)
       .send(Buffer.from(body));
 
-  it('a non-numeric x-sync-id can never write outside the saves dir', async () => {
+  it('a non-numeric x-sync-id is 400 INVALID_SYNC_ID and never writes outside the saves dir', async () => {
     await upload('1', 'v1'); // create the base file so the overwrite path runs
     const res = await upload('../../../pwned', 'v2');
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: expect.any(String), code: 'INVALID_SYNC_ID' });
 
     // versionDir = <saves>/<game>/.versions/../../../pwned  →  <DATA_DIR>/pwned
     expect(fs.existsSync(path.join(TMP, 'pwned'))).toBe(false);
@@ -135,14 +136,12 @@ describe('Security: Authentication & Key Extraction', () => {
     expect(key).toBe('my-secret-key');
   });
 
-  it('extracts API key from query parameter ?api_key=', () => {
-    const key = extractApiKey({}, '/api/saves?api_key=query-key-123');
-    expect(key).toBe('query-key-123');
-  });
-
-  it('prioritizes x-api-key header over query param', () => {
-    const key = extractApiKey({ 'x-api-key': 'header-key' }, '/api/saves?api_key=query-key');
-    expect(key).toBe('header-key');
+  it('never reads a key from the query string (DUN-102)', () => {
+    expect(extractApiKey({})).toBeNull();
+    expect(hasQueryApiKey('/api/saves?api_key=query-key-123')).toBe(true);
+    expect(hasQueryApiKey('/api/saves?x=1')).toBe(false);
+    expect(hasQueryApiKey('/api/saves')).toBe(false);
+    expect(hasQueryApiKey(undefined)).toBe(false);
   });
 
   it('blocks unauthenticated requests to protected endpoints with 401', async () => {
@@ -167,11 +166,12 @@ describe('Security: Authentication & Key Extraction', () => {
     expect(res.body.success).toBe(true);
   });
 
-  it('allows access with valid API key in query param', async () => {
-    const res = await request(app)
-      .get(`/api/saves?api_key=${VALID_KEY}`);
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+  it('rejects a valid API key in the query string with 400 API_KEY_IN_QUERY (DUN-102)', async () => {
+    for (const url of [`/api/saves?api_key=${VALID_KEY}`, `/trpc/games.list?api_key=${VALID_KEY}`]) {
+      const res = await request(app).get(url);
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: expect.any(String), code: 'API_KEY_IN_QUERY' });
+    }
   });
 });
 

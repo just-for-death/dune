@@ -6,7 +6,7 @@ import { ApiError } from '../utils/apiError.js';
 type TRPCCode = ConstructorParameters<typeof TRPCError>[0]['code'];
 const STATUS_TO_TRPC: Record<number, TRPCCode> = {
   400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN', 404: 'NOT_FOUND',
-  409: 'CONFLICT', 413: 'PAYLOAD_TOO_LARGE',
+  409: 'CONFLICT', 413: 'PAYLOAD_TOO_LARGE', 429: 'TOO_MANY_REQUESTS',
 };
 
 /**

@@ -8,7 +8,11 @@
  * case-insensitive on win32) before anything touches the disk.
  *
  * - Managed prefixes live in `<userData>/prefixes/<name>`.
- * - Backups go to `<userData>/prefix-backups/<name>-<timestamp>-<rand>`.
+ * - Backups go to `<userData>/prefix-backups/<name>-<timestamp>-<rand>`. The copy
+ *   is written into a fresh temp folder beside it (mkdtemp `.partial-<name>-*`)
+ *   and renamed into place only when complete; afterwards, or on failure, only
+ *   that temp folder (created by this call) is removed, so a half-copied
+ *   backup never appears under a real backup name.
  * - The registry is a JSON file, `<userData>/prefix-registry.json`, written
  *   atomically (temp file + rename).
  * - Delete moves the folder to the OS trash (`shell.trashItem`). It never
@@ -41,7 +45,7 @@ const WIN_RESERVED_RE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
 
 export type PrefixRegistryFs = Pick<
   typeof fs,
-  'lstatSync' | 'realpathSync' | 'mkdirSync' | 'readFileSync' | 'writeFileSync' | 'renameSync' | 'unlinkSync' | 'cpSync'
+  'lstatSync' | 'realpathSync' | 'mkdirSync' | 'readFileSync' | 'writeFileSync' | 'renameSync' | 'unlinkSync' | 'cpSync' | 'rmSync' | 'mkdtempSync'
 >;
 
 export interface PrefixRegistryPaths {
@@ -259,6 +263,19 @@ export class PrefixRegistry {
     return { ok: true, prefix: { ...entry } };
   }
 
+  /** Remove a backup temp folder this registry created (only `.partial-*` directly in the backups root). */
+  private removeTemp(temp: string, realBackups: string): void {
+    const { fs: f, platform } = this.deps;
+    const api = pathApiFor(platform);
+    if (!api.basename(temp).startsWith('.partial-') || !samePath(api.dirname(temp), realBackups, platform)) return;
+    try {
+      if (f.lstatSync(temp).isSymbolicLink()) return;
+      f.rmSync(temp, { recursive: true, force: true });
+    } catch (error) {
+      if (errCode(error) !== 'ENOENT') this.deps.log(`[prefix] backup: could not remove temp folder ${temp}: ${describe(error)}`);
+    }
+  }
+
   /** Copy a managed prefix into the backups folder (main picks the destination). */
   backup(id: unknown): BackupPrefixResult {
     const verified = this.verify(id);
@@ -293,19 +310,34 @@ export class PrefixRegistry {
         return fail('error');
       }
     }
+    // Stage in a fresh temp folder beside the target; only a complete copy is renamed into place.
+    let temp: string;
+    try {
+      temp = f.mkdtempSync(api.join(realBackups, `.partial-${verified.entry.name}-`));
+    } catch (error) {
+      this.deps.log(`[prefix] backup: temp folder unavailable: ${describe(error)}`);
+      return fail('error');
+    }
+    if (!isStrictlyInside(temp, realBackups, platform) || !samePath(api.dirname(temp), realBackups, platform)) {
+      return fail('outside-root');
+    }
+    const staged = api.join(temp, 'prefix');
     try {
       // Symlinks inside a prefix (dosdevices/z: -> /) are copied as links, never followed.
-      f.cpSync(verified.realPath, dest, {
+      f.cpSync(verified.realPath, staged, {
         recursive: true,
         dereference: false,
         verbatimSymlinks: true,
         errorOnExist: true,
         force: false,
       });
+      f.renameSync(staged, dest);
     } catch (error) {
       this.deps.log(`[prefix] backup: copy ${verified.realPath} -> ${dest} failed: ${describe(error)}`);
+      this.removeTemp(temp, realBackups);
       return fail('error');
     }
+    this.removeTemp(temp, realBackups);
     return { ok: true, backupPath: dest };
   }
 

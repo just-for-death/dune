@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, SyntheticEvent } from 'react';
 import type { ConflictRecord, SaveVersion } from '@dune/shared';
+import { useI18n } from '../../i18n/context';
 
 type Resolution = 'local' | 'remote' | 'both' | 'later';
 
@@ -23,13 +24,14 @@ function formatBytes(bytes: number): string {
 }
 
 function VersionDetails({ version }: { version?: SaveVersion }) {
+  const { locale, t, tc } = useI18n();
   // SaveVersion only carries an opaque deviceId (no human-readable device
   // name), so no device line is shown here until the data provides one.
   return (
     <>
-      <div className="conflict-meta">{version ? new Date(version.createdAt).toLocaleString() : 'Unknown'}</div>
+      <div className="conflict-meta">{version ? new Date(version.createdAt).toLocaleString(locale) : t('conflict.unknown')}</div>
       <div className="conflict-meta">
-        {version ? `${version.fileCount} file${version.fileCount === 1 ? '' : 's'} · ${formatBytes(version.sizeBytes)}` : '—'}
+        {version ? tc('conflict.files', version.fileCount, { size: formatBytes(version.sizeBytes) }) : '—'}
       </div>
     </>
   );
@@ -42,6 +44,7 @@ function VersionDetails({ version }: { version?: SaveVersion }) {
  * previously focused element on close.
  */
 export function ConflictModal({ conflict, localVersion, remoteVersion, open, onClose, onResolve }: Props) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const firstActionRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
@@ -109,26 +112,26 @@ export function ConflictModal({ conflict, localVersion, remoteVersion, open, onC
     >
       {isOpen && (
         <>
-          <h3 id={titleId} className="conflict-title">Save conflict detected</h3>
-          <p id={descId} className="muted">Two devices changed this game. Choose which copy to keep. Nothing is overwritten silently.</p>
+          <h3 id={titleId} className="conflict-title">{t('conflict.title')}</h3>
+          <p id={descId} className="muted">{t('conflict.desc')}</p>
 
           <div className="conflict-grid">
             <div className="conflict-option">
-              <h4>On this machine</h4>
+              <h4>{t('conflict.local')}</h4>
               <VersionDetails version={localVersion} />
-              <button ref={firstActionRef} className="btn btn-primary" onClick={() => onResolve('local')}>Keep local copy</button>
+              <button ref={firstActionRef} className="btn btn-primary" onClick={() => onResolve('local')}>{t('conflict.keepLocal')}</button>
             </div>
             <div className="conflict-option">
-              <h4>On the server</h4>
+              <h4>{t('conflict.remote')}</h4>
               <VersionDetails version={remoteVersion} />
-              <button className="btn btn-primary" onClick={() => onResolve('remote')}>Keep server copy</button>
+              <button className="btn btn-primary" onClick={() => onResolve('remote')}>{t('conflict.keepRemote')}</button>
             </div>
           </div>
 
           <div className="conflict-actions">
-            <button className="btn btn-secondary" onClick={() => onResolve('both')}>Keep both</button>
-            <button className="btn btn-secondary" onClick={() => onResolve('later')}>Decide later</button>
-            <button className="btn btn-secondary" onClick={onClose}>Close</button>
+            <button className="btn btn-secondary" onClick={() => onResolve('both')}>{t('conflict.keepBoth')}</button>
+            <button className="btn btn-secondary" onClick={() => onResolve('later')}>{t('conflict.later')}</button>
+            <button className="btn btn-secondary" onClick={onClose}>{t('common.close')}</button>
           </div>
         </>
       )}

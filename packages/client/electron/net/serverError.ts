@@ -10,6 +10,15 @@ import type { ServerFailure } from '@dune/shared';
 // Server REST errors are exactly `{ error, code }` (server utils/apiError.ts);
 // tRPC errors carry the same code in `error.data.code`.
 
+/**
+ * DUN-068: every Dune Server request has a timeout, so a hung server can never
+ * leave a handler (or the sync-in-progress flag) waiting forever.
+ * JSON calls get SERVER_TIMEOUT_MS; file uploads/downloads TRANSFER_TIMEOUT_MS.
+ * The shared axios instance is built in net/serverClient.ts.
+ */
+export const SERVER_TIMEOUT_MS = 15_000;
+export const TRANSFER_TIMEOUT_MS = 5 * 60_000;
+
 /** Code for a request that got no HTTP response (refused, DNS, timeout, reset). */
 export const NETWORK_CODE = 'NETWORK';
 /** Code when the server answered with an error but its body had no `code`. */
@@ -79,9 +88,13 @@ export function toServerFailure(err: unknown): ServerFailure {
     return failureFromResponse(status, response.data);
   }
   const message = nonEmpty(e?.message) ?? String(err);
-  const x = err as { isAxiosError?: unknown; request?: unknown } | null;
+  const x = err as { isAxiosError?: unknown; request?: unknown; code?: unknown } | null;
   if (x && typeof x === 'object' && (x.isAxiosError === true || x.request !== undefined)) {
     // The request went out (or tried to) and no HTTP response came back.
+    // DUN-068: a timeout is still NETWORK (no response), with a clear message.
+    if (x.code === 'ECONNABORTED' || x.code === 'ETIMEDOUT') {
+      return { ok: false, code: NETWORK_CODE, message: 'The Dune Server did not answer in time (request timed out).' };
+    }
     return { ok: false, code: NETWORK_CODE, message: `Could not reach the Dune Server: ${message}` };
   }
   // A local failure (fs error, bug) while handling the call: never a server code.

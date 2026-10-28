@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+import { promises as fsp, type Dirent } from 'fs';
 import * as path from 'path';
 import type { Game } from '@dune/shared';
 
@@ -8,6 +8,11 @@ import type { Game } from '@dune/shared';
  * Offline and locally installed builds often leave achievement state on disk
  * instead of exposing an API. This module reads only known achievement file
  * names, bounds directory walking, and merges duplicate entries by API name.
+ *
+ * DUN-076: a Wine prefix (often a shared ~/.wine) is never walked as a whole;
+ * only the per-appId achievement folders of known Steam emulators inside it
+ * are scanned, and only when the game has a Steam app id. All reads are async
+ * so a scan after game exit never blocks the main process.
  */
 
 export interface LocalAchievement {
@@ -23,7 +28,7 @@ const SKIP_DIRS = new Set(['windows', 'winsxs', 'system32', 'syswow64', 'microso
 const MAX_DEPTH = 5;
 const MAX_DIRECTORIES = 3000;
 
-export function findAchievementFiles(roots: string[]): string[] {
+export async function findAchievementFiles(roots: string[]): Promise<string[]> {
   const found = new Set<string>();
   const visited = new Set<string>();
   const queue = roots
@@ -37,9 +42,9 @@ export function findAchievementFiles(roots: string[]): string[] {
     if (visited.has(dir) || visited.size >= MAX_DIRECTORIES) continue;
     visited.add(dir);
 
-    let entries: fs.Dirent[];
+    let entries: Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fsp.readdir(dir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -204,13 +209,13 @@ export function parseAchievementJson(content: string): LocalAchievement[] {
   return Array.from(achievements.values());
 }
 
-export function scanLocalAchievements(roots: string[]): LocalAchievement[] {
+export async function scanLocalAchievements(roots: string[]): Promise<LocalAchievement[]> {
   const achievements = new Map<string, LocalAchievement>();
 
-  for (const file of findAchievementFiles(roots)) {
+  for (const file of await findAchievementFiles(roots)) {
     let content: string;
     try {
-      content = fs.readFileSync(file, 'utf-8');
+      content = await fsp.readFile(file, 'utf-8');
     } catch {
       continue;
     }
@@ -226,18 +231,66 @@ export function scanLocalAchievements(roots: string[]): LocalAchievement[] {
 }
 
 /**
- * Game install, executable, and Wine prefix roots worth scanning. winPath /
+ * Per-appId achievement folders of known Steam emulators, relative to a
+ * prefix's drive_c. `*` is any user folder under drive_c/users.
+ */
+export const PREFIX_APPID_DIRS: readonly string[][] = [
+  ['users', '*', 'AppData', 'Roaming', 'Goldberg SteamEmu Saves'],
+  ['users', '*', 'AppData', 'Roaming', 'GSE Saves'],
+  ['users', '*', 'AppData', 'Roaming', 'SmartSteamEmu'],
+  ['users', '*', 'AppData', 'Roaming', 'CreamAPI'],
+  ['users', '*', 'AppData', 'Roaming', 'EMPRESS'],
+  ['users', '*', 'AppData', 'Roaming', 'Steam', 'CODEX'],
+  ['users', 'Public', 'Documents', 'Steam', 'CODEX'],
+  ['users', 'Public', 'Documents', 'Steam', 'RUNE'],
+  ['users', 'Public', 'Documents', 'OnlineFix'],
+  ['ProgramData', 'Steam', 'RLD!'],
+];
+
+const STEAM_APP_ID = /^\d{1,10}$/;
+
+async function isDir(p: string): Promise<boolean> {
+  try {
+    return (await fsp.lstat(p)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The existing per-appId achievement folders for `appId` inside one prefix. */
+export async function prefixAchievementDirs(prefix: string, appId: string): Promise<string[]> {
+  if (!STEAM_APP_ID.test(appId)) return [];
+  const driveC = path.join(prefix, 'drive_c');
+  const users = await fsp
+    .readdir(path.join(driveC, 'users'), { withFileTypes: true })
+    .then((entries) => entries.filter((e) => e.isDirectory() && !e.isSymbolicLink()).map((e) => e.name))
+    .catch((): string[] => []);
+  const out: string[] = [];
+  for (const parts of PREFIX_APPID_DIRS) {
+    const expansions = parts.includes('*') ? users.map((u) => parts.map((p) => (p === '*' ? u : p))) : [parts];
+    for (const segs of expansions) {
+      const dir = path.join(driveC, ...segs, appId);
+      if (await isDir(dir)) out.push(dir);
+    }
+  }
+  return out;
+}
+
+/**
+ * Roots worth scanning for one game: its install / executable folder, plus
+ * (DUN-076) only the per-appId folders inside its Wine prefix. winPath /
  * linPath are save paths and are deliberately not treated as install roots.
  */
-export function getAchievementRoots(
-  game: Pick<Game, 'executable' | 'installPath' | 'winePrefix'>,
-): string[] {
+export async function getAchievementRoots(
+  game: Pick<Game, 'executable' | 'installPath' | 'winePrefix' | 'steamAppId'>,
+  prefixPath: string | undefined = game.winePrefix,
+): Promise<string[]> {
   const roots = new Set<string>();
 
   for (const candidate of [game.executable, game.installPath]) {
     if (!candidate) continue;
     try {
-      const stat = fs.statSync(candidate);
+      const stat = await fsp.stat(candidate);
       roots.add(stat.isDirectory() ? candidate : path.dirname(candidate));
     } catch {
       const parent = path.dirname(candidate);
@@ -245,8 +298,8 @@ export function getAchievementRoots(
     }
   }
 
-  if (game.winePrefix) {
-    roots.add(path.join(game.winePrefix, 'drive_c'));
+  if (prefixPath && game.steamAppId) {
+    for (const dir of await prefixAchievementDirs(prefixPath, game.steamAppId)) roots.add(dir);
   }
 
   return Array.from(roots).filter(root => root && root !== path.parse(root).root);

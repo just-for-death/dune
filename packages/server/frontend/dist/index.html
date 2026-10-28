@@ -443,7 +443,9 @@
       <div class="row">
         <div class="grow">
           <label for="st-ollama-endpoint">Ollama endpoint</label>
-          <input id="st-ollama-endpoint" placeholder="http://ollama:11434" />
+          <!-- Backend 057/095: optional; an empty value ('' after trim) turns Ollama off. -->
+          <p class="card-desc" id="st-ollama-endpoint-hint" style="margin:0 0 5px">Optional. Leave empty to turn Ollama off.</p>
+          <input id="st-ollama-endpoint" placeholder="http://ollama:11434" aria-describedby="st-ollama-endpoint-hint" spellcheck="false" />
         </div>
         <div class="grow">
           <label for="st-ollama-model">Ollama model</label>

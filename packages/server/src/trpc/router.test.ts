@@ -207,12 +207,11 @@ describe('playtime contract', () => {
     const c = appRouter.createCaller(ctx());
     await expect(
       c.playtime.record({ game: 'g', platform: 'p', sessionStart: 'nope', sessionEnd: '2024-01-01T10:00:00.000Z' }),
-    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
-    const r = await c.playtime.record({
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST', cause: { code: 'INVALID_PLAYTIME' } });
+    await expect(c.playtime.record({
       game: 'g', platform: 'p',
       sessionStart: '2024-01-01T12:00:00.000Z', sessionEnd: '2024-01-01T10:00:00.000Z',
-    });
-    expect(r.success).toBe(false);
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST', cause: { code: 'INVALID_PLAYTIME' } });
   });
 });
 
@@ -263,14 +262,29 @@ describe('localSources + remoteServers contract', () => {
 });
 
 describe('ai + art + hltb contract (offline)', () => {
-  it('ai.analyze fails closed without network', async () => {
+  it('ai.* is OFF (OLLAMA_NOT_CONFIGURED) until an endpoint is stored (DUN-057)', async () => {
     const c = appRouter.createCaller(ctx());
+    await c.settings.update({ ollamaEndpoint: '' });
+    const files = [{ path: 'a.sav', size: 10, category: 'Save' }];
+    await expect(c.ai.analyze({ gameName: 'g', files })).rejects.toMatchObject({ code: 'BAD_REQUEST', cause: { code: 'OLLAMA_NOT_CONFIGURED' } });
+    await expect(c.ai.health()).rejects.toMatchObject({ cause: { code: 'OLLAMA_NOT_CONFIGURED' } });
+    await expect(c.ai.models()).rejects.toMatchObject({ cause: { code: 'OLLAMA_NOT_CONFIGURED' } });
+    expect(postMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
+  it('ai.analyze fails closed without network, with a generic message', async () => {
+    const c = appRouter.createCaller(ctx());
+    await c.settings.update({ ollamaEndpoint: 'http://ollama.test:11434' });
+    postMock.mockRejectedValue(new Error('connect ECONNREFUSED 10.1.2.3:11434 secret-detail'));
     const r = await c.ai.analyze({ gameName: 'g', files: [{ path: 'a.sav', size: 10, category: 'Save' }] });
-    expect(r.success).toBe(false);
+    expect(r).toEqual({ success: false, message: 'Ollama analysis failed' });
+    await expect(c.ai.analyze({ gameName: 7, files: [] })).rejects.toMatchObject({ cause: { code: 'INVALID_AI_INPUT' } });
   });
 
   it('ai.analyze succeeds with mocked model and persists to the game', async () => {
     const c = appRouter.createCaller(ctx());
+    await c.settings.update({ ollamaEndpoint: 'http://ollama.test:11434' });
     await c.games.add({ name: 'AI Game' });
     postMock.mockResolvedValue({
       data: { response: '{"a.sav":{"category":"Save","description":"main"}}' },
@@ -283,12 +297,15 @@ describe('ai + art + hltb contract (offline)', () => {
 
   it('ai.models + health read mocked ollama', async () => {
     const c = appRouter.createCaller(ctx());
+    await c.settings.update({ ollamaEndpoint: 'http://ollama.test:11434' });
     getMock.mockResolvedValue({ data: { models: [{ name: 'phi4-mini:latest' }] } });
-    const models = await c.ai.models({ endpoint: 'http://ollama:11434' });
+    const models = await c.ai.models();
     expect(models.models).toContain('phi4-mini:latest');
+    // Only the stored endpoint is ever called (DUN-095).
+    expect(getMock.mock.calls.every(([url]) => String(url).startsWith('http://ollama.test:11434/'))).toBe(true);
     const health = await c.ai.health();
     expect(health).toMatchObject({ success: true, exists: true });
-    await expect(c.ai.models({ endpoint: 'notaurl' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(c.ai.models({ endpoint: 'http://169.254.169.254' })).rejects.toMatchObject({ code: 'BAD_REQUEST', cause: { code: 'ENDPOINT_NOT_ALLOWED' } });
   });
 
   it('art.search requires a key; with key + mocked API returns art', async () => {
@@ -365,23 +382,31 @@ describe('multi-user scoping', () => {
 describe('remaining router procedures', () => {
   it('sync.test reports success, server errors, and network failures', async () => {
     const c = appRouter.createCaller(ctx());
-    getMock.mockResolvedValueOnce({ data: { success: true } });
-    await expect(c.sync.test({ url: 'http://127.0.0.1:3030' })).resolves.toMatchObject({
-      success: true,
-      message: 'Connection successful',
-    });
+    const server = database.addRemoteServer('http://peer.test:3030');
+    try {
+      getMock.mockResolvedValueOnce({ data: { status: 'ok' } });
+      await expect(c.sync.test({ serverId: server.id })).resolves.toMatchObject({
+        success: true,
+        message: 'Connection successful',
+      });
+      expect(String(getMock.mock.calls.at(-1)?.[0])).toBe('http://peer.test:3030/health');
 
-    getMock.mockResolvedValueOnce({ data: { success: false } });
-    await expect(c.sync.test({ url: 'http://127.0.0.1:3030' })).resolves.toMatchObject({
-      success: false,
-      message: 'Server returned error',
-    });
+      getMock.mockResolvedValueOnce({ data: { status: 'down' } });
+      await expect(c.sync.test({ serverId: server.id })).resolves.toMatchObject({
+        success: false,
+        message: 'Server returned error',
+      });
 
-    getMock.mockRejectedValueOnce(new Error('down'));
-    await expect(c.sync.test({ url: 'http://127.0.0.1:3030' })).resolves.toMatchObject({
-      success: false,
-      message: 'down',
-    });
+      // DUN-095: the upstream error text is never echoed.
+      getMock.mockRejectedValueOnce(new Error('connect ECONNREFUSED 10.0.0.9:3030'));
+      await expect(c.sync.test({ serverId: server.id })).resolves.toEqual({ success: false, message: 'Connection failed' });
+
+      await expect(c.sync.test({ serverId: 424242 })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      // No caller-supplied URL is accepted.
+      await expect(c.sync.test({ url: 'http://169.254.169.254' } as never)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    } finally {
+      database.removeRemoteServer(server.id);
+    }
   });
 
   it('sync.local reports an empty run when no sources are configured', async () => {

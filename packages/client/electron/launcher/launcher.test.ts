@@ -5,7 +5,21 @@ import * as os from 'os';
 import * as path from 'path';
 import type { ChildProcess } from 'child_process';
 import type { Game } from '@dune/shared';
-import { getLaunchCommand, launchGame, selectLaunchStrategy, type SpawnFn } from './manager.js';
+import { getLaunchCommand as getLaunchPlan, getLaunchRefusal, launchGame, selectLaunchStrategy, type SpawnFn } from './manager.js';
+import type { LaunchCommand, LaunchOptions, LaunchUrl } from './strategies/types.js';
+import type { CoreLookupDeps } from './retroarchCores.js';
+
+// Test view of a launch plan: spawn fields, or `url` for URL launches (DUN-074).
+function getLaunchCommand(game: Game, options?: LaunchOptions): (LaunchCommand & Partial<LaunchUrl>) | null {
+  return getLaunchPlan(game, options) as (LaunchCommand & Partial<LaunchUrl>) | null;
+}
+
+// DUN-075: a fake RetroArch cores folder (nothing on the real disk is read).
+function fakeCores(installed: string[]): CoreLookupDeps {
+  const dir = '/fake/retroarch/cores';
+  const files = new Set(installed.map((c) => path.posix.join(dir, `${c}_libretro.so`)));
+  return { platform: 'linux', dirs: [dir], isFile: (p) => files.has(p) };
+}
 
 // DUN-031: every file this suite writes lives in a mkdtemp folder that is
 // removed afterwards (suite-wide fixtures in afterAll, per-test files in
@@ -73,11 +87,21 @@ describe('launcher strategies', () => {
     expect(command?.command).toBe(tempFile);
   });
 
-  it('generates Steam protocol command', () => {
+  it('opens Steam through the OS URL handler, not xdg-open (DUN-074)', () => {
     const game = { ...baseGame, source: 'steam' as const };
-    const command = getLaunchCommand(game, { appId: '12345' });
-    expect(command?.command).toBe('xdg-open');
-    expect(command?.args[0]).toBe('steam://run/12345');
+    expect(getLaunchPlan(game, { appId: '12345' })).toEqual({ url: 'steam://rungameid/12345' });
+  });
+
+  it('launches a Steam URL with openExternal and never spawns (DUN-074)', async () => {
+    const game = { ...baseGame, source: 'steam' as const, steamAppId: '620' };
+    const opened: string[] = [];
+    const fake = fakeSpawn();
+    const result = await launchGame(game, {}, { spawn: fake.spawn, openExternal: async (url) => { opened.push(url); } });
+    expect(result).toEqual({ success: true, message: 'Launched' });
+    expect(opened).toEqual(['steam://rungameid/620']);
+    expect(fake.calls).toEqual([]);
+    const failed = await launchGame(game, {}, { openExternal: async () => { throw new Error('no handler'); } });
+    expect(failed).toEqual({ success: false, message: 'no handler' });
   });
 
   it('falls back to a native executable for non-manual sources', () => {
@@ -87,7 +111,7 @@ describe('launcher strategies', () => {
 
   it('uses scanner metadata when launch options are omitted', () => {
     const steamGame = { ...baseGame, sourceId: 'steam', steamAppId: '67890' };
-    expect(getLaunchCommand(steamGame)?.args[0]).toBe('steam://run/67890');
+    expect(getLaunchCommand(steamGame)?.url).toBe('steam://rungameid/67890');
 
     const heroicGame = { ...baseGame, sourceId: 'heroic', heroicId: 'heroic-game-id' };
     expect(getLaunchCommand(heroicGame)?.args).toEqual(['--run', 'heroic-game-id']);
@@ -141,19 +165,38 @@ describe('launcher strategies', () => {
     const rom = path.join(testDir(), 'dune-launch-rom.nes');
     fs.writeFileSync(rom, 'rom');
     const game = { ...baseGame, source: 'emulator' as const, linPath: '', romPath: rom, emulator: 'retroarch' };
+    const coreLookup = fakeCores(['nestopia', 'mesen']);
+    const core = '/fake/retroarch/cores/mesen_libretro.so';
 
-    expect(getLaunchCommand(game)?.command).toBe('retroarch');
-    expect(getLaunchCommand(game)?.args).toEqual([rom]);
+    expect(getLaunchCommand(game, { coreLookup })?.command).toBe('retroarch');
+    // DUN-075: always with -L <core>, so RetroArch never opens its menu.
+    expect(getLaunchCommand(game, { coreLookup })?.args).toEqual(['-L', core, rom]);
 
     const fake = fakeSpawn();
     const exited = new Promise<{ startedAt: number; endedAt: number }>((resolve) => {
-      void launchGame(game, {}, { onExit: resolve, spawn: fake.spawn }).then((result) => {
+      void launchGame(game, { coreLookup }, { onExit: resolve, spawn: fake.spawn }).then((result) => {
         expect(result.success).toBe(true);
       });
     });
     const info = await exited;
     expect(info.endedAt).toBeGreaterThanOrEqual(info.startedAt);
-    expect(fake.calls).toEqual([{ command: 'retroarch', args: [rom] }]);
+    expect(fake.calls).toEqual([{ command: 'retroarch', args: ['-L', core, rom] }]);
+  });
+
+  it('refuses RetroArch with a clear message when no core is installed (DUN-075)', async () => {
+    const rom = path.join(testDir(), 'game.gba');
+    fs.writeFileSync(rom, 'rom');
+    const game = { ...baseGame, executable: undefined, source: 'emulator' as const, linPath: '', romPath: rom, emulator: 'retroarch' };
+    const coreLookup = fakeCores([]);
+    expect(getLaunchCommand(game, { coreLookup })).toBeNull();
+    expect(getLaunchRefusal(game, { coreLookup })).toMatch(/No RetroArch core installed for \.gba ROMs.*mgba/);
+    const fake = fakeSpawn();
+    const result = await launchGame(game, { coreLookup }, { spawn: fake.spawn });
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/No RetroArch core/);
+    expect(fake.calls).toEqual([]);
+    // Another emulator for the same ROM is not affected.
+    expect(getLaunchRefusal({ ...game, emulator: 'mgba-qt' }, { coreLookup })).toBeNull();
   });
 
   it('never runs an emulator that is not on the known list (DUN-061)', () => {
@@ -212,6 +255,6 @@ describe('launcher strategies', () => {
 
   it('still prefers store launchers over a native executable', () => {
     const steam = { ...baseGame, source: 'steam' as const, steamAppId: '620', installPath: saveDir };
-    expect(getLaunchCommand(steam)).toEqual({ command: 'xdg-open', args: ['steam://run/620'], env: undefined, cwd: undefined });
+    expect(getLaunchCommand(steam)).toEqual({ url: 'steam://rungameid/620' });
   });
 });

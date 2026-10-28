@@ -119,6 +119,12 @@ export interface PlaytimeFlushGate {
   savedUrl(): string | null;
   /** Report a `cloud.url` value the renderer just persisted. */
   onUrlSaved(rawUrl: unknown): void;
+  /**
+   * DUN-071/121: an explicit user action (Sync, Restore, Test) with a URL.
+   * A valid URL becomes the saved URL at once (no settle wait; flushes when
+   * it changed) and is returned. An invalid URL changes nothing and returns null.
+   */
+  commit(rawUrl: unknown): string | null;
   /** Cancel any pending settle timer. */
   dispose(): void;
 }
@@ -153,6 +159,15 @@ export function createPlaytimeFlushGate(options: PlaytimeFlushGateOptions): Play
         if (flush && next) options.flush(next);
       }, settleMs);
       (timer as { unref?: () => void }).unref?.();
+    },
+    commit(rawUrl: unknown) {
+      const next = normalizeServerUrl(rawUrl);
+      if (!next) return null;
+      cancel();
+      const flush = shouldFlushPlaytime(settled, next);
+      settled = next;
+      if (flush) options.flush(next);
+      return next;
     },
     dispose: cancel,
   };

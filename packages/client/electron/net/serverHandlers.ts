@@ -1,0 +1,193 @@
+import type { ProviderKeyStatusResult, ServerFailure, ServerResult } from '@dune/shared';
+import { ServerCallError, toServerFailure } from './serverError';
+import { invalidArgument, seg, type ServerClient, type ServerRequest } from './serverClient';
+
+/**
+ * IPC handlers that only forward one call to the Dune Server (DUN-068/072/121).
+ * Every renderer argument is checked here before it reaches a URL; ids and
+ * limits must be numbers (or the server's key-id format) and every path
+ * segment is encoded by `seg()`. Each handler resolves to a ServerResult and
+ * passes the server's status/code/message through unchanged.
+ */
+
+type Handler = (_event: unknown, ...args: unknown[]) => Promise<ServerResult<object>>;
+
+/** Throws INVALID_ARGUMENT unless `v` is a non-empty string of at most `max` chars. */
+export function requireString(v: unknown, name: string, max = 500): string {
+  if (typeof v !== 'string' || v.trim() === '' || v.length > max) throw new ServerCallError(invalidArgument(`Invalid ${name}`));
+  return v;
+}
+
+function optionalString(v: unknown, name: string, max = 500): string | undefined {
+  return v === undefined || v === null || v === '' ? undefined : requireString(v, name, max);
+}
+
+/** A positive safe integer id (local sources, remote servers). */
+export function requireId(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v <= 0) throw new ServerCallError(invalidArgument('Invalid id'));
+  return v;
+}
+
+/** Optional list limit: an integer 1..100, or undefined for the server default. */
+export function optionalLimit(v: unknown): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 100) throw new ServerCallError(invalidArgument('Invalid limit'));
+  return v;
+}
+
+/** Server API key ids are the first 12 hex chars of the key hash (server.ts DELETE /api/api-keys/:id). */
+export const API_KEY_ID = /^[0-9a-f]{12}$/;
+
+function oneOf<T extends string>(v: unknown, allowed: readonly T[], name: string, fallback?: T): T {
+  if ((v === undefined || v === null) && fallback !== undefined) return fallback;
+  if (typeof v === 'string' && (allowed as readonly string[]).includes(v)) return v as T;
+  throw new ServerCallError(invalidArgument(`Invalid ${name}`));
+}
+
+const GRAPH_RANGES = ['all', 'year', 'month', 'week', 'custom'] as const;
+const COMPARE_RANGES = ['week', 'month', 'year'] as const;
+const RESOLUTIONS = ['local', 'remote', 'both', 'later'] as const;
+
+function customRange(v: unknown): { start?: string; end?: string } {
+  if (v === undefined || v === null) return {};
+  if (typeof v !== 'object') throw new ServerCallError(invalidArgument('Invalid custom range'));
+  const r = v as Record<string, unknown>;
+  return { start: optionalString(r.start, 'range start', 40), end: optionalString(r.end, 'range end', 40) };
+}
+
+function plainObject(v: unknown, name: string): Record<string, unknown> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new ServerCallError(invalidArgument(`Invalid ${name}`));
+  return v as Record<string, unknown>;
+}
+
+export function createServerIpcHandlers(client: ServerClient): Record<string, Handler> {
+  // Build the request from the arguments (may throw INVALID_ARGUMENT), then call.
+  const h = (build: (...args: unknown[]) => ServerRequest): Handler => async (_event, ...args) => {
+    let req: ServerRequest;
+    try {
+      req = build(...args);
+    } catch (err) {
+      return toServerFailure(err);
+    }
+    return client.call(req);
+  };
+
+  /** DUN-092: provider-key routes answer exactly `{ set }`; never spread the body. */
+  const keyStatus = (req: () => ServerRequest) => async (): Promise<ProviderKeyStatusResult> => {
+    let built: ServerRequest;
+    try {
+      built = req();
+    } catch (err) {
+      return toServerFailure(err);
+    }
+    const res = await client.call<{ set?: unknown }>(built);
+    return res.ok ? { ok: true, set: res.set === true } : (res as ServerFailure);
+  };
+
+  return {
+    // Playtime
+    'playtime:summary': h((game) => ({ method: 'GET', path: '/api/playtime', query: { game: optionalString(game, 'game') } })),
+    'playtime:recent': h((limit) => ({ method: 'GET', path: '/api/playtime/recent', query: { limit: optionalLimit(limit) } })),
+    'playtime:total': h(() => ({ method: 'GET', path: '/api/playtime/total' })),
+    'playtime:graph': h((range, custom) => ({
+      method: 'GET', path: '/api/playtime/graph',
+      query: { range: oneOf(range, GRAPH_RANGES, 'range', 'all'), ...customRange(custom) },
+    })),
+    'playtime:comparison': h((range) => ({
+      method: 'GET', path: '/api/playtime/comparison', query: { range: oneOf(range, COMPARE_RANGES, 'range', 'week') },
+    })),
+    'playtime:export': h((format, range, custom) => ({
+      method: 'GET', path: '/api/playtime/export',
+      query: { format: oneOf(format, ['csv', 'json'] as const, 'format', 'json'), range: oneOf(range, GRAPH_RANGES, 'range', 'all'), ...customRange(custom) },
+    })),
+
+    // Achievements
+    'achievements:get': h((game) => ({ method: 'GET', path: `/api/achievements/${seg(requireString(game, 'game'))}` })),
+    'achievements:detail': h((game) => ({ method: 'GET', path: `/api/achievements/detail/${seg(requireString(game, 'game'))}` })),
+    'achievements:summary': h((game) => ({ method: 'GET', path: '/api/achievements', query: { game: optionalString(game, 'game') } })),
+    'achievements:recent': h((limit) => ({ method: 'GET', path: '/api/achievements/recent', query: { limit: optionalLimit(limit) } })),
+
+    // HLTB
+    'hltb:get': h((name) => ({ method: 'GET', path: `/api/hltb/${seg(requireString(name, 'game'))}` })),
+
+    // Save versions
+    'saves:listVersions': h((game) => ({ method: 'GET', path: '/api/save-versions', query: { game: requireString(game, 'game') } })),
+    'saves:createVersion': h((game, deviceId, changeSummary) => ({
+      method: 'POST', path: '/api/save-versions',
+      body: { game: requireString(game, 'game'), deviceId: optionalString(deviceId, 'device id'), changeSummary: optionalString(changeSummary, 'summary', 2000) },
+    })),
+    'saves:getVersion': h((id) => ({ method: 'GET', path: `/api/save-versions/${seg(requireString(id, 'version id', 200))}` })),
+    'saves:diff': h((from, to) => ({
+      method: 'GET', path: '/api/save-versions/diff',
+      query: { from: requireString(from, 'version id', 200), to: requireString(to, 'version id', 200) },
+    })),
+    'saves:restore': h((game, versionId) => ({
+      method: 'POST', path: '/api/restore-version',
+      body: { game: requireString(game, 'game'), versionId: requireString(versionId, 'version id', 200) },
+    })),
+
+    // Conflicts
+    'conflicts:list': h((game) => ({ method: 'GET', path: '/api/conflicts', query: { game: optionalString(game, 'game') } })),
+    'conflicts:detect': h((game, localVersionId, remoteVersionId) => ({
+      method: 'POST', path: '/api/conflicts/detect',
+      body: {
+        game: requireString(game, 'game'),
+        localVersionId: requireString(localVersionId, 'version id', 200),
+        remoteVersionId: requireString(remoteVersionId, 'version id', 200),
+      },
+    })),
+    'conflicts:resolve': h((id, resolution) => ({
+      method: 'POST', path: `/api/conflicts/${seg(requireString(id, 'conflict id', 200))}/resolve`,
+      body: { resolution: oneOf(resolution, RESOLUTIONS, 'resolution') },
+    })),
+
+    // Backup profiles / storage
+    'backupProfile:get': h((game) => ({ method: 'GET', path: '/api/backup-profile', query: { game: requireString(game, 'game') } })),
+    'backupProfile:set': h((profile) => ({ method: 'POST', path: '/api/backup-profile', body: plainObject(profile, 'backup profile') })),
+    'storage:get': h((game) => ({ method: 'GET', path: '/api/storage', query: { game: requireString(game, 'game') } })),
+
+    // AI analysis
+    'ai:analyze': h((payload) => {
+      const p = plainObject(payload, 'analysis request');
+      if (!Array.isArray(p.files)) throw new ServerCallError(invalidArgument('Invalid files'));
+      return { method: 'POST', path: '/api/analyze-files-ai', body: { gameName: requireString(p.gameName, 'game'), files: p.files } };
+    }),
+
+    // SteamGridDB art (the key lives on the server only; DUN-092)
+    'art:search': h((query) => ({ method: 'GET', path: '/api/search-art', query: { query: requireString(query, 'query') } })),
+    'art:auto-match': h(() => ({ method: 'GET', path: '/api/auto-match-all' })),
+    'steamGridKey:status': keyStatus(() => ({ method: 'GET', path: '/api/provider-keys/steamgriddb' })),
+    'steamGridKey:set': async (_event, key) => keyStatus(() => ({
+      method: 'PUT', path: '/api/provider-keys/steamgriddb', body: { key: requireString(key, 'key', 500).trim() },
+    }))(),
+    'steamGridKey:clear': keyStatus(() => ({ method: 'DELETE', path: '/api/provider-keys/steamgriddb' })),
+
+    // Local sync / sources
+    'local-sync:trigger': h(() => ({ method: 'POST', path: '/api/local-sync', body: {} })),
+    'local-sources:get': h(() => ({ method: 'GET', path: '/api/local-sources' })),
+    'local-sources:add': h((sourcePath) => ({ method: 'POST', path: '/api/local-sources', body: { path: requireString(sourcePath, 'path', 4096) } })),
+    'local-sources:remove': h((id) => ({ method: 'DELETE', path: `/api/local-sources/${seg(requireId(id))}` })),
+
+    // Remote servers
+    'remote-servers:get': h(() => ({ method: 'GET', path: '/api/remote-servers' })),
+    'remote-servers:add': h((url) => ({ method: 'POST', path: '/api/remote-servers', body: { url: requireString(url, 'url', 2000) } })),
+    'remote-servers:remove': h((id) => ({ method: 'DELETE', path: `/api/remote-servers/${seg(requireId(id))}` })),
+
+    // API keys (self-service)
+    'api-keys:get': h(() => ({ method: 'GET', path: '/api/api-keys' })),
+    'api-keys:add': h((payload) => {
+      const p = payload === undefined || payload === null ? {} : plainObject(payload, 'request');
+      return { method: 'POST', path: '/api/api-keys', body: { description: optionalString(p.description, 'description', 200) } };
+    }),
+    'api-keys:remove': h((id) => {
+      if (typeof id !== 'string' || !API_KEY_ID.test(id)) throw new ServerCallError(invalidArgument('Invalid key id'));
+      return { method: 'DELETE', path: `/api/api-keys/${seg(id)}` };
+    }),
+
+    // Ollama
+    // DUN-095/057: the server uses only its stored Ollama endpoint (admin-only);
+    // no endpoint ever comes from the renderer. OLLAMA_NOT_CONFIGURED / 403 pass through.
+    'ollama:models': h(() => ({ method: 'GET', path: '/api/ollama-models' })),
+    'ollama:health': h(() => ({ method: 'GET', path: '/api/ollama-health' })),
+  };
+}

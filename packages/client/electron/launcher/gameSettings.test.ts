@@ -202,8 +202,10 @@ describe('DUN-061 emulators', () => {
     const fake = fakeSpawn();
     expect(await launchGameById(2, { getGames: () => games, spawn: fake.spawn })).toEqual({ ok: false, reason: 'not-launchable' });
     games[1] = { ...games[1], emulator: 'retroarch' };
-    expect((await launchGameById(2, { getGames: () => games, spawn: fake.spawn })).ok).toBe(true);
-    expect(fake.calls).toEqual([expect.objectContaining({ command: 'retroarch', args: [rom] })]);
+    // DUN-075: a fake cores folder with a NES core; RetroArch gets -L <core>.
+    const coreLookup = { platform: 'linux' as const, dirs: ['/fake/cores'], isFile: (p: string) => p === '/fake/cores/mesen_libretro.so' };
+    expect((await launchGameById(2, { getGames: () => games, spawn: fake.spawn, coreLookup })).ok).toBe(true);
+    expect(fake.calls).toEqual([expect.objectContaining({ command: 'retroarch', args: ['-L', '/fake/cores/mesen_libretro.so', rom] })]);
   });
 });
 

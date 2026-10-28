@@ -113,7 +113,7 @@ describe('syncLocalFolder', () => {
     fs.mkdirSync(source, { recursive: true });
     fs.writeFileSync(path.join(source, 'slot1.sav'), 'x');
     const before = fs.readdirSync(process.cwd()).sort();
-    expect(() => syncLocalFolder(source, 'RelativeLeak', 10)).toThrow(/must be absolute/);
+    expect(() => syncLocalFolder(source, 'RelativeLeak')).toThrow(/must be absolute/);
     expect(fs.readdirSync(process.cwd()).sort()).toEqual(before);
   });
 
@@ -123,7 +123,7 @@ describe('syncLocalFolder', () => {
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data 1');
     fs.writeFileSync(path.join(source, 'config.ini'), 'config data');
 
-    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame'), 10);
+    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame'));
     
     expect(result.filesSynced).toBe(2);
     expect(fs.existsSync(path.join(SAVES_DIR, 'TestGame', 'saves', 'slot1.sav'))).toBe(true);
@@ -135,9 +135,9 @@ describe('syncLocalFolder', () => {
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data');
 
-    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame2'), 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame2'));
     
-    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame2'), 10);
+    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame2'));
     
     expect(result.filesSynced).toBe(0);
   });
@@ -147,12 +147,12 @@ describe('syncLocalFolder', () => {
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v1');
 
-    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame3'), 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame3'));
     
     // Modify file with different content - this should trigger a sync
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v2 modified content that is definitely different');
     
-    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame3'), 10);
+    const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame3'));
     
     expect(result.filesSynced).toBe(1);
   });
@@ -162,12 +162,12 @@ describe('syncLocalFolder', () => {
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v1');
 
-    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame4'), 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame4'));
     
     // Modify file with different content
     fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), 'save data v2 completely different content');
     
-    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame4'), 10);
+    syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame4'));
     
     const versionsDir = path.join(SAVES_DIR, 'TestGame4', '.versions');
     expect(fs.existsSync(versionsDir)).toBe(true);
@@ -175,18 +175,20 @@ describe('syncLocalFolder', () => {
     expect(versions.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('should prune old versions beyond maxVersions', () => {
+  it('snapshots overwrites under the given sync id and leaves pruning to the caller (DUN-097)', () => {
     const source = path.join(TEST_DIR, 'source-game5');
+    const target = path.join(SAVES_DIR, 'TestGame5');
     fs.mkdirSync(path.join(source, 'saves'), { recursive: true });
-    
+
     for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), `save data v${i}`);
-      syncLocalFolder(source, path.join(SAVES_DIR, 'TestGame5'), 10);
+      fs.writeFileSync(path.join(source, 'saves', 'slot1.sav'), `save data v${i} ${'x'.repeat(i)}`);
+      syncLocalFolder(source, target, String(1700000000000 + i));
     }
-    
-    const versionsDir = path.join(SAVES_DIR, 'TestGame5', '.versions');
-    const versions = fs.readdirSync(versionsDir).filter(v => !isNaN(Number(v)));
-    expect(versions.length).toBeLessThanOrEqual(10);
+
+    // 14 overwrites -> 14 snapshot dirs; nothing pruned here.
+    const versions = fs.readdirSync(path.join(target, '.versions')).filter(v => /^\d+$/.test(v));
+    expect(versions).toHaveLength(14);
+    expect(() => syncLocalFolder(source, target, 'not-digits')).toThrow(/syncId/);
   });
 
   it('should skip symlinks', () => {
@@ -202,7 +204,7 @@ describe('syncLocalFolder', () => {
     }
     
     if (fs.existsSync(linkPath)) {
-      const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestSymlink'), 10);
+      const result = syncLocalFolder(source, path.join(SAVES_DIR, 'TestSymlink'));
       expect(result.filesSynced).toBeGreaterThanOrEqual(1);
     }
   });

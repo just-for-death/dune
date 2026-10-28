@@ -4,7 +4,8 @@
  * unit tested in any JavaScript environment.
  */
 
-import { type FileManifest } from '@dune/shared';
+import { type FileManifest, type ScannerSourceToggles } from '@dune/shared';
+import { sanitizeScannerSources } from './scanner/sourceToggles';
 import { diffFingerprints, changedPaths } from '@dune/shared';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -74,15 +75,6 @@ export function validateServerUrl(rawUrl: string): { valid: boolean; url: string
   }
 
   return { valid: true, url: normalized };
-}
-
-/** Normalize a URL, throwing if invalid. Pure function. */
-export function normalizeUrl(url: string): string {
-  const check = validateServerUrl(url);
-  if (!check.valid) {
-    throw new Error(check.error || 'Invalid server URL');
-  }
-  return check.url;
 }
 
 /** Expand platform-specific path variables (~ on Unix, %USERPROFILE% on Windows). Pure function. */
@@ -166,8 +158,9 @@ export function sanitizeSettings(input: unknown, fallback: unknown): {
   runInBackground: boolean;
   autoSyncEnabled: boolean;
   autoSyncFreq: string;
-  steamGridDbKey: string;
   scanRoots: string[];
+  updateChecks: boolean;
+  scannerSources: ScannerSourceToggles;
 } {
   const s = (input ?? {}) as Record<string, unknown>;
   const f = (fallback ?? {}) as Record<string, unknown>;
@@ -183,9 +176,14 @@ export function sanitizeSettings(input: unknown, fallback: unknown): {
     runInBackground: s.runInBackground === true,
     autoSyncEnabled: s.autoSyncEnabled === true,
     autoSyncFreq: ['never', '1h', '6h', '24h'].includes(freq) ? freq : 'never',
-    steamGridDbKey: asString(s.steamGridDbKey, 500),
     scanRoots,
+    // DUN-028: opt-in only.
+    updateChecks: s.updateChecks === true,
+    // DUN-077: main-owned (scanner:setSource); the renderer can't change it here.
+    scannerSources: sanitizeScannerSources(f.scannerSources),
   };
+  // DUN-092 / DUN-036: no SteamGridDB key is kept here; it lives only on the
+  // Dune Server (write-only provider key).
 }
 
 /** Build a size+mtime fingerprint manifest for a list of files. */

@@ -201,6 +201,69 @@ describe('PrefixRegistry (DUN-062)', () => {
     expect(registry.list()).toHaveLength(1);
   });
 
+  it('backup is atomic: staged in a temp folder beside the target, renamed only when complete', () => {
+    const created = registry.create('atomic');
+    if (!created.ok) throw new Error('setup failed');
+    fs.writeFileSync(path.join(created.prefix.path, 'drive_c', 'a.cfg'), 'a');
+    const realBackups = () => fs.realpathSync(paths.backupsRoot);
+    const staged: string[] = [];
+    const spyFs = {
+      ...fs,
+      cpSync: ((src: string, dst: string, opts: fs.CopySyncOptions) => {
+        staged.push(dst);
+        // While copying, no real backup name exists yet: only the temp folder.
+        expect(fs.readdirSync(realBackups()).every((n) => n.startsWith('.partial-atomic-'))).toBe(true);
+        fs.cpSync(src, dst, opts);
+      }) as typeof fs.cpSync,
+    };
+    const reg = new PrefixRegistry(paths, { trashItem, log: (m) => logs.push(m), fs: spyFs });
+    const res = reg.backup(created.prefix.id);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(path.dirname(path.dirname(staged[0]))).toBe(realBackups());
+    expect(path.basename(path.dirname(staged[0])).startsWith('.partial-atomic-')).toBe(true);
+    expect(fs.readFileSync(path.join(res.backupPath, 'drive_c', 'a.cfg'), 'utf8')).toBe('a');
+    // The temp folder is gone; only the finished backup remains.
+    expect(fs.readdirSync(realBackups())).toEqual([path.basename(res.backupPath)]);
+  });
+
+  it('a failed copy leaves no backup and removes only its own temp folder', () => {
+    const created = registry.create('broken');
+    if (!created.ok) throw new Error('setup failed');
+    fs.writeFileSync(path.join(created.prefix.path, 'drive_c', 'a.cfg'), 'a');
+    fs.mkdirSync(paths.backupsRoot, { recursive: true });
+    // Earlier, unrelated content in the backups folder must survive.
+    fs.mkdirSync(path.join(paths.backupsRoot, 'older-backup'));
+    fs.mkdirSync(path.join(paths.backupsRoot, '.partial-other-keep'));
+    const failingFs = {
+      ...fs,
+      cpSync: ((src: string, dst: string, opts: fs.CopySyncOptions) => {
+        fs.cpSync(src, dst, opts); // half-written...
+        throw new Error('ENOSPC: no space left on device');
+      }) as typeof fs.cpSync,
+    };
+    const reg = new PrefixRegistry(paths, { trashItem, log: (m) => logs.push(m), fs: failingFs });
+    expect(reg.backup(created.prefix.id)).toEqual({ ok: false, reason: 'error' });
+    expect(fs.readdirSync(paths.backupsRoot).sort()).toEqual(['.partial-other-keep', 'older-backup']);
+    // The prefix itself is untouched.
+    expect(fs.readFileSync(path.join(created.prefix.path, 'drive_c', 'a.cfg'), 'utf8')).toBe('a');
+  });
+
+  it('a failed rename leaves no backup and no temp folder', () => {
+    const created = registry.create('norename');
+    if (!created.ok) throw new Error('setup failed');
+    const failingFs = {
+      ...fs,
+      renameSync: ((from: fs.PathLike, to: fs.PathLike) => {
+        if (String(from).includes('.partial-')) throw new Error('EXDEV');
+        fs.renameSync(from, to);
+      }) as typeof fs.renameSync,
+    };
+    const reg = new PrefixRegistry(paths, { trashItem, log: (m) => logs.push(m), fs: failingFs });
+    expect(reg.backup(created.prefix.id)).toEqual({ ok: false, reason: 'error' });
+    expect(fs.readdirSync(paths.backupsRoot)).toEqual([]);
+  });
+
   it('backs up into the backups folder without following symlinks inside the prefix', () => {
     const created = registry.create('saved');
     if (!created.ok) throw new Error('setup failed');

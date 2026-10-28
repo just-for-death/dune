@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode, SyntheticEvent } from 'react';
+import { useI18n } from '../../i18n/context';
 
 interface Props {
   open: boolean;
@@ -18,6 +19,7 @@ const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select
  * returns to whatever opened it.
  */
 export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel }: Props) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
@@ -82,7 +84,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
           <h3 id={titleId} className="conflict-title">{title}</h3>
           <div id={descId} className="confirm-body">{children}</div>
           <div className="confirm-actions">
-            <button ref={cancelRef} type="button" className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+            <button ref={cancelRef} type="button" className="btn btn-secondary" onClick={onCancel}>{t('common.cancel')}</button>
             <button type="button" className="btn btn-danger-solid" onClick={onConfirm}>{confirmLabel}</button>
           </div>
         </>

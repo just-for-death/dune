@@ -1,28 +1,22 @@
 import { useMemo, useState } from 'react';
 import type { BackupProfile } from '@dune/shared';
-
-interface FileRow {
-  path: string;
-  size: number;
-  category: 'Save' | 'Config' | 'Cache' | 'Other';
-}
+import { useI18n } from '../../i18n/context';
+import type { MessageKey } from '../../i18n';
+import { CATEGORY_GLOBS, type CategorizedSaveFile, type SaveFileCategory } from '../../services/saveFiles';
 
 interface Props {
   profile: BackupProfile;
-  files: FileRow[];
+  files: CategorizedSaveFile[];
   onChange: (profile: BackupProfile) => void;
 }
 
-type Category = FileRow['category'];
+type Category = SaveFileCategory;
 
-// Globs written to profile.excludeGlobs when a category is excluded. "Other"
-// is the catch-all bucket and has no pattern that would not overlap the other
-// categories, so it is shown but cannot be toggled.
-const CATEGORY_GLOBS: Record<Category, string[]> = {
-  Save: ['**/*.sav', '**/*.save', '**/*.sl2', '**/saves/**', '**/Saves/**', '**/SaveGames/**'],
-  Config: ['**/*.ini', '**/*.cfg', '**/*.conf', '**/config/**', '**/Config/**'],
-  Cache: ['**/cache/**', '**/Cache/**', '**/*.log', '**/*.tmp', '**/*.cache', '**/logs/**'],
-  Other: [],
+const CATEGORY_KEYS: Record<Category, MessageKey> = {
+  Save: 'exclusions.category.save',
+  Config: 'exclusions.category.config',
+  Cache: 'exclusions.category.cache',
+  Other: 'exclusions.category.other',
 };
 
 function formatBytes(bytes: number): string {
@@ -43,6 +37,7 @@ function excludedFromProfile(profile: BackupProfile): Set<Category> {
 }
 
 export function ExclusionEditor({ profile, files, onChange }: Props) {
+  const { t, tc } = useI18n();
   const groups = useMemo(() => {
     const map = new Map<Category, { count: number; bytes: number }>();
     for (const file of files) {
@@ -90,12 +85,12 @@ export function ExclusionEditor({ profile, files, onChange }: Props) {
   return (
     <div className="exclusion-editor">
       <div className="exclusion-summary">
-        <strong>Backup preview</strong>
-        <span className="muted">{formatBytes(includedBytes)} included</span>
+        <strong>{t('exclusions.preview')}</strong>
+        <span className="muted">{t('exclusions.included', { size: formatBytes(includedBytes) })}</span>
       </div>
-      <p className="muted exclusion-note">Excluded files are only skipped in backups. Nothing is deleted from your PC.</p>
+      <p className="muted exclusion-note">{t('exclusions.note')}</p>
 
-      {groups.length === 0 && <p className="muted">No file breakdown is available for this game yet.</p>}
+      {groups.length === 0 && <p className="muted">{t('exclusions.noBreakdown')}</p>}
 
       {groups.map(([category, stats]) => {
         const toggleable = CATEGORY_GLOBS[category].length > 0;
@@ -110,13 +105,13 @@ export function ExclusionEditor({ profile, files, onChange }: Props) {
               onChange={() => toggleCategory(category)}
             />
             <span className="exclusion-row-main">
-              <strong>{category}</strong>
+              <strong>{t(CATEGORY_KEYS[category])}</strong>
               <span className="muted">
-                {stats.count} file{stats.count === 1 ? '' : 's'} · {formatBytes(stats.bytes)}
-                {!toggleable && ' · always included'}
+                {tc('exclusions.files', stats.count, { size: formatBytes(stats.bytes) })}
+                {!toggleable && t('exclusions.alwaysIncluded')}
               </span>
             </span>
-            <span className="badge">{excluded ? 'Excluded' : 'Included'}</span>
+            <span className="badge">{excluded ? t('exclusions.excluded') : t('exclusions.includedBadge')}</span>
           </label>
         );
       })}

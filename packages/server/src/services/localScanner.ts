@@ -62,12 +62,14 @@ export interface SyncResult {
 /**
  * Mirror `sourcePath` into `targetDir`, the game's validated save root
  * (saves/<ownerId>/<gameId> from getGameRoot). The caller owns the mapping
- * from game to folder; nothing here derives a path from a title.
+ * from game to folder; nothing here derives a path from a title. Overwritten
+ * files are copied to `.versions/<syncId>` first (one id per sync session,
+ * DUN-097); pruning is the caller's job (saveVersions.pruneVersions).
  */
-export function syncLocalFolder(sourcePath: string, targetDir: string, maxVersions = 10): SyncResult {
+export function syncLocalFolder(sourcePath: string, targetDir: string, syncId: string = Date.now().toString()): SyncResult {
   // A relative target would resolve against cwd (e.g. packages/server).
   if (!path.isAbsolute(targetDir)) throw new Error(`syncLocalFolder: targetDir must be absolute, got ${targetDir}`);
-  const syncId = Date.now().toString();
+  if (!/^\d{1,20}$/.test(syncId)) throw new Error('syncLocalFolder: syncId must be digits');
   const normalizedSource = path.normalize(sourcePath);
   let filesSynced = 0;
 
@@ -96,10 +98,10 @@ export function syncLocalFolder(sourcePath: string, targetDir: string, maxVersio
           if (fs.existsSync(targetFile)) {
             const versionDir = path.join(targetDir, '.versions', syncId);
             const archivePath = path.join(versionDir, relativePath);
-            if (!fs.existsSync(path.dirname(archivePath))) {
+            if (!fs.existsSync(archivePath)) {
               fs.mkdirSync(path.dirname(archivePath), { recursive: true });
+              fs.copyFileSync(targetFile, archivePath);
             }
-            fs.copyFileSync(targetFile, archivePath);
           }
 
           if (!fs.existsSync(path.dirname(targetFile))) {
@@ -114,27 +116,6 @@ export function syncLocalFolder(sourcePath: string, targetDir: string, maxVersio
 
   if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
   walk(normalizedSource);
-
-  const versionsDir = path.join(targetDir, '.versions');
-  if (fs.existsSync(versionsDir)) {
-    const versions = fs.readdirSync(versionsDir)
-      .filter(v => {
-        if (isNaN(Number(v))) return false;
-        try {
-          return fs.statSync(path.join(versionsDir, v)).isDirectory();
-        } catch {
-          return false;
-        }
-      })
-      .sort((a, b) => parseInt(a) - parseInt(b));
-
-    if (versions.length > maxVersions) {
-      const toDelete = versions.slice(0, versions.length - maxVersions);
-      toDelete.forEach(v => {
-        fs.rmSync(path.join(versionsDir, v), { recursive: true, force: true });
-      });
-    }
-  }
 
   return { filesSynced, syncId };
 }

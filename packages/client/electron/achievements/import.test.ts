@@ -34,7 +34,7 @@ describe('local achievement import', () => {
         posted.push(...achievements);
         return { success: true, count: 2 };
       },
-      () => [achievement('ACH_ONE'), achievement('ACH_TWO')],
+      async () => [achievement('ACH_ONE'), achievement('ACH_TWO')],
     );
 
     expect(result).toEqual({ success: true, count: 2 });
@@ -49,7 +49,7 @@ describe('local achievement import', () => {
         called = true;
         return { success: true, count: 0 };
       },
-      () => [],
+      async () => [],
     );
 
     expect(result.success).toBe(true);
@@ -61,7 +61,7 @@ describe('local achievement import', () => {
     const result = await importLocalAchievementsFromDisk(
       game,
       async () => { throw new Error('server offline'); },
-      () => [achievement('ACH_ONE')],
+      async () => [achievement('ACH_ONE')],
     );
 
     expect(result).toEqual({ success: false, count: 0, message: 'server offline' });

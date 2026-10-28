@@ -11,6 +11,8 @@ import type {
   LaunchFailureReason,
   PlaytimeComparison,
   PlaytimeGraphData,
+  SaveFileEntry,
+  SaveFileListResult,
   ServerFailure,
   Settings,
 } from '@dune/shared';
@@ -89,6 +91,20 @@ export interface StubOptions {
   backupProfile?: BackupProfile;
   /** Make setBackupProfile reject ('reject') or answer with this ServerFailure. */
   backupProfileFail?: 'reject' | ServerFailure;
+  /** DUN-092: whether the server has a SteamGridDB key (default false). Set/clear need srv admin. */
+  steamGridKeySet?: boolean;
+  /** DUN-073: the stored server key can't be decrypted (getServerKey answers unreadable). */
+  serverKeyUnreadable?: boolean;
+  /**
+   * DUN-131 saves:listFiles reply. Default: no files, not truncated.
+   * failCode answers { ok:false, code } instead; delayMs delays the reply.
+   */
+  saveFiles?: {
+    files?: SaveFileEntry[];
+    truncated?: boolean;
+    failCode?: Extract<SaveFileListResult, { ok: false }>['code'];
+    delayMs?: number;
+  };
 }
 
 export const sampleGames = [
@@ -189,7 +205,6 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         runInBackground: false,
         autoSyncEnabled: false,
         autoSyncFreq: 'never',
-        steamGridDbKey: '',
         scanRoots: [],
         maxVersions: 10,
         steamGridApiKey: '',
@@ -202,9 +217,8 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
     };
     const calls: { method: string; args: unknown[] }[] = [];
     (window as unknown as { __stubCalls: typeof calls }).__stubCalls = calls;
-    // Server-calling IPC answers like main with no HTTP response; fetchArt keeps its own { success } contract.
+    // Server-calling IPC answers like main with no HTTP response (ServerFailure, code NETWORK).
     const network = async () => ({ ok: false as const, code: 'NETWORK', message: 'offline (e2e stub)' });
-    const offline = async () => ({ success: false, message: 'offline (e2e stub)' });
     let saveConfigFailures = opts.failSaveConfig ?? 0;
     const prefixes = structuredClone(opts.prefixes ?? []);
     const srv = {
@@ -216,6 +230,8 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       issued: 0,
     };
     let serverKey = opts.serverKey ?? 'e2e-key';
+    let serverKeyUnreadable = opts.serverKeyUnreadable === true;
+    let steamGridKeySet = opts.steamGridKeySet === true;
     const serverWait = () => new Promise((r) => setTimeout(r, opts.server?.delayMs ?? 0));
     // Shapes and codes as main / the server emit them (net/serverError.ts, middleware/auth.ts, server.ts).
     const noServer = { ok: false as const, code: 'NO_SERVER', message: 'No Dune Server configured' };
@@ -263,7 +279,10 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
         record('restoreCloud');
         return opts.syncFail ?? { ok: false, code: 'NO_SERVER', message: 'No server configured' };
       },
-      fetchArt: offline,
+      fetchArt: async (gameId: number) => {
+        record('fetchArt', gameId);
+        return store.cloud.url ? network() : noServer;
+      },
       setCustomArt: async () => false,
       onSyncProgress: () => () => {},
       recordPlaytime: async () => ({ ok: true, success: true }),
@@ -303,12 +322,43 @@ export async function installElectronStub(page: Page, options: StubOptions = {})
       analyzeFiles: network,
       searchArt: async () => ({ ok: true, success: true, results: [] }),
       autoMatchAll: async () => ({ ok: true, success: true, count: 0 }),
-      getServerKey: async () => ({ success: true, key: serverKey }),
+      // DUN-073: write-only; the stub never hands the key back, only { set, unreadable? }.
+      getServerKey: async () => (serverKeyUnreadable ? { set: true, unreadable: true as const } : { set: serverKey !== '' }),
       setServerKey: async (key: string) => {
         // The key value itself is never recorded, only whether it was cleared.
         calls.push({ method: 'setServerKey', args: key ? [] : ['<cleared>'] });
         serverKey = key;
-        return { success: true };
+        serverKeyUnreadable = false;
+        return { set: serverKey !== '' };
+      },
+      // DUN-092: the server's SteamGridDB key is write-only; only { set } comes back.
+      getSteamGridKeyStatus: async () => {
+        await serverWait();
+        if (!store.cloud.url) return noServer;
+        return { ok: true, set: steamGridKeySet };
+      },
+      setSteamGridKey: async (key: string) => {
+        record('setSteamGridKey', key ? '<key>' : '');
+        await serverWait();
+        if (!store.cloud.url) return noServer;
+        if (!srv.admin) return forbidden;
+        steamGridKeySet = key !== '';
+        return { ok: true, set: steamGridKeySet };
+      },
+      clearSteamGridKey: async () => {
+        record('clearSteamGridKey');
+        await serverWait();
+        if (!store.cloud.url) return noServer;
+        if (!srv.admin) return forbidden;
+        steamGridKeySet = false;
+        return { ok: true, set: false };
+      },
+      listSaveFiles: async (gameId: number) => {
+        record('listSaveFiles', gameId);
+        await new Promise((r) => setTimeout(r, opts.saveFiles?.delayMs ?? 0));
+        if (opts.saveFiles?.failCode) return { ok: false, code: opts.saveFiles.failCode };
+        if (!store.games.some((g) => g.id === gameId)) return { ok: false, code: 'GAME_NOT_FOUND' };
+        return { ok: true, files: structuredClone(opts.saveFiles?.files ?? []), truncated: opts.saveFiles?.truncated === true };
       },
       getLocalSources: async () => {
         await serverWait();

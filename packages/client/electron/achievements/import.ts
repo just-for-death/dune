@@ -22,10 +22,10 @@ export type LocalAchievementPost = (
 export async function importLocalAchievementsFromDisk(
   game: Game,
   post: LocalAchievementPost,
-  scan: (game: Game) => LocalAchievement[] = (g) => scanLocalAchievements(getAchievementRoots(g)),
+  scan: (game: Game) => Promise<LocalAchievement[]> = async (g) => scanLocalAchievements(await getAchievementRoots(g)),
 ): Promise<LocalAchievementImportResult> {
   try {
-    const achievements = scan(game);
+    const achievements = await scan(game);
     if (achievements.length === 0) {
       return { success: true, count: 0, message: 'No local achievement files found' };
     }

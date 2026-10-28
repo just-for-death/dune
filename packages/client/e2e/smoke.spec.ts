@@ -18,7 +18,6 @@ test.beforeEach(async ({ page }) => {
         runInBackground: false,
         autoSyncEnabled: false,
         autoSyncFreq: 'never',
-        steamGridDbKey: '',
         scanRoots: [],
       },
     };
@@ -41,7 +40,7 @@ test.beforeEach(async ({ page }) => {
       autoDetectGames: async () => ({ count: 0, currentGames: store.games }),
       selectDirectory: async () => ({ success: false }),
       testCloud: network,
-      fetchArt: async () => ({ success: false, message: 'offline (e2e stub)' }),
+      fetchArt: async () => ({ ok: false, code: 'NO_SERVER', message: 'No Dune Server configured' }),
       setCustomArt: async () => false,
       onSyncProgress: () => () => {},
       recordPlaytime: async () => ({ ok: true, success: true }),
@@ -100,10 +99,15 @@ test.beforeEach(async ({ page }) => {
       getApiKeys: async () => ({ ok: true, success: true, keys: [] }),
       addApiKey: async () => ({ ok: true, success: true }),
       removeApiKey: async () => ({ ok: true, success: true }),
-      getOllamaModels: async () => ({ ok: true, success: true, models: [] }),
+      getOllamaModels: async () => ({ ok: true, success: true, models: [] }), // DUN-095: no endpoint argument
       checkOllamaHealth: network,
-      getServerKey: async () => ({ success: true, key: '' }),
-      setServerKey: async () => ({ success: true }),
+      // DUN-073: write-only; only { set } comes back.
+      getServerKey: async () => ({ set: false }),
+      setServerKey: async (key: string) => ({ set: key !== '' }),
+      getSteamGridKeyStatus: async () => ({ ok: false, code: 'NO_SERVER', message: 'No Dune Server configured' }),
+      setSteamGridKey: async () => ({ ok: false, code: 'NO_SERVER', message: 'No Dune Server configured' }),
+      clearSteamGridKey: async () => ({ ok: false, code: 'NO_SERVER', message: 'No Dune Server configured' }),
+      listSaveFiles: async () => ({ ok: true, files: [], truncated: false }),
       launchGame: async () => ({ ok: true, pid: 1234 }),
       pickLaunchTarget: async (id: number) => {
         const game = store.games.find(g => g.id === id);
@@ -224,7 +228,7 @@ test('achievements show rarity tiers and detail', async ({ page }) => {
   await page.locator('#server-url').fill('http://localhost:3030');
   await page.getByRole('button', { name: 'Achievements', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Achievements' })).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'Hades' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Hades', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'View' }).click();
   await expect(page.getByText('Test Achievement')).toBeVisible();
   await expect(page.getByText('Legendary', { exact: true })).toBeVisible();

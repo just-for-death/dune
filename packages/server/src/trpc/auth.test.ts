@@ -102,12 +102,12 @@ describe('createContext key extraction', () => {
     expect(ctx.apiKeyValid).toBe(false);
   });
 
-  it('supports ?api_key= query fallback', async () => {
+  it('ignores a ?api_key= query value (header only, DUN-102)', async () => {
     const ctx = await createContext({
       req: fakeReq({}, '/trpc/games.list?api_key=nope'),
       res: {},
     } as never);
-    expect(ctx.apiKey).toBe('nope');
+    expect(ctx.apiKey).toBeNull();
     expect(ctx.apiKeyValid).toBe(false);
   });
 

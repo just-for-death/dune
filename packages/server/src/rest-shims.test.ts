@@ -65,7 +65,7 @@ describe('REST shims auth gate', () => {
     ['get', '/api/api-keys'],
     ['post', '/api/api-keys'],
     ['delete', '/api/api-keys/x'],
-    ['get', '/api/ollama-models?endpoint=http://x:11434'],
+    ['get', '/api/ollama-models'],
     ['get', '/api/ollama-health'],
     ['get', '/api/save-versions?game=x'],
     ['get', '/api/save-versions/1'],
@@ -211,6 +211,8 @@ describe('REST shims happy paths', () => {
   it('analyze-files-ai validates input and surfaces ollama failure', async () => {
     const bad = await api(request(app).post('/api/analyze-files-ai')).send({});
     expect(bad.status).toBe(400);
+    expect(bad.body.code).toBe('INVALID_AI_INPUT');
+    await api(request(app).post('/api/settings')).send({ ollamaEndpoint: 'http://ollama.test:11434' });
 
     const res = await api(request(app).post('/api/analyze-files-ai')).send({
       gameName: 'ShimGame',
@@ -292,13 +294,16 @@ describe('REST shims happy paths', () => {
     expect((await api(request(app).delete(`/api/users/${created.body.user.id}`)).catch(() => null))?.status ?? 200).toBeLessThan(500);
   });
 
-  it('ollama endpoints validate input; health surfaces failure', async () => {
-    expect((await api(request(app).get('/api/ollama-models'))).status).toBe(400);
-    expect((await api(request(app).get('/api/ollama-models?endpoint=:::'))).status).toBe(400);
+  it('ollama endpoints use only the stored endpoint; health surfaces failure', async () => {
+    await api(request(app).post('/api/settings')).send({ ollamaEndpoint: 'http://ollama.test:11434' });
+    const supplied = await api(request(app).get('/api/ollama-models?endpoint=http://x:11434'));
+    expect(supplied.status).toBe(400);
+    expect(supplied.body).toEqual({ error: expect.any(String), code: 'ENDPOINT_NOT_ALLOWED' });
 
     getMock.mockResolvedValue({ data: { models: [{ name: 'm' }] } });
-    const models = await api(request(app).get('/api/ollama-models?endpoint=http://x:11434'));
+    const models = await api(request(app).get('/api/ollama-models'));
     expect(models.body.success).toBe(true);
+    expect(String(getMock.mock.calls.at(-1)?.[0])).toBe('http://ollama.test:11434/api/tags');
 
     getMock.mockRejectedValue(new Error('offline'));
     const health = await api(request(app).get('/api/ollama-health'));

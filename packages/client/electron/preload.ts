@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { BackupProfile, Game, NewGameInput } from '@dune/shared';
+import type { AutoSyncEvent, BackupProfile, Game, NewGameInput, ScannerSourceId, UpdateStatus } from '@dune/shared';
 
 interface Cloud {
   url: string;
@@ -9,8 +9,8 @@ interface Settings {
   runInBackground: boolean;
   autoSyncEnabled: boolean;
   autoSyncFreq: string;
-  steamGridDbKey: string;
   scanRoots: string[];
+  updateChecks?: boolean;
   // Server settings
   maxVersions?: number;
   ollamaEndpoint?: string;
@@ -48,9 +48,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncCloud: (credentials: { url: string }) => ipcRenderer.invoke('sync:cloud', credentials),
   restoreCloud: (credentials: { url: string }) => ipcRenderer.invoke('sync:restore', credentials),
   testCloud: (credentials: { url: string }) => ipcRenderer.invoke('sync:test', credentials),
+  // DUN-070: background auto-sync results.
+  onAutoSync: (cb: (event: AutoSyncEvent) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, event: AutoSyncEvent) => cb(event);
+    ipcRenderer.on('sync:auto', handler);
+    return () => ipcRenderer.removeListener('sync:auto', handler);
+  },
+  // Read-only list of a game's save files (what sync sees before excludes).
+  listSaveFiles: (gameId: number) => ipcRenderer.invoke('saves:listFiles', gameId),
   
-  // Art
-  fetchArt: (id: number, name: string) => ipcRenderer.invoke('game:fetchArt', id, name),
+  // Art (through the Dune Server's SteamGridDB provider; game id only)
+  fetchArt: (gameId: number) => ipcRenderer.invoke('game:fetchArt', gameId),
   setCustomArt: (id: number) => ipcRenderer.invoke('game:setCustomArt', id),
   
   // Dialog
@@ -131,6 +139,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('prefix:backup', id),
   deletePrefix: (id: string) =>
     ipcRenderer.invoke('prefix:delete', id),
+  // Prefixes found on disk: read-only, open-folder only.
+  discoverPrefixes: () =>
+    ipcRenderer.invoke('prefix:discover'),
+  openDiscoveredPrefix: (path: string) =>
+    ipcRenderer.invoke('prefix:openDiscovered', path),
+
+  // Scanner sources (DUN-077)
+  getScannerSources: () =>
+    ipcRenderer.invoke('scanner:getSources'),
+  setScannerSource: (id: ScannerSourceId, enabled: boolean) =>
+    ipcRenderer.invoke('scanner:setSource', id, enabled),
 
   // Save versions
   getSaveVersions: (game: string) =>
@@ -171,6 +190,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('art:search', query),
   autoMatchAll: () => 
     ipcRenderer.invoke('art:auto-match'),
+  // DUN-092: write-only server key; { set } only.
+  getSteamGridKeyStatus: () =>
+    ipcRenderer.invoke('steamGridKey:status'),
+  setSteamGridKey: (key: string) =>
+    ipcRenderer.invoke('steamGridKey:set', key),
+  clearSteamGridKey: () =>
+    ipcRenderer.invoke('steamGridKey:clear'),
   
   // Local sync
   triggerLocalSync: () => 
@@ -199,8 +225,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('api-keys:remove', id),
   
   // Ollama
-  getOllamaModels: (endpoint: string) => 
-    ipcRenderer.invoke('ollama:models', endpoint),
+  // DUN-095/057: the server uses its stored endpoint; none is sent.
+  getOllamaModels: () =>
+    ipcRenderer.invoke('ollama:models'),
   checkOllamaHealth: () => 
     ipcRenderer.invoke('ollama:health'),
 
@@ -210,11 +237,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openErrorLog: () =>
     ipcRenderer.invoke('openErrorLog'),
 
-  // Server API key
+  // Server API key (DUN-073: write-only; get returns { set, unreadable? })
   getServerKey: () =>
     ipcRenderer.invoke('server-key:get'),
   setServerKey: (key: string) =>
     ipcRenderer.invoke('server-key:set', key),
+
+  // App updates (DUN-028)
+  getUpdateStatus: () =>
+    ipcRenderer.invoke('updates:status'),
+  downloadUpdate: () =>
+    ipcRenderer.invoke('updates:download'),
+  installUpdate: () =>
+    ipcRenderer.invoke('updates:install'),
+  onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, status: UpdateStatus) => cb(status);
+    ipcRenderer.on('updates:status', handler);
+    return () => ipcRenderer.removeListener('updates:status', handler);
+  },
 
   // Disk space
   getDiskSpace: (paths?: string[]) =>

@@ -1,4 +1,5 @@
 import type { Game } from '@dune/shared';
+import { defaultTranslator, type Translator } from '../i18n';
 
 export type SourceKind = 'steam' | 'heroic' | 'lutris' | 'external' | 'manual';
 
@@ -25,21 +26,21 @@ const STORE_NAMES: Record<string, string> = {
  * Maps Game.source onto the five badge kinds shown in the library.
  * Returns null when the game has no source recorded (no badge is shown).
  */
-export function sourceInfo(game: Pick<Game, 'source'>): SourceInfo | null {
+export function sourceInfo(game: Pick<Game, 'source'>, t: Translator = defaultTranslator): SourceInfo | null {
   switch (game.source) {
     case undefined:
       return null;
     case 'steam':
-      return { kind: 'steam', label: 'Steam', detail: 'Found in Steam' };
+      return { kind: 'steam', label: 'Steam', detail: t('source.steamDetail') };
     case 'heroic':
-      return { kind: 'heroic', label: 'Heroic', detail: 'Found in Heroic Games Launcher' };
+      return { kind: 'heroic', label: 'Heroic', detail: t('source.heroicDetail') };
     case 'lutris':
-      return { kind: 'lutris', label: 'Lutris', detail: 'Found in Lutris' };
+      return { kind: 'lutris', label: 'Lutris', detail: t('source.lutrisDetail') };
     case 'manual':
-      return { kind: 'manual', label: 'Manual', detail: 'Added manually' };
+      return { kind: 'manual', label: t('source.manual'), detail: t('source.manualDetail') };
     default: {
-      const store = STORE_NAMES[game.source] ?? game.source;
-      return { kind: 'external', label: 'External', detail: `Found by external scanner (${store})` };
+      const store = game.source === 'emulator' ? t('source.emulator') : (STORE_NAMES[game.source] ?? game.source);
+      return { kind: 'external', label: t('source.external'), detail: t('source.externalDetail', { store }) };
     }
   }
 }

@@ -20,9 +20,13 @@ import { withDbLock } from './mutex.js';
 export { withDbLock };
 export { closeDbForTests } from './sqlite.js';
 
+/** DUN-057: the pre-fix implicit default, written into stored settings by every save. */
+const LEGACY_OLLAMA_DEFAULT = 'http://ollama:11434';
+
 const defaultSettings: Settings = {
   maxVersions: 10,
-  ollamaEndpoint: 'http://ollama:11434',
+  // DUN-057: Ollama is off until an admin sets an endpoint.
+  ollamaEndpoint: '',
   ollamaModel: 'phi4-mini:latest',
   apiKeys: [],
   localSources: [],
@@ -371,6 +375,33 @@ function resolveUserByKey(rawKey: string | null | undefined): User | null {
   return row ? getUserById(row.userId) ?? null : null;
 }
 
+// ── Local sync game identity (DUN-100) ──────────────────────────────────────
+// A local-sync folder is bound to one game by its full normalized path (per
+// owner), never by its basename, so two different `.../Saves` folders stay
+// two games.
+
+/** The game bound to this source folder for this owner, if any. */
+function getLocalSyncGame(ownerId: string, sourcePath: string): Game | undefined {
+  const row = getDb()
+    .prepare('SELECT gameId FROM local_sync_games WHERE ownerId = ? AND sourcePath = ?')
+    .get(ownerId, sourcePath) as { gameId: number } | undefined;
+  return row ? getGameById(row.gameId) : undefined;
+}
+
+/** True when some other folder of this owner is already bound to `gameId`. */
+function isGameBoundToOtherFolder(ownerId: string, gameId: number, sourcePath: string): boolean {
+  const row = getDb()
+    .prepare('SELECT 1 AS x FROM local_sync_games WHERE ownerId = ? AND gameId = ? AND sourcePath <> ? LIMIT 1')
+    .get(ownerId, gameId, sourcePath);
+  return Boolean(row);
+}
+
+function bindLocalSyncGame(ownerId: string, sourcePath: string, gameId: number): void {
+  getDb()
+    .prepare('INSERT INTO local_sync_games (ownerId, sourcePath, gameId) VALUES (?, ?, ?) ON CONFLICT(ownerId, sourcePath) DO UPDATE SET gameId = excluded.gameId')
+    .run(ownerId, sourcePath, gameId);
+}
+
 function getLocalSources(): LocalSource[] {
   return readSettingsRow().localSources || [];
 }
@@ -428,6 +459,20 @@ function removeRemoteServer(id: number): boolean {
  * One-way migration: hash any plaintext keys left from pre-hardening installs.
  * Idempotent — already-hashed entries are untouched.
  */
+/**
+ * DUN-057: settings saved before the fix carry the old implicit
+ * 'http://ollama:11434' default (saveSettings stored the merged defaults).
+ * Clear exactly that value so Ollama is off until an admin sets an endpoint.
+ */
+function migrateOllamaDefault(): boolean {
+  const row = getDb().prepare('SELECT value FROM kv WHERE key = ?').get('settings') as { value: string } | undefined;
+  if (!row) return false;
+  const settings = readSettingsRow();
+  if (settings.ollamaEndpoint !== LEGACY_OLLAMA_DEFAULT) return false;
+  saveSettings({ ...settings, ollamaEndpoint: '' });
+  return true;
+}
+
 function migrateApiKeys(): boolean {
   const settings = readSettingsRow();
   const keys = settings.apiKeys || [];
@@ -493,6 +538,10 @@ export function runBootMigrations(): void {
 
   ensureMultiUser();
 
+  if (migrateOllamaDefault()) {
+    logger.info('Cleared the implicit Ollama endpoint default; Ollama stays off until configured');
+  }
+
   if (listKeyHashes().length === 0) {
     const admin = listUsers()[0];
     const defaultKey = randomBytes(24).toString('hex');
@@ -528,6 +577,9 @@ export const database = {
   markGameSynced,
   renameGame,
   deleteGame,
+  getLocalSyncGame,
+  isGameBoundToOtherFolder,
+  bindLocalSyncGame,
   getLocalSources,
   addLocalSource,
   removeLocalSource,

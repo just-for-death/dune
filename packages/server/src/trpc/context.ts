@@ -15,10 +15,7 @@ export interface TRPCContext {
 }
 
 function extractKey(req: CreateHTTPContextOptions['req']): string | null {
-  return extractApiKey(
-    req.headers as Record<string, string | string[] | undefined>,
-    req.url,
-  );
+  return extractApiKey(req.headers as Record<string, string | string[] | undefined>);
 }
 
 export async function createContext({ req }: CreateHTTPContextOptions): Promise<TRPCContext> {

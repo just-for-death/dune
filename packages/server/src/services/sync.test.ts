@@ -51,7 +51,7 @@ function streamOf(bytes: number): Readable {
 describe('handleUploadFile limits', () => {
   it('rejects files exceeding MAX_UPLOAD_MB with 413 and no partial file', async () => {
     process.env.MAX_UPLOAD_MB = '1'; // 1 MB cap
-    const res = await handleUploadFile(GAME_A, 'big.sav', streamOf(2 * 1024 * 1024), 'test-sync', OWNER);
+    const res = await handleUploadFile(GAME_A, 'big.sav', streamOf(2 * 1024 * 1024), '1700000000000', OWNER);
     expect(res.success).toBe(false);
     expect(res.status).toBe(413);
     expect(res.message).toMatch(/exceeds/i);
@@ -60,7 +60,7 @@ describe('handleUploadFile limits', () => {
 
   it('accepts files under the cap', async () => {
     process.env.MAX_UPLOAD_MB = '1';
-    const res = await handleUploadFile(GAME_A, 'small.sav', streamOf(1024), 'test-sync', OWNER);
+    const res = await handleUploadFile(GAME_A, 'small.sav', streamOf(1024), '1700000000000', OWNER);
     expect(res.success).toBe(true);
     expect(fs.existsSync(path.join(rootOf(GAME_A), 'small.sav'))).toBe(true);
   });
@@ -72,7 +72,7 @@ describe('handleUploadFile limits', () => {
     fs.writeFileSync(path.join(root, 'a.sav'), 'a');
     fs.writeFileSync(path.join(root, 'b.sav'), 'b');
 
-    const res = await handleUploadFile(GAME_B, 'c.sav', streamOf(10), 'test-sync', OWNER);
+    const res = await handleUploadFile(GAME_B, 'c.sav', streamOf(10), '1700000000000', OWNER);
     expect(res.success).toBe(false);
     expect(res.status).toBe(413);
     expect(fs.existsSync(path.join(root, 'c.sav'))).toBe(false);

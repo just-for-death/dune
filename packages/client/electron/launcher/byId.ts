@@ -1,6 +1,7 @@
 import type { Game, LaunchCommandResult, LaunchResult } from '@dune/shared';
-import { getLaunchCommand, launchGame, type SpawnFn } from './manager.js';
+import { getLaunchCommand, getLaunchRefusal, launchGame, type SpawnFn } from './manager.js';
 import type { LaunchOptions } from './strategies/types.js';
+import type { CoreLookupDeps } from './retroarchCores.js';
 
 /**
  * DUN-061: launch by game id only.
@@ -24,6 +25,10 @@ export interface LaunchByIdDeps {
    * or null when the prefix is gone / not managed. Resolved at launch time.
    */
   resolveManagedPrefix?: (prefixId: string) => string | null;
+  /** DUN-074: opens steam:// launch URLs (main: shell.openExternal). */
+  openExternal?: (url: string) => Promise<void>;
+  /** DUN-075 test seam: RetroArch core folders. */
+  coreLookup?: CoreLookupDeps;
 }
 
 /** A game id is a positive safe integer (see `nextId`). Strings, objects, NaN are rejected. */
@@ -43,7 +48,7 @@ async function findStoredGame(rawId: unknown, deps: LaunchByIdDeps): Promise<Gam
  * rest from `game`). Null when the game's managed prefix cannot be resolved.
  */
 function storedLaunchOptions(game: Game, deps: LaunchByIdDeps): LaunchOptions | null {
-  const options: LaunchOptions = {};
+  const options: LaunchOptions = deps.coreLookup ? { coreLookup: deps.coreLookup } : {};
   const env = deps.getGameEnv?.(game);
   // getLaunchCommand filters env through the allow-list.
   if (env !== undefined) options.env = env as Record<string, string>;
@@ -67,9 +72,14 @@ export async function launchGameById(rawId: unknown, deps: LaunchByIdDeps): Prom
   const stored = game;
   try {
     const options = storedLaunchOptions(stored, deps);
-    if (!options || !getLaunchCommand(stored, options)) return { ok: false, reason: 'not-launchable' };
+    if (!options) return { ok: false, reason: 'not-launchable' };
+    if (!getLaunchCommand(stored, options)) {
+      const message = getLaunchRefusal(stored, options);
+      return { ok: false, reason: 'not-launchable', ...(message ? { message } : {}) };
+    }
     const result = await launchGame(stored, options, {
       spawn: deps.spawn,
+      openExternal: deps.openExternal,
       onExit: deps.onExit ? (info) => deps.onExit?.(stored, info) : undefined,
     });
     return result.success
@@ -87,7 +97,9 @@ export async function getLaunchCommandById(rawId: unknown, deps: LaunchByIdDeps)
     if (!game) return { ok: false, reason: 'not-found' };
     const options = storedLaunchOptions(game, deps);
     const command = options ? getLaunchCommand(game, options) : null;
-    return command ? { ok: true, command } : { ok: false, reason: 'not-launchable' };
+    if (command) return { ok: true, command };
+    const message = options ? getLaunchRefusal(game, options) : null;
+    return { ok: false, reason: 'not-launchable', ...(message ? { message } : {}) };
   } catch (error) {
     return { ok: false, reason: 'error', message: error instanceof Error ? error.message : 'Launch failed' };
   }

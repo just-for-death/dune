@@ -1,3 +1,5 @@
+import type { CoreLookupDeps } from '../retroarchCores.js';
+
 export interface LaunchOptions {
   appId?: string;
   heroicId?: string;
@@ -7,6 +9,8 @@ export interface LaunchOptions {
   useUmu?: boolean;
   env?: Record<string, string>;
   cwd?: string;
+  /** DUN-075: where to look for RetroArch cores (defaults to the platform's core folders). */
+  coreLookup?: CoreLookupDeps;
 }
 
 export interface LaunchCommand {
@@ -14,6 +18,18 @@ export interface LaunchCommand {
   args: string[];
   env?: Record<string, string>;
   cwd?: string;
+}
+
+/** DUN-074: a launch handed to the OS URL handler (shell.openExternal), e.g. steam://rungameid/<id>. */
+export interface LaunchUrl {
+  url: string;
+}
+
+/** What a strategy produces: a process to spawn or a URL to open. */
+export type LaunchPlan = LaunchCommand | LaunchUrl;
+
+export function isUrlLaunch(plan: LaunchPlan): plan is LaunchUrl {
+  return typeof (plan as LaunchUrl).url === 'string';
 }
 
 export type LaunchableGame = {
@@ -35,5 +51,7 @@ export type LaunchableGame = {
 
 export interface LaunchStrategy {
   canLaunch(game: LaunchableGame, options?: LaunchOptions): boolean;
-  getCommand(game: LaunchableGame, options?: LaunchOptions): LaunchCommand | null;
+  getCommand(game: LaunchableGame, options?: LaunchOptions): LaunchPlan | null;
+  /** Why this strategy refuses a game it would otherwise handle (shown to the user), or null. */
+  refusal?(game: LaunchableGame, options?: LaunchOptions): string | null;
 }

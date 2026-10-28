@@ -86,8 +86,10 @@ export interface Settings {
   autoSyncEnabled?: boolean;
   autoSyncFreq?: string;
   scanRoots?: string[];
-  /** Client-only: SteamGridDB key stored locally (server key is separate). */
-  steamGridDbKey?: string;
+  /** Client-only (DUN-028): opt-in app update checks. Default off. */
+  updateChecks?: boolean;
+  /** Client-only (DUN-077): saved scanner source toggles; written by main via scanner:setSource only. */
+  scannerSources?: ScannerSourceToggles;
 }
 
 // Local source for dual-boot sync
@@ -232,6 +234,11 @@ export interface PlaytimeGraphData {
   pie: { game: string; minutes: number; percentage: number }[]; // distribution
   heatmap: { date: string; minutes: number }[]; // calendar heatmap
   area: { date: string; cumulativeMinutes: number }[]; // cumulative area
+  /**
+   * DUN-096: what one point covers. 'day' (date = YYYY-MM-DD) for spans up to
+   * 366 days; 'month' (date = YYYY-MM-01) for longer 'all' ranges.
+   */
+  bucket?: 'day' | 'month';
 }
 
 // Playtime comparison data
@@ -314,7 +321,9 @@ export interface ConflictRecord {
 export interface BackupProfile {
   gameId: number;
   includeGlobs: string[];
+  /** The user's own exclude rules (DUN-103); the built-in cache rules are added by autoExcludeCache. */
   excludeGlobs: string[];
+  /** When true the server also applies its built-in cache/log/screenshot excludes (GET /api/backup-profile -> cacheExcludeGlobs). */
   autoExcludeCache: boolean;
   maxFileSizeMB?: number;
   updatedAt: string;
@@ -335,21 +344,6 @@ export interface StorageEntry {
   cacheBytes: number;
   lastPlayed: string | null;
   drive: string;
-}
-
-export interface PrefixEntry {
-  name: string;
-  path: string;
-  valid?: boolean;
-  sizeBytes?: number;
-  version?: string;
-}
-
-export interface PrefixSummary {
-  wine: PrefixEntry[];
-  proton: PrefixEntry[];
-  heroic: PrefixEntry[];
-  lutris: PrefixEntry[];
 }
 
 /** A Wine prefix Dune created itself, recorded in main's prefix registry (DUN-062). */
@@ -402,7 +396,7 @@ export type LaunchFailureReason = 'not-found' | 'not-launchable' | 'error';
 export type LaunchFailure = { ok: false; reason: LaunchFailureReason; message?: string };
 export type LaunchResult = { ok: true; pid?: number } | LaunchFailure;
 export type LaunchCommandResult =
-  | { ok: true; command: { command: string; args: string[]; env?: Record<string, string>; cwd?: string } }
+  | { ok: true; command: { command: string; args: string[]; env?: Record<string, string>; cwd?: string } | { url: string } }
   | LaunchFailure;
 
 // Launch settings (DUN-061): launch fields are main-only. The renderer sends
@@ -433,6 +427,39 @@ export type CloudSyncResult =
 export type RemoveGameResult = { ok: true; games: Game[] } | { ok: false; reason: 'invalid' | 'not-found' | 'error' };
 export type ImportLocalAchievementsResult = ServerResult<{ success?: boolean; count: number; message?: string }>;
 
+/** game:fetchArt (DUN-092): art found by the server's SteamGridDB provider, saved as a local thumbnail. */
+export type FetchArtResult = ServerResult<{ thumbnail: string }>;
+
+/** DUN-092: provider keys are write-only; the server answers `{ set }` only. */
+export type ProviderKeyStatusResult = ServerResult<{ set: boolean }>;
+
+/** DUN-073: the local Dune Server API key is write-only too. `unreadable`: stored but can't be decrypted. */
+export type ServerKeyStatus = { set: boolean; unreadable?: true };
+
+/** DUN-028: opt-in update checks; download and install only on a click. */
+export type UpdateState = 'disabled' | 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+export interface UpdateStatus { state: UpdateState; version?: string; message?: string }
+
+/** DUN-077: scanner sources the user can switch on/off ('manual' is always on). */
+export type ScannerSourceId = 'steam' | 'heroic' | 'lutris' | 'epic' | 'gog' | 'ubisoft' | 'ea' | 'battlenet' | 'xbox' | 'minecraft' | 'emulator';
+export type ScannerSourceToggles = Partial<Record<ScannerSourceId, boolean>>;
+export interface ScannerSourceInfo { id: ScannerSourceId; name: string; enabled: boolean }
+export type SetScannerSourceResult = { ok: true; sources: ScannerSourceInfo[] } | { ok: false; reason: 'unknown-source' | 'invalid' };
+
+/** DUN-070: result of a background auto-sync run, sent as the `sync:auto` event. */
+export interface AutoSyncEvent { at: string; result: CloudSyncResult }
+
+/** saves:listFiles (DUN-047 enabler): what sync sees for a game before exclude rules. Read-only. */
+export interface SaveFileEntry { /** Relative, forward slashes. */ path: string; size: number; mtimeMs: number }
+export type SaveFileListResult =
+  | { ok: true; files: SaveFileEntry[]; truncated: boolean }
+  | { ok: false; code: 'GAME_NOT_FOUND' | 'NO_SAVE_PATH' | 'PROTECTED_SAVE_PATH' | 'LOCAL_ERROR'; message?: string };
+
+/** A Wine/Proton prefix found on disk (read-only; open-folder only, never deleted by Dune). */
+export type DiscoveredPrefixSource = 'wine' | 'proton' | 'heroic' | 'lutris';
+export interface DiscoveredPrefix { path: string; source: DiscoveredPrefixSource; label?: string }
+export type OpenDiscoveredPrefixResult = { ok: true } | { ok: false; reason: 'not-discovered' | 'open-failed' };
+
 export interface ElectronAPI {
   // Config
   loadConfig: () => Promise<{ games: Game[]; cloud: Cloud; settings: Settings } | null>;
@@ -449,9 +476,13 @@ export interface ElectronAPI {
   syncCloud: (creds: { url: string }) => Promise<CloudSyncResult>;
   restoreCloud: (creds: { url: string }) => Promise<CloudSyncResult>;
   testCloud: (creds: { url: string }) => Promise<ServerResult<{ message: string }>>;
+  /** DUN-070: background auto-sync results. */
+  onAutoSync: (cb: (event: AutoSyncEvent) => void) => () => void;
+  /** Read-only: a game's save files as sync sees them before exclude rules (DUN-047 enabler). */
+  listSaveFiles: (gameId: number) => Promise<SaveFileListResult>;
   
-  // Art
-  fetchArt: (id: number, name: string) => Promise<{ success: boolean; thumbnail?: string; message?: string }>;
+  // Art (through the Dune Server's SteamGridDB provider)
+  fetchArt: (gameId: number) => Promise<FetchArtResult>;
   setCustomArt: (id: number) => Promise<string | false>;
   
   // Dialog
@@ -495,6 +526,14 @@ export interface ElectronAPI {
   createPrefix: (name: string) => Promise<CreatePrefixResult>;
   backupPrefix: (id: string) => Promise<BackupPrefixResult>;
   deletePrefix: (id: string) => Promise<DeletePrefixResult>;
+  /** Prefixes found on disk (Wine, Proton, Heroic, Lutris). Read-only. */
+  discoverPrefixes: () => Promise<DiscoveredPrefix[]>;
+  /** Opens a folder only when it is in a fresh discoverPrefixes() result. */
+  openDiscoveredPrefix: (path: string) => Promise<OpenDiscoveredPrefixResult>;
+
+  // Scanner sources (DUN-077)
+  getScannerSources: () => Promise<ScannerSourceInfo[]>;
+  setScannerSource: (id: ScannerSourceId, enabled: boolean) => Promise<SetScannerSourceResult>;
 
   // Save versions
   getSaveVersions: (game: string) => Promise<ServerResult<{ success: boolean; versions?: SaveVersion[]; message?: string }>>;
@@ -523,6 +562,10 @@ export interface ElectronAPI {
   // SteamGridDB
   searchArt: (query: string) => Promise<ServerResult<{ success: boolean; results?: string[]; message?: string }>>;
   autoMatchAll: () => Promise<ServerResult<{ success: boolean; count: number; message?: string }>>;
+  /** DUN-092: the server's SteamGridDB key is write-only; these return only { set }. Set/clear need an admin. */
+  getSteamGridKeyStatus: () => Promise<ProviderKeyStatusResult>;
+  setSteamGridKey: (key: string) => Promise<ProviderKeyStatusResult>;
+  clearSteamGridKey: () => Promise<ProviderKeyStatusResult>;
   
   // Local sync
   triggerLocalSync: () => Promise<ServerResult<{ success: boolean; count: number; games: string[]; message?: string }>>;
@@ -541,14 +584,22 @@ export interface ElectronAPI {
   removeApiKey: (id: string) => Promise<ServerResult<{ success: boolean; message?: string }>>;
   
   // Ollama
-  getOllamaModels: (endpoint: string) => Promise<ServerResult<{ success: boolean; models?: string[]; message?: string }>>;
+  /** DUN-095/057: the server uses its stored endpoint only (admin-only). */
+  getOllamaModels: () => Promise<ServerResult<{ success: boolean; models?: string[]; message?: string }>>;
   checkOllamaHealth: () => Promise<ServerResult<HealthStatus>>;
 
   // Renderer diagnostics, secret store, and help (client-only bridge methods)
   reportRendererError: (report: { message: string; stack?: string; url?: string }) => Promise<unknown>;
   openErrorLog: () => Promise<unknown>;
-  getServerKey: () => Promise<{ success: boolean; key: string }>;
-  setServerKey: (key: string) => Promise<{ success: boolean }>;
+  /** DUN-073: write-only; never returns the key. */
+  getServerKey: () => Promise<ServerKeyStatus>;
+  setServerKey: (key: string) => Promise<ServerKeyStatus>;
+
+  // App updates (DUN-028): opt-in via settings.updateChecks; download/install only on a click
+  getUpdateStatus: () => Promise<UpdateStatus>;
+  downloadUpdate: () => Promise<UpdateStatus>;
+  installUpdate: () => Promise<UpdateStatus>;
+  onUpdateStatus: (cb: (status: UpdateStatus) => void) => () => void;
 
   // Disk space (one entry per drive; never rejects)
   getDiskSpace(paths?: string[]): Promise<DriveSpace[]>;
